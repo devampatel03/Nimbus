@@ -3,22 +3,105 @@
 
 """INV-1: Exactly one function performs cloud model egress.
 
-Acceptance: `src/security/scrubber.py:execute_external` is the sole call site
-that sends data to an external/cloud model. This test statically scans
-`src/` for outbound HTTP client usage and asserts it only appears inside
-that function.
+Acceptance: `src/security/scrubber.py:execute_external` is the sole call
+site that sends data to an external/cloud model. This statically scans
+`src/` for outbound HTTP client usage (httpx/requests/aiohttp) via AST and
+asserts it only appears inside that function.
 
-Stub: `src/security/scrubber.py` does not exist yet, so this fails by
-default (ModuleNotFoundError), which is correct until P-SEC implements it.
+Self-adjusting per T0.10: today the scrubber does not exist, so this
+asserts zero egress call sites anywhere in `src/`. Once
+`src/security/scrubber.py` exists, it asserts exactly one call site, and
+that it lives inside `execute_external` in that file.
 """
 
-from src.security.scrubber import (
-    execute_external,  # noqa: F401 (intentional: import fails until implemented)
-)
+import ast
+from pathlib import Path
+
+SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
+EGRESS_MODULES = {"httpx", "requests", "aiohttp"}
+SCRUBBER_FILE = SRC_ROOT / "security" / "scrubber.py"
+SCRUBBER_FUNCTION = "execute_external"
+
+
+def _egress_aliases(tree: ast.Module) -> set[str]:
+    """Names in this module bound to an egress-capable module or symbol."""
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in EGRESS_MODULES:
+                    aliases.add(alias.asname or alias.name.split(".")[0])
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.split(".")[0] in EGRESS_MODULES
+        ):
+            for alias in node.names:
+                aliases.add(alias.asname or alias.name)
+    return aliases
+
+
+class _CallCollector(ast.NodeVisitor):
+    """Records (lineno, enclosing_function) for calls that resolve to an
+    egress-capable name, e.g. `httpx.post(...)` or `AsyncClient(...)`.
+    """
+
+    def __init__(self, aliases: set[str]) -> None:
+        self._aliases = aliases
+        self._func_stack: list[str] = []
+        self.hits: list[tuple[int, str | None]] = []
+
+    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._func_stack.append(node.name)
+        self.generic_visit(node)
+        self._func_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_func(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_func(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = node.func
+        is_egress_call = (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id in self._aliases
+        ) or (isinstance(target, ast.Name) and target.id in self._aliases)
+        if is_egress_call:
+            enclosing = self._func_stack[-1] if self._func_stack else None
+            self.hits.append((node.lineno, enclosing))
+        self.generic_visit(node)
+
+
+def _find_egress_call_sites() -> list[tuple[str, int, str | None]]:
+    hits: list[tuple[str, int, str | None]] = []
+    for path in sorted(SRC_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        collector = _CallCollector(_egress_aliases(tree))
+        collector.visit(tree)
+        rel = path.relative_to(SRC_ROOT.parent).as_posix()
+        hits.extend((rel, lineno, func) for lineno, func in collector.hits)
+    return hits
 
 
 def test_only_scrubber_execute_external_calls_cloud_model():
-    raise NotImplementedError(
-        "INV-1 stub: implement a static scan of src/ asserting outbound "
-        "cloud-model HTTP calls occur only within execute_external."
-    )
+    hits = _find_egress_call_sites()
+
+    if not SCRUBBER_FILE.exists():
+        assert hits == [], (
+            "INV-1: found outbound HTTP call site(s) before the scrubber " f"exists: {hits}"
+        )
+        return
+
+    assert (
+        len(hits) == 1
+    ), f"INV-1: expected exactly one cloud egress call site, found {len(hits)}: {hits}"
+    file_path, _, func_name = hits[0]
+    assert (
+        file_path == "src/security/scrubber.py"
+    ), f"INV-1: egress call site is outside the scrubber: {hits[0]}"
+    assert (
+        func_name == SCRUBBER_FUNCTION
+    ), f"INV-1: egress call site is not inside {SCRUBBER_FUNCTION}: {hits[0]}"
