@@ -42,6 +42,7 @@ See `docs/EXECUTION_PLAN.md` for task list.
 | Task ID | Status | Notes |
 |---------|--------|-------|
 | T0.1    | done | CI, pre-commit (ruff/mypy/detect-secrets/license header), secret-scan verified blocking; 5 invariant stubs added (fail correctly, no src/ yet) |
+| T0.2    | done | Local dev infra: docker-compose (postgres+AGE+pgvector, redis, qdrant), config/settings.py (Pydantic BaseSettings), src/db/{postgres,redis,qdrant}.py async clients, src/api/health.py GET /health, tests/unit/test_health.py (2 passing). Note: this is the "local dev infra" work as user-directed; docs/EXECUTION_PLAN.md's actual T0.2 (P-SEC: LUKS/WireGuard/egress proxy) was not done — label mismatch flagged to and confirmed by user. |
 
 ## Rules for agents
 

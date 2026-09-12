@@ -10,7 +10,15 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        additional_dependencies: [pydantic>=2.8]
+        additional_dependencies:
+          [
+            "pydantic>=2.8",
+            "pydantic-settings>=2.4",
+            "fastapi>=0.115",
+            "sqlalchemy[asyncio]>=2.0",
+            "redis>=5.0",
+            "qdrant-client>=1.10",
+          ]
         args: [--strict]
         files: ^src/
 
