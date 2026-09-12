@@ -41,7 +41,7 @@ See `docs/EXECUTION_PLAN.md` for task list.
 
 | Task ID | Status | Notes |
 |---------|--------|-------|
-| T0.1    | not started | repo, CI, pre-commit, secret scanning |
+| T0.1    | done | CI, pre-commit (ruff/mypy/detect-secrets/license header), secret-scan verified blocking; 5 invariant stubs added (fail correctly, no src/ yet) |
 
 ## Rules for agents
 
