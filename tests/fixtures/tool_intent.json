@@ -1,0 +1,12 @@
+{
+  "tool": "calendar",
+  "action": "create",
+  "params": {
+    "title": "Follow-up",
+    "start": "2026-09-15T15:00:00+05:30"
+  },
+  "entity_refs": {
+    "attendee": "<person_44>"
+  },
+  "risk_class": "write_reversible"
+}

@@ -13,7 +13,14 @@
 
 | Contract | Schema location | Version | Last updated |
 |----------|----------------|---------|--------------|
-| (to be filled as contracts are defined) |
+| `SessionBundle` | `src/contracts/session_bundle.py` | 1 | 2026-09-12 |
+| `DiarizedTranscript` (+ `Utterance`) | `src/contracts/diarized_transcript.py` | 1 | 2026-09-12 |
+| `MemoryQuery` / `MemoryResult` | `src/contracts/memory_query.py` | 1 | 2026-09-12 |
+| `UserProfileSlice` (+ `TraitSummary`, `StanceSummary`) | `src/contracts/user_profile_slice.py` | 1 | 2026-09-12 |
+| `ToolIntent` / `ToolResult` (+ `RiskClass`, `Primitive`) | `src/contracts/tool_intent.py` | 1 | 2026-09-12 |
+| `ProactiveCandidate` | `src/contracts/proactive_candidate.py` | 1 | 2026-09-12 |
+
+Golden fixtures: `tests/fixtures/*.json`. Compatibility test (fails on field removal or type change): `tests/unit/test_contracts.py`.
 
 ## Known issues and tech debt
 
@@ -34,3 +41,7 @@
 - mypy strict-mode gotcha: setting `[tool.mypy] python_version = "3.11"` restricts mypy's own *parser* to 3.11 syntax for every file it walks, including third-party stubs — this broke on `numpy` 2.5.x stubs which use PEP 695 `type` statement syntax unconditionally. Fix was to drop the explicit `python_version` pin entirely (let mypy infer from the running interpreter, which is 3.14 in this project's `.venv`), not to add per-module overrides or `exclude` patterns (both were tried and didn't work — `follow_imports = "skip"` doesn't prevent the stub file from being parsed).
 - mypy "Source file found twice under different module names" (e.g. `db.postgres` vs `src.db.postgres`) was fixed by adding real `__init__.py` markers at `src/`, `src/api/`, and `config/` (matching the existing `src/db/__init__.py`), not by `explicit_package_bases`/`mypy_path` — that combination incorrectly made `.venv` a searchable import root and surfaced the numpy stub error above.
 - pytest needs `pythonpath = ["."]` under `[tool.pytest.ini_options]` in `pyproject.toml` for `from src....` / `from config....` imports to resolve in test modules under `tests/unit/` (no root `conftest.py` exists to do this implicitly).
+- 2026-09-12 (T0.8/T0.9): `docs/TECHNICAL_ARCHITECTURE.md` section 12 only gives the contract *names* and producer/consumer/freeze-phase, not field-level schemas (except `ToolIntent`, spelled out in section 8.1). Fields for the other five contracts were derived from context elsewhere in the same doc (mode state machine, Mode A latency budget, memory bi-temporal schema, personality subsystem, proactive engine) — a defensible but not spec-mandated design; a pod that later needs a field these don't have should amend via review, not silently add it.
+- Compatibility-test technique used in `tests/unit/test_contracts.py`: record each model's `model_fields` names + a normalized string repr of their `annotation` in a hardcoded `EXPECTED_FIELDS` dict, then assert equality every run. This catches field removal and type changes without needing to snapshot a JSON schema file; verified by deliberately deleting a field and confirming the test fails with a clear message, then restoring it.
+- `docs/EXECUTION_PLAN.md`'s actual T0.9 acceptance criterion is "SBOM generated in CI; Parakeet CC-BY flagged in NOTICE" — this session's task instruction only asked for the NOTICE file, not CI SBOM automation. Flagged per the "spec is right, raise it" rule (same pattern as the T0.2 mismatch); T0.9 is marked `partial` in CLAUDE.md's task table pending that follow-up, rather than mislabeling it `done`.
+- Package licences for the NOTICE file were confirmed via `importlib.metadata` on the installed packages (`License-Expression` / `Classifier` fields), not recalled from memory — several packages (fastapi, pydantic, langgraph, pytest, ruff, mypy) only expose licence via the newer `License-Expression` metadata field, not the legacy `License:` header.

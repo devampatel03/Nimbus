@@ -1,0 +1,19 @@
+{
+  "user_id": "11111111-2222-3333-4444-555555555555",
+  "traits": [
+    {
+      "category": "communication",
+      "statement": "prefers being told the conclusion first",
+      "confidence": 0.82
+    }
+  ],
+  "active_stances": [
+    {
+      "topic": "monorepo vs polyrepo",
+      "position": "monorepo for this project's stage",
+      "strength": "held"
+    }
+  ],
+  "generated_at": "2026-09-12T09:00:00+05:30",
+  "version": 3
+}

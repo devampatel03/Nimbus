@@ -43,6 +43,8 @@ See `docs/EXECUTION_PLAN.md` for task list.
 |---------|--------|-------|
 | T0.1    | done | CI, pre-commit (ruff/mypy/detect-secrets/license header), secret-scan verified blocking; 5 invariant stubs added (fail correctly, no src/ yet) |
 | T0.2    | done | Local dev infra: docker-compose (postgres+AGE+pgvector, redis, qdrant), config/settings.py (Pydantic BaseSettings), src/db/{postgres,redis,qdrant}.py async clients, src/api/health.py GET /health, tests/unit/test_health.py (2 passing). Note: this is the "local dev infra" work as user-directed; docs/EXECUTION_PLAN.md's actual T0.2 (P-SEC: LUKS/WireGuard/egress proxy) was not done — label mismatch flagged to and confirmed by user. |
+| T0.8    | done | All 6 frozen interface contracts (SessionBundle, DiarizedTranscript, MemoryQuery/Result, UserProfileSlice, ToolIntent/Result, ProactiveCandidate) added as Pydantic models in `src/contracts/`, each with a golden fixture in `tests/fixtures/` and a field/type compatibility test in `tests/unit/test_contracts.py` (16 tests passing; verified the compatibility test fails on a deliberate field removal). |
+| T0.9    | partial | `NOTICE` file created at repo root covering all `pyproject.toml` deps (licences confirmed via installed package metadata, not memory) plus model-weight attributions from PRD section 10.1, with correct CC-BY-4.0 attribution for Parakeet-TDT 0.6B v2. Scope note: EXECUTION_PLAN.md's T0.9 acceptance criterion also requires "SBOM generated in CI" — that automation was not built; only the manually-curated NOTICE file was in scope of this session's instruction. Flagging per the "spec is right, raise it" rule — CI SBOM generation remains outstanding. |
 
 ## Rules for agents
 
