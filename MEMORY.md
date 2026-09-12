@@ -1,0 +1,11 @@
+## Project State (updated 2026-04-17)
+- [Auth](src/lib/auth/) - Clerk since March 2026. Migrated from NextAuth.
+- [DB](prisma/schema.prisma) - PostgreSQL on Supabase. Drizzle ORM.
+- [Deploy](docs/deploy.md) - Vercel preview for PRs, production on main.
+- [Testing](vitest.config.ts) - Vitest unit + Playwright E2E. 80% min.
+- [API](src/app/api/) - Server Actions for mutations. API routes for webhooks only.
+- [Payments](src/lib/stripe/) - Stripe checkout. Webhooks at /api/webhooks/stripe.
+- [WIP] Dashboard redesign in progress. Branch: feature/dashboard-v2.
+- [Bug] Rate limiter false positives on /api/search. Issue #234.
+- [Decision] Chose TanStack Query over SWR, April 5. See docs/decisions/004.md.
+- [Deprecated] Old /api/v1/ routes. Remove after May 1 deadline.
