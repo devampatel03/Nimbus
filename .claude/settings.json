@@ -15,19 +15,46 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/pre-tool-guard.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-tool-guard.sh"
+          }
         ]
       },
       {
         "matcher": "Write|Edit",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/protect-files.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/protect-files.sh"
+          }
         ]
       },
       {
         "matcher": "Read|Write|Edit|Bash|Glob|Grep",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/enforce-boundary.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/enforce-boundary.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "graphify hook-guard search"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "graphify hook-guard read"
+          }
         ]
       }
     ],
@@ -35,21 +62,33 @@
       {
         "matcher": "Write|Edit",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/post-tool-lint.sh" },
-          { "type": "command", "command": "bash .claude/hooks/review-flag.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-tool-lint.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/review-flag.sh"
+          }
         ]
       },
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/observability.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/observability.sh"
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/stop-verify.sh" }
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/stop-verify.sh"
+          }
         ]
       }
     ]

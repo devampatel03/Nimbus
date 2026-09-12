@@ -1,0 +1,20 @@
+.env
+*.pyc
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.venv/
+venv/
+# Never commit secrets
+config/secrets/
+*.key
+*.pem
+# Nimbus data (never in repo)
+data/
+*.db
+# IDE
+.vscode/
+.idea/
