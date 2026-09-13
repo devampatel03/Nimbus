@@ -19,6 +19,7 @@ repos:
             "redis>=5.0",
             "qdrant-client>=1.10",
             "langgraph>=0.2",
+            "pyjwt>=2.8",
           ]
         args: [--strict]
         files: ^src/
