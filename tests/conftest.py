@@ -1,14 +1,16 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Shared fixtures for tests that need a real Postgres instance (per
-AGENT_OPERATING_MANUAL.md: measurements must use real dependencies, not
-mocks). Requires `docker compose up -d postgres`.
+"""Shared fixtures for tests that need real Postgres/Qdrant/Redis instances
+(per AGENT_OPERATING_MANUAL.md: measurements must use real dependencies, not
+mocks). Requires `docker compose up -d`.
 """
 
 from collections.abc import AsyncIterator
 
 import pytest
+from qdrant_client import AsyncQdrantClient
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from config.settings import settings
@@ -38,3 +40,21 @@ async def db_session(pg_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await outer_tx.rollback()
+
+
+@pytest.fixture
+async def qdrant_client() -> AsyncIterator[AsyncQdrantClient]:
+    client = AsyncQdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+    yield client
+    for collection in (await client.get_collections()).collections:
+        await client.delete_collection(collection.name)
+    await client.close()
+
+
+@pytest.fixture
+async def redis_client() -> AsyncIterator[Redis]:
+    client: Redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    yield client
+    async for key in client.scan_iter(match="warm_context:*"):
+        await client.delete(key)
+    await client.aclose()
