@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
 
+    # Cloud egress (scrubber -> Gemini 3.8 Flash, AD-2). Must be https.
+    cloud_egress_url: str = "https://generativelanguage.googleapis.com/v1/tool-execute"
+    cloud_egress_api_key: str = ""
+    cloud_egress_timeout_seconds: float = 20.0  # AD-2: 13.3s TTFT + headroom
+    cloud_egress_enabled_default: bool = True  # kill switch initial state
+
     @property
     def postgres_dsn(self) -> str:
         return (
