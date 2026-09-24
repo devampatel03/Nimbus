@@ -7,11 +7,20 @@ behind one interface.
 
 Scope notes (T1.6/T1.7):
 
-- No embedding model is wired into Nimbus yet (T1.5 covers vLLM generation
-  serving, not embeddings). `DeterministicStubEmbedder` is a placeholder —
-  deterministic and swappable, but not semantically meaningful — so the
-  Qdrant upsert/search and cosine-scoring plumbing is real and testable.
-  Replace it with a real sentence-embedding model before any MEM-7 eval run.
+- Step 11 (resolves AD-7): the default embedder is now `Qwen3Embedder`
+  (`src/memory/embedder.py`), a real CPU sentence-embedding model
+  (Qwen/Qwen3-Embedding-0.6B). `DeterministicStubEmbedder` below remains
+  for tests to inject explicitly via the `Embedder` protocol, so unit/
+  integration tests stay fast and hermetic (no model download/load) --
+  see `tests/integration/test_manager.py`/`test_warm_context.py`, which
+  now pass `embedder=DeterministicStubEmbedder()` explicitly. `write_episodic`/
+  `query` run `Embedder.embed()` via `asyncio.to_thread` -- a real CPU model's
+  forward pass is slow enough (seconds per call under load) that calling it
+  synchronously inside these async methods blocks the event loop for the
+  entire batch; this was diagnosed against a reproducible Qdrant 404 during
+  the LoCoMo harness run (a collection created minutes earlier was gone by
+  upsert time -- the blocked loop starved the underlying HTTP connection's
+  keepalive), see MEMORY.md AD-21.
 - Episodic candidates carry no entity links yet (that requires
   `src/memory/extractor.py`'s `EntityExtractor` output, not built out),
   so `graph_proximity` is always 0.0 for episodic results; only semantic
@@ -24,6 +33,7 @@ Scope notes (T1.6/T1.7):
   orchestrator eventually passes post-turn, not a frozen contract.
 """
 
+import asyncio
 import hashlib
 import math
 import uuid
@@ -39,12 +49,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from src.contracts.memory_query import MemoryQuery, MemoryResult
+from src.memory.embedder import DEFAULT_EMBED_DIM, Qwen3Embedder
 from src.memory.graph import GraphRepository
 from src.memory.retriever import DEFAULT_WEIGHTS, RetrievalWeights, ScoringTerms, score, set_overlap
 from src.memory.schemas.graph import GraphEdge, GraphNode
 
 EPISODIC_COLLECTION = "episodic_memory"
-EMBED_DIM = 32
+EMBED_DIM = DEFAULT_EMBED_DIM
 _WARM_KEY_PREFIX = "warm_context:"
 _DEFAULT_WARM_TTL_SECONDS = 300
 
@@ -55,7 +66,8 @@ class Embedder(Protocol):
 
 class DeterministicStubEmbedder:
     """Text-derived unit vector; deterministic, NOT semantically meaningful.
-    See module docstring — placeholder until a real embedding model exists.
+    Kept for tests to inject explicitly (see module docstring) — production
+    code paths use `Qwen3Embedder` by default.
     """
 
     def embed(self, text: str) -> list[float]:
@@ -121,7 +133,7 @@ class MemoryManager:
         self._session = pg_session
         self._qdrant = qdrant
         self._redis = redis
-        self._embedder = embedder or DeterministicStubEmbedder()
+        self._embedder = embedder or Qwen3Embedder()
         self._graph_repo = GraphRepository(pg_session)
         self._weights = weights
         self._warm_ttl_seconds = warm_ttl_seconds
@@ -136,7 +148,7 @@ class MemoryManager:
         ids: list[uuid.UUID] = []
         for chunk in chunks:
             point_id = uuid.uuid4()
-            vector = self._embedder.embed(chunk.text)
+            vector = await asyncio.to_thread(self._embedder.embed, chunk.text)
             payload = {
                 "text": chunk.text,
                 "session_id": str(session_id),  # INV-5: provenance
@@ -147,6 +159,12 @@ class MemoryManager:
             }
             points.append(models.PointStruct(id=str(point_id), vector=vector, payload=payload))
             ids.append(point_id)
+        # Re-check/recreate right before the upsert, not just at the top of this
+        # method: with a real (slow, CPU-bound) embedder, the per-chunk loop above
+        # can run for minutes. Empirically reproduced on this dev machine (see
+        # MEMORY.md AD-21) that the collection can report as gone by the time the
+        # loop finishes, causing upsert to 404 even though it was just created.
+        await self._ensure_episodic_collection()
         await self._qdrant.upsert(collection_name=EPISODIC_COLLECTION, points=points, wait=True)
         return ids
 
@@ -204,7 +222,7 @@ class MemoryManager:
 
     async def query(self, text: str, context: MemoryQuery) -> list[MemoryResult]:
         now = datetime.now(UTC)
-        query_vec = self._embedder.embed(text)
+        query_vec = await asyncio.to_thread(self._embedder.embed, text)
         episodic = await self._query_episodic(query_vec, context, now)
         semantic = await self._query_semantic(context, now)
         combined = episodic + semantic

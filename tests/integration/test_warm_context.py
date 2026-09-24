@@ -19,7 +19,7 @@ from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.memory.manager import EpisodicChunk, MemoryManager, SessionState
+from src.memory.manager import DeterministicStubEmbedder, EpisodicChunk, MemoryManager, SessionState
 from src.memory.schemas.session import Session
 
 WARM_CONTEXT_BUDGET_SECONDS = 0.1  # T1.7: 100ms max
@@ -36,7 +36,12 @@ async def test_get_warm_context_within_100ms_budget(
     db_session.add(session_row)
     await db_session.flush()
 
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
     text = "Discussed the Q3 roadmap slip."
     await manager.write_episodic(session_row.id, [EpisodicChunk(text=text, occurred_at=now)])
     await manager.refresh_warm_context(
@@ -59,7 +64,12 @@ async def test_get_warm_context_within_100ms_budget(
 async def test_get_warm_context_cache_miss_is_fast_and_returns_none(
     db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
 ) -> None:
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
 
     start = time.perf_counter()
     result = await manager.get_warm_context(uuid.uuid4())

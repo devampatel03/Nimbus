@@ -44,6 +44,16 @@ Qwen3.8-27B
     material. Any fine-tuning or modification to model weights must be
     documented before distribution.
 
+Qwen3-Embedding-0.6B
+    Copyright Alibaba Cloud / Qwen.
+    Licensed under the Apache License, Version 2.0.
+    Source: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+    NOTE: Apache 2.0 requires stating changes made to the licensed
+    material. Used unmodified (no fine-tuning) as the episodic-memory
+    embedding model, truncated to 1024 dims via its native Matryoshka
+    Representation Learning support (no weight modification). See
+    src/memory/embedder.py (Step 11, resolves AD-7).
+
 Gemma 4
     Copyright Google LLC.
     Licensed under the Apache License, Version 2.0 (Gemma Terms of Use

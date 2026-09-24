@@ -20,6 +20,7 @@ repos:
             "qdrant-client>=1.10",
             "langgraph>=0.2",
             "pyjwt>=2.8",
+            "sentence-transformers>=3.0",
           ]
         args: [--strict]
         files: ^src/

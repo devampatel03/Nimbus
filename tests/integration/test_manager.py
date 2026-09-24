@@ -16,7 +16,13 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.contracts.memory_query import MemoryQuery
-from src.memory.manager import EpisodicChunk, MemoryManager, SemanticFact, SessionState
+from src.memory.manager import (
+    DeterministicStubEmbedder,
+    EpisodicChunk,
+    MemoryManager,
+    SemanticFact,
+    SessionState,
+)
 from src.memory.schemas.graph import GraphNode
 from src.memory.schemas.session import Session
 
@@ -37,7 +43,12 @@ async def test_write_and_query_episodic_roundtrip(
     db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
 ) -> None:
     session_id, _ = await _make_session_and_node(db_session)
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
 
     chunk_text = "The client wants the launch moved to next Tuesday."
     ids = await manager.write_episodic(
@@ -60,7 +71,12 @@ async def test_write_semantic_inserts_then_supersedes(
     db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
 ) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
     now = datetime.now(UTC)
 
     [edge_v1] = await manager.write_semantic(
@@ -107,7 +123,12 @@ async def test_write_semantic_is_idempotent_for_an_unchanged_fact(
     db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
 ) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
     now = datetime.now(UTC)
     fact = SemanticFact(
         subject_id=node_id,
@@ -130,7 +151,12 @@ async def test_query_semantic_returns_graph_fact_for_active_entity(
     db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
 ) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
     now = datetime.now(UTC)
 
     await manager.write_semantic(
@@ -163,7 +189,12 @@ async def test_refresh_and_get_warm_context_roundtrip(
     db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
 ) -> None:
     session_id, _ = await _make_session_and_node(db_session)
-    manager = MemoryManager(pg_session=db_session, qdrant=qdrant_client, redis=redis_client)
+    manager = MemoryManager(
+        pg_session=db_session,
+        qdrant=qdrant_client,
+        redis=redis_client,
+        embedder=DeterministicStubEmbedder(),
+    )
     text = "Reminder: renew the domain before it expires."
     await manager.write_episodic(
         session_id, [EpisodicChunk(text=text, occurred_at=datetime.now(UTC))]
