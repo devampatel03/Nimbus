@@ -8,6 +8,12 @@ from httpx import ASGITransport, AsyncClient
 
 from config.settings import settings
 from src.api.main import create_app
+from src.orchestrator.graph import GraphDependencies
+from tests.conftest import FakeLLMClient
+
+
+def _app():
+    return create_app(deps=GraphDependencies(llm_client=FakeLLMClient()))
 
 
 async def _login(client: AsyncClient) -> dict[str, str]:
@@ -18,7 +24,7 @@ async def _login(client: AsyncClient) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_send_message_get_response() -> None:
-    transport = ASGITransport(app=create_app())
+    transport = ASGITransport(app=_app())
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         headers = await _login(client)
         response = await client.post("/chat", json={"message": "hello there"}, headers=headers)
@@ -38,7 +44,7 @@ async def test_chat_and_rest_tasks_share_the_same_internal_task_store() -> None:
     module docstring) -- a task created through chat must be visible via
     GET /tasks, not stuck in a second, disconnected store.
     """
-    transport = ASGITransport(app=create_app())
+    transport = ASGITransport(app=_app())
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         headers = await _login(client)
         chat_response = await client.post(

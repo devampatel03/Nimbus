@@ -21,6 +21,7 @@ repos:
             "langgraph>=0.2",
             "pyjwt>=2.8",
             "sentence-transformers>=3.0",
+            "openai>=1.40",
           ]
         args: [--strict]
         files: ^src/

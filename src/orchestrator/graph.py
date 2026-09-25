@@ -2,34 +2,42 @@
 # Private, unpublished, proprietary. Do not distribute.
 
 """The agent runtime graph (docs/TECHNICAL_ARCHITECTURE.md sections 4, 9;
-T1.10, T4.1-T4.5): route -> retrieve_memory -> think -> act -> respond.
+T1.10, T4.1-T4.5, this session): route -> retrieve_memory -> think -> act -> respond.
 
-Design decisions worth flagging (see MEMORY.md AD-14):
+Design decisions worth flagging (see MEMORY.md AD-14 and this session's AD):
 
 - `retrieve_memory` reads `MemoryManager.get_warm_context` (Redis-only,
   ~1ms per T1.7's measurement), not the full Qdrant+Postgres `query()` --
   this is the Mode A-safe read; the expensive retrieval already happens
   off-path in `refresh_warm_context` per T1.7's own design.
-- `think` has no local model wired in yet (same constraint as
-  `check_friction`/AD-11, the scrubber's PII detector/AD-13, and the
-  stub embedder/AD-7): it is a deterministic keyword heuristic proposing
-  at most one `ToolIntent`, not a real reasoning step. This is a
-  structural placeholder to exercise `act`'s risk-gating and the
-  approver, not T1.10's eventual acceptance bar (20-turn coherence eval,
-  owned by P-EVAL, needs a real generation model).
+- `think`/`respond` (this session) call `deps.llm_client` (a local vLLM-backed
+  `LLMClient`, `src/llm/client.py`) for real tool-planning and response
+  generation, replacing the earlier sessions' keyword heuristic and
+  template. This is NOT cloud egress -- INV-1 is unaffected (the local
+  client never imports httpx/requests/aiohttp directly, and is never
+  routed through the scrubber). `GraphDependencies.llm_client` defaults
+  to a real `VLLMClient()`, same default-factory pattern as
+  `MemoryManager`'s embedder (AD-7/Step 11) -- production gets it for
+  free, tests inject a fake explicitly (`tests/unit/test_graph.py`).
 - `act` calls `tool.run(...)` for every proposed intent after the
-  approval gate. INV-1 compliance is transitive: `CalendarTool.run`
-  (the only tool here needing a third-party service) calls
-  `scrubber.execute_external` internally; `TasksTool.run` is genuinely
-  local and never reaches the scrubber (see `src/tools/base.py`'s
-  docstring). `act` itself never imports `httpx`/holds a second egress
-  call site.
+  approval gate, now via `deps.approver.review_async` (this session's
+  LLM-based judgment; see `approver.py`'s module docstring for why the
+  sync `review` heuristic is kept alongside it, unchanged, for the
+  protected `tests/eval/injection/red_team.py` harness). INV-1
+  compliance is transitive: `CalendarTool.run` (the only tool here
+  needing a third-party service) calls `scrubber.execute_external`
+  internally; `TasksTool.run` is genuinely local and never reaches the
+  scrubber (see `src/tools/base.py`'s docstring). `act` itself never
+  imports `httpx`/holds a second egress call site.
 - `respond` calls `context_builder.build_system_prompt`, which only does
-  a local (non-network) file read plus string formatting -- no network
-  call sits on this path, satisfying INV-4. Response text itself is
-  template-composed, not model-generated (no local generation model is
-  wired into the orchestrator yet -- vLLM serving, T1.5, is not
-  integrated at the orchestrator layer in this session's scope).
+  a local (non-network) file read plus string formatting before handing
+  the assembled prompt to the LLM client -- the local model call is the
+  only network-shaped step in this node, and per the module note above
+  it is a loopback call, not cloud egress (INV-1 unaffected). Whether a
+  local-model call belongs on the Mode A hot path per INV-4's literal
+  wording is a question for `src/orchestrator/mode_a.py`, which does not
+  exist yet (INV-4's own test is still a stub) -- flagged here rather
+  than silently assumed either way.
 """
 
 import uuid
@@ -40,12 +48,15 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import BaseModel, ConfigDict, Field
 
-from src.contracts.tool_intent import RiskClass, ToolIntent, ToolResult
+from src.contracts.tool_intent import Primitive, RiskClass, ToolIntent, ToolResult
+from src.llm.client import ChatMessage, LLMClient, VLLMClient
 from src.memory.manager import MemoryManager
 from src.orchestrator import context_builder
 from src.orchestrator.approver import Approver
 from src.orchestrator.state import AgentState, ConversationTurn
+from src.tools.base import BaseTool
 from src.tools.registry import ToolRegistry
 
 # `langchain_core` is not in pyproject.toml's own `dependencies` list, but
@@ -62,14 +73,20 @@ _RISK_ORDER: dict[RiskClass, int] = {
 }
 _GATED_RISK_CLASSES = frozenset({RiskClass.WRITE_EXTERNAL, RiskClass.DESTRUCTIVE})
 
-_MAX_TITLE_LEN = 80
-
 
 @dataclass
 class GraphDependencies:
     memory_manager: MemoryManager | None = None
     tool_registry: ToolRegistry = field(default_factory=ToolRegistry)
-    approver: Approver = field(default_factory=Approver)
+    llm_client: LLMClient = field(default_factory=VLLMClient)
+    approver: Approver | None = None
+
+    def __post_init__(self) -> None:
+        # Share one LLM client between think/respond and the approver
+        # rather than each constructing its own, unless the caller
+        # explicitly injected a distinct `Approver`.
+        if self.approver is None:
+            self.approver = Approver(llm_client=self.llm_client)
 
 
 def _get_session_id(config: Config | None) -> str:
@@ -107,46 +124,75 @@ def _make_retrieve_memory(
 
 # -- think ------------------------------------------------------------------
 
-_CALENDAR_TRIGGERS = ("schedule", "meeting", "calendar event")
-_TASK_TRIGGERS = ("remind me", "add a task", "todo", "to-do")
+_THINK_SYSTEM_PROMPT = (
+    "You are a tool-planning module for a personal assistant agent. Given "
+    "the user's message, decide whether a tool call is needed right now. "
+    "Respond only via the given JSON schema. If no tool call is needed, set "
+    "tool and action to null and params to an empty object.\n\n"
+    "Available tools:\n{catalog}"
+)
 
 
-def _propose_tool_calls(message: str) -> list[ToolIntent]:
-    """Heuristic stand-in for local-model tool planning. See module
-    docstring -- no local model is wired in yet.
-    """
-    lowered = message.lower()
-    title = message.strip()[:_MAX_TITLE_LEN] or "untitled"
+class _ToolProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    if any(trigger in lowered for trigger in _CALENDAR_TRIGGERS):
-        return [
-            ToolIntent(
-                tool="calendar",
-                action="create",
-                params={"title": title, "start": "", "end": ""},
-                entity_refs={},
-                risk_class=RiskClass.WRITE_REVERSIBLE,
-            )
+    tool: str | None = None
+    action: str | None = None
+    params: dict[str, Primitive] = Field(default_factory=dict)
+
+
+def _tool_catalog_text(registry: ToolRegistry) -> str:
+    lines = []
+    for name in registry.names():
+        tool = registry.get(name)
+        actions = ", ".join(tool.schema)
+        lines.append(f"- {tool.name}: {tool.description} (actions: {actions})")
+    return "\n".join(lines) or "(no tools available)"
+
+
+def _resolve_proposed_tool(
+    registry: ToolRegistry, proposal: _ToolProposal
+) -> tuple[BaseTool, str] | None:
+    if not proposal.tool or not proposal.action:
+        return None
+    try:
+        tool = registry.get(proposal.tool)
+        tool.validate_params(proposal.action, proposal.params)
+    except (KeyError, ValueError):
+        return None
+    return tool, proposal.action
+
+
+def _make_think(deps: GraphDependencies) -> Callable[[AgentState], Awaitable[dict[str, Any]]]:
+    async def think(state: AgentState) -> dict[str, Any]:
+        catalog = _tool_catalog_text(deps.tool_registry)
+        messages: list[ChatMessage] = [
+            {"role": "system", "content": _THINK_SYSTEM_PROMPT.format(catalog=catalog)},
+            {"role": "user", "content": state.message},
         ]
-    if any(trigger in lowered for trigger in _TASK_TRIGGERS):
-        return [
-            ToolIntent(
-                tool="tasks",
-                action="create",
-                params={"title": title},
-                entity_refs={},
-                risk_class=RiskClass.WRITE_REVERSIBLE,
+        proposal = await deps.llm_client.structured(messages, schema=_ToolProposal)
+
+        tool_calls: list[ToolIntent] = []
+        resolved = _resolve_proposed_tool(deps.tool_registry, proposal)
+        if resolved is not None:
+            tool, action = resolved
+            assert proposal.tool is not None and proposal.action is not None
+            tool_calls.append(
+                ToolIntent(
+                    tool=proposal.tool,
+                    action=proposal.action,
+                    params=proposal.params,
+                    entity_refs={},
+                    risk_class=tool.risk_class_for(action),
+                )
             )
-        ]
-    return []
 
+        risk_class = None
+        if tool_calls:
+            risk_class = max((tc.risk_class for tc in tool_calls), key=_RISK_ORDER.__getitem__)
+        return {"tool_calls": tool_calls, "risk_class": risk_class}
 
-def _think(state: AgentState) -> dict[str, Any]:
-    tool_calls = _propose_tool_calls(state.message)
-    risk_class = None
-    if tool_calls:
-        risk_class = max((tc.risk_class for tc in tool_calls), key=_RISK_ORDER.__getitem__)
-    return {"tool_calls": tool_calls, "risk_class": risk_class}
+    return think
 
 
 def _think_router(state: AgentState) -> str:
@@ -178,7 +224,8 @@ def _make_act(deps: GraphDependencies) -> Callable[[AgentState, Config], Awaitab
 
             risk = tool.risk_class_for(intent.action)
             if risk in _GATED_RISK_CLASSES:
-                decision = deps.approver.review(
+                assert deps.approver is not None  # set in __post_init__
+                decision = await deps.approver.review_async(
                     proposed_action=intent.params,
                     original_intent=state.message,
                     risk_class=risk,
@@ -207,29 +254,39 @@ def _make_act(deps: GraphDependencies) -> Callable[[AgentState, Config], Awaitab
 # -- respond ------------------------------------------------------------
 
 
-def _compose_response(state: AgentState) -> str:
-    if state.tool_results:
-        parts = []
-        for result in state.tool_results:
-            if result.status == "success":
-                parts.append(f"Done: {result.tool}.{result.action}.")
-            else:
-                parts.append(f"Couldn't {result.tool}.{result.action}: {result.error_message}")
-        return " ".join(parts)
+def _tool_results_summary(results: list[ToolResult]) -> str | None:
+    if not results:
+        return None
+    parts = []
+    for result in results:
+        if result.status == "success":
+            parts.append(f"{result.tool}.{result.action} succeeded.")
+        else:
+            parts.append(f"{result.tool}.{result.action} failed: {result.error_message}")
+    return "Tool execution results (mention these naturally, do not invent others): " + " ".join(
+        parts
+    )
 
-    if state.retrieved_memories:
-        return f"({len(state.retrieved_memories)} relevant memory item(s) considered) Got it."
-    return "Got it."
 
+def _make_respond(deps: GraphDependencies) -> Callable[[AgentState], Awaitable[dict[str, Any]]]:
+    async def respond(state: AgentState) -> dict[str, Any]:
+        system_prompt = context_builder.build_system_prompt(state)  # local file read only
+        messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
+        messages.extend(
+            {"role": turn.role, "content": turn.content} for turn in state.conversation_history
+        )
+        tool_summary = _tool_results_summary(state.tool_results)
+        if tool_summary:
+            messages.append({"role": "system", "content": tool_summary})
 
-def _respond(state: AgentState) -> dict[str, Any]:
-    context_builder.build_system_prompt(state)  # local file read only -- INV-4 safe
-    response_text = _compose_response(state)
-    history = [
-        *state.conversation_history,
-        ConversationTurn(role="assistant", content=response_text),
-    ]
-    return {"response": response_text, "conversation_history": history}
+        response_text = await deps.llm_client.complete(messages)
+        history = [
+            *state.conversation_history,
+            ConversationTurn(role="assistant", content=response_text),
+        ]
+        return {"response": response_text, "conversation_history": history}
+
+    return respond
 
 
 # -- graph assembly -------------------------------------------------------
@@ -243,13 +300,14 @@ def build_graph(
 
     graph.add_node("route", _route)
     # mypy can't unify `add_node`'s overloaded node-Protocol match for an
-    # async (state, config) callable against this StateGraph's inferred
-    # generics in this langgraph version -- the sync, single-arg nodes
-    # above/below type-check fine, isolating this to that overload pair.
+    # async callable against this StateGraph's inferred generics in this
+    # langgraph version -- the sync nodes type-check fine, isolating this
+    # to the async overload pairs (both the (state, config) and the
+    # single-arg async shapes hit the same mypy limitation).
     graph.add_node("retrieve_memory", _make_retrieve_memory(deps))  # type: ignore[arg-type]
-    graph.add_node("think", _think)
+    graph.add_node("think", _make_think(deps))  # type: ignore[arg-type]
     graph.add_node("act", _make_act(deps))  # type: ignore[arg-type]
-    graph.add_node("respond", _respond)
+    graph.add_node("respond", _make_respond(deps))  # type: ignore[arg-type]
 
     graph.set_entry_point("route")
     graph.add_edge("route", "retrieve_memory")

@@ -7,6 +7,18 @@ loader, stance log, and friction checker.
 PSA-1: the character card is hand-authored and no code path writes it.
 `tests/unit/test_agent_character.py` statically verifies this with an AST
 scan of `src/`, mirroring the INV-1 egress scan's technique.
+
+`check_friction` (sync, keyword heuristic) is kept UNCHANGED from the
+earlier session (this session does not touch it): `tests/eval/personality/
+friction.py` -- protected by CLAUDE.md rule 4 ("never modify files in
+tests/eval/ without explicit permission") -- calls it synchronously and
+is graded against this exact function; making it async or changing its
+behavior would silently break that already-passing, real-measurement
+harness. `check_friction_llm` below is the new LLM-based conflict
+detector this session's task asks for, added alongside it (not wired into
+`friction.py`, which stays on the original heuristic) -- "an addition,
+not a replacement of tested interfaces", same resolution as
+`src/orchestrator/approver.py`'s `review`/`review_async` split.
 """
 
 import uuid
@@ -15,11 +27,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, select
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from src.llm.client import ChatMessage, LLMClient, VLLMClient
 from src.memory.schemas.base import Base
 
 _TZ = DateTime(timezone=True)
@@ -176,3 +190,68 @@ def check_friction(
                 )
 
     return conflicts
+
+
+_FRICTION_SYSTEM_PROMPT = (
+    "You check whether a new user request genuinely conflicts with the "
+    "assistant's prior held/firm stances or the user's own stated goals. "
+    "Given the request, the user's goals, and the assistant's prior "
+    "stances, list any real conflicts -- be conservative, only flag a "
+    "genuine tension, not a loose keyword overlap. Respond only via the "
+    "given JSON schema; return an empty conflicts list if there is no real "
+    "conflict."
+)
+
+
+class _FrictionConflictOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str  # "stance" | "goal"
+    description: str
+    reference: str
+
+
+class _FrictionJudgment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conflicts: list[_FrictionConflictOut] = Field(default_factory=list)
+
+
+async def check_friction_llm(
+    *,
+    request: str,
+    user_goals: Iterable[str],
+    prior_stances: Iterable[AgentStance],
+    llm_client: LLMClient | None = None,
+) -> list[FrictionConflict]:
+    """LLM-based friction check (this session) -- see module docstring for why
+    this is an addition alongside `check_friction`, not a replacement of
+    it. Same scoped inputs as the heuristic (request, goals, prior
+    stances only; no full conversation history), still "fast" in the
+    sense of being a single local-model call, not a cloud round trip --
+    but unlike `check_friction`, this genuinely does block on a network
+    call, so callers on a latency-sensitive path should prefer the sync
+    heuristic until this is benchmarked against a running local model.
+    """
+    client = llm_client or VLLMClient()
+    stances_text = (
+        "\n".join(
+            f"- topic={s.topic!r} position={s.position!r} strength={s.strength}"
+            for s in prior_stances
+        )
+        or "(none)"
+    )
+    goals_text = "\n".join(f"- {g}" for g in user_goals) or "(none)"
+    messages: list[ChatMessage] = [
+        {"role": "system", "content": _FRICTION_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"request: {request}\n\nuser goals:\n{goals_text}\n\n"
+                f"assistant's prior stances:\n{stances_text}"
+            ),
+        },
+    ]
+    judgment = await client.structured(messages, schema=_FrictionJudgment)
+    return [
+        FrictionConflict(kind=c.kind, description=c.description, reference=c.reference)
+        for c in judgment.conflicts
+    ]

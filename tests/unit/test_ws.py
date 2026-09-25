@@ -13,6 +13,12 @@ from starlette.testclient import TestClient
 
 from config.settings import settings
 from src.api.main import create_app
+from src.orchestrator.graph import GraphDependencies
+from tests.conftest import FakeLLMClient
+
+
+def _app():
+    return create_app(deps=GraphDependencies(llm_client=FakeLLMClient()))
 
 
 def _login(client: TestClient) -> str:
@@ -23,7 +29,7 @@ def _login(client: TestClient) -> str:
 
 
 def test_streaming_conversation_multiple_turns_over_one_connection() -> None:
-    client = TestClient(create_app())
+    client = TestClient(_app())
     token = _login(client)
 
     with client.websocket_connect(f"/chat/ws?token={token}") as websocket:
@@ -42,7 +48,7 @@ def test_streaming_conversation_multiple_turns_over_one_connection() -> None:
 
 
 def test_websocket_accepts_a_token_via_authorization_header_too() -> None:
-    client = TestClient(create_app())
+    client = TestClient(_app())
     token = _login(client)
 
     with client.websocket_connect(

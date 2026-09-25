@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
 
+    # Local LLM (vLLM, OpenAI-compatible, this session). NOT cloud egress --
+    # `llm_base_url` defaults to loopback and `src/llm/client.py` never
+    # routes through the scrubber (INV-1 unaffected). Dev default model is
+    # the small Qwen2.5-7B-Instruct; production's Qwen3.8-27B needs a
+    # bigger GPU and is set via `.env`, not this default.
+    llm_base_url: str = "http://localhost:8000/v1"
+    llm_api_key: str = "not-needed"  # vLLM's OpenAI-compatible server ignores this by default
+    llm_model: str = "Qwen/Qwen2.5-7B-Instruct"
+    llm_timeout_seconds: float = 60.0
+
     # Cloud egress (scrubber -> Gemini 3.8 Flash, AD-2). Must be https.
     cloud_egress_url: str = "https://generativelanguage.googleapis.com/v1/tool-execute"
     cloud_egress_api_key: str = ""

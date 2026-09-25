@@ -46,10 +46,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await qdrant.qdrant_client.close()
 
 
-def create_app() -> FastAPI:
+def create_app(deps: GraphDependencies | None = None) -> FastAPI:
     app = FastAPI(title="Nimbus", lifespan=lifespan)
 
-    deps = GraphDependencies()
+    deps = deps or GraphDependencies()
     app.state.graph_deps = deps
     app.state.graph = build_graph(deps)
 
