@@ -41,10 +41,14 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
 
     # Cloud egress (scrubber -> Gemini 3.8 Flash, AD-2). Must be https.
-    cloud_egress_url: str = "https://generativelanguage.googleapis.com/v1/tool-execute"
+    # `cloud_egress_url` is the Gemini generateContent API base; the
+    # per-request URL is built as `{cloud_egress_url}/{gemini_model}:generateContent`
+    # in src/security/scrubber.py -- see that module for the real call.
+    cloud_egress_url: str = "https://generativelanguage.googleapis.com/v1beta/models"
     cloud_egress_api_key: str = ""
     cloud_egress_timeout_seconds: float = 20.0  # AD-2: 13.3s TTFT + headroom
     cloud_egress_enabled_default: bool = True  # kill switch initial state
+    gemini_model: str = "gemini-3.8-flash"  # AD-2: the tool-execution model
 
     # API auth (Nimbus is single-user, self-hosted, PRD section 1 -- there is
     # no user table, just one shared login secret). Dev-only defaults below,

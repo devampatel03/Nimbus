@@ -18,6 +18,7 @@ dependencies = [
     "pyjwt>=2.8",
     "sentence-transformers>=3.0",
     "openai>=1.40",
+    "apscheduler>=3.10",
 ]
 
 [project.optional-dependencies]
@@ -50,3 +51,10 @@ pythonpath = ["."]
 
 [tool.mypy]
 strict = true
+
+[[tool.mypy.overrides]]
+# APScheduler ships no inline types / py.typed marker (verified via
+# installed package metadata, not memory, same standard as NOTICE's
+# licence entries).
+module = "apscheduler.*"
+ignore_missing_imports = true

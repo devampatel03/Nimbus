@@ -61,4 +61,4 @@ def test_new_tool_discovered_without_editing_registration_code(tmp_path, monkeyp
 
 def test_real_integrations_package_discovers_calendar_and_tasks() -> None:
     registry = ToolRegistry()
-    assert set(registry.names()) == {"calendar", "tasks"}
+    assert set(registry.names()) == {"calendar", "tasks", "gmail", "drive", "reminders"}

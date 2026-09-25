@@ -19,7 +19,7 @@ CODE=0
 if [ -f package.json ] && grep -q '"test"' package.json; then
   OUT=$(npm test 2>&1); CODE=$?
 elif [ -f pyproject.toml ] || [ -f requirements.txt ]; then
-  OUT=$(pytest 2>&1); CODE=$?
+  OUT=$(uv run pytest 2>&1); CODE=$?
 fi
 
 if [ $CODE -ne 0 ] && [ -n "$OUT" ]; then

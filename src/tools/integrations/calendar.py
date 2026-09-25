@@ -7,13 +7,14 @@ model does execution" -- every action here routes through
 Google Calendar API directly, so this tool never becomes a second egress
 point (INV-1).
 
-No real Google API client is wired in (no OAuth flow, no
-`google-api-python-client` dependency added -- that would need a licence
-and CVE review per the operating manual, out of scope here). The scrubber
-call itself reaches `settings.cloud_egress_url`, which in tests is a
-stubbed/mocked endpoint, not a live Gemini/Google account -- this module
-satisfies "stub the actual API, test the interface", not T4.2's full
-acceptance criterion ("integration tests against real accounts").
+No real Google API client is wired in here, and none is planned for this
+module (a follow-up session's explicit instruction confirmed "option A":
+Calendar/Gmail/Drive stay intent-builders only, with Gemini as the
+execution layer -- see scrubber.py's module docstring for the up to date
+scope note on what "real" means there now). `execute_external` itself now
+makes a real network call to the Gemini API (this session's change,
+replacing the earlier generic stub POST); this module's own contribution
+is unchanged -- still "stub the actual Google API, test the interface".
 """
 
 from typing import ClassVar

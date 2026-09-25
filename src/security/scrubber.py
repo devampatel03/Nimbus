@@ -34,8 +34,30 @@ bypassing the scrubber on failure" is a named failure mode). A caller
 that needs to retry a failed egress must re-invoke `execute_external` in
 full, so every attempt is re-validated, re-substituted, and re-audited —
 never retried at the transport layer alone.
+
+This session: `execute_external` makes a real call to the Gemini API
+(`generateContent`, `responseMimeType: application/json`, forced to a
+single JSON object so the response is parseable without a second model
+round trip) instead of the previous generic-stub POST. `payload` (the
+scrubbed `ToolIntent`, already validated/substituted/PII-checked above)
+is sent as the sole prompt content -- no additional free text is added,
+so INV-2 stays satisfied by construction. Token counts from Gemini's
+`usageMetadata` are logged (not audited to disk) per this session's
+"monitor Gemini response costs" instruction.
+
+Scope note: the public Gemini API has no general-purpose "execute this
+write action against the caller's Google Calendar/Gmail/Drive" capability
+-- section 8.3's "the cloud model does execution" is this project's
+design intent, not a capability the real API grants on its own. What is
+real here: a genuine network call to Gemini, real token cost, and real
+response parsing/error handling. What is not yet real, and is not
+claimed to be: an actual mutation landing in a live Google account.
+Calendar/Gmail/Drive integrations (this session) stay intent-builders
+only, per that scope boundary -- see their own module docstrings.
 """
 
+import json
+import logging
 import secrets
 import threading
 from typing import Any
@@ -48,13 +70,22 @@ from src.security import audit_log, kill_switch, pii_detector
 
 MAX_PARAM_STRING_LENGTH = 500  # 8.4: caps free-text params carrying context
 
-# Closed whitelist: tool -> allowed actions. No src/tools/ registry exists
-# yet (only .gitkeep placeholders), so this is scrubber-local per SCR-2's
-# "reject-by-default on unknown fields" until a real registry lands.
+_logger = logging.getLogger(__name__)
+
+# Closed whitelist: tool -> allowed actions. Mirrors src/tools/registry.py's
+# real ToolRegistry (T4.1) -- kept as an explicit, separate list rather than
+# introspecting the registry directly, per BaseTool's own docstring note
+# that the two are "not yet unified"; this session's task (item 6) is to
+# keep the two in sync by hand, not to unify them structurally.
+# `tasks`/`reminders` are purely local tools that never call
+# execute_external (see their own modules) -- listed here anyway so this
+# stays the single place that documents the full registry surface.
 ALLOWED_TOOLS: dict[str, frozenset[str]] = {
     "calendar": frozenset({"create", "update", "delete", "list"}),
-    "gmail": frozenset({"send", "search", "read"}),
-    "tasks": frozenset({"create", "complete", "list"}),
+    "gmail": frozenset({"send", "search", "read", "draft"}),
+    "tasks": frozenset({"create", "update", "complete", "delete", "list", "get"}),
+    "drive": frozenset({"list", "search", "read"}),
+    "reminders": frozenset({"create", "update", "delete", "list", "get"}),
 }
 
 _REF_TYPES = frozenset({"person", "org", "location"})
@@ -219,15 +250,26 @@ async def execute_external(intent: ToolIntent, session_id: str) -> ToolResult:
     if not settings.cloud_egress_url.startswith("https://"):
         raise ExternalCallError("cloud egress URL must use https")
 
+    gemini_url = f"{settings.cloud_egress_url}/{settings.gemini_model}:generateContent"
+    gemini_request = {
+        "contents": [{"role": "user", "parts": [{"text": json.dumps(payload)}]}],
+        # Forces a single JSON object back, so the response is parseable
+        # without a second model round trip (see module docstring).
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+    }
+
     try:
         async with httpx.AsyncClient(timeout=settings.cloud_egress_timeout_seconds) as client:
             response = await client.post(
-                settings.cloud_egress_url,
-                json=payload,
-                headers={"Authorization": f"Bearer {settings.cloud_egress_api_key}"},
+                gemini_url,
+                json=gemini_request,
+                headers={
+                    "x-goog-api-key": settings.cloud_egress_api_key,
+                    "Content-Type": "application/json",
+                },
             )
             response.raise_for_status()
-            result_data = response.json()
+            gemini_response = response.json()
     except httpx.HTTPError as exc:
         audit_log.write_entry(
             audit_log.AuditLogEntry(
@@ -239,6 +281,19 @@ async def execute_external(intent: ToolIntent, session_id: str) -> ToolResult:
             )
         )
         raise ExternalCallError(f"cloud egress failed: {type(exc).__name__}") from None
+
+    usage = gemini_response.get("usageMetadata", {})
+    _logger.info(
+        "gemini tool-execution call: tool=%s action=%s prompt_tokens=%s "
+        "response_tokens=%s total_tokens=%s",
+        intent.tool,
+        intent.action,
+        usage.get("promptTokenCount"),
+        usage.get("candidatesTokenCount"),
+        usage.get("totalTokenCount"),
+    )
+
+    result_data = _parse_gemini_result(gemini_response, session_id=session_id, intent=intent)
 
     resolved_result: dict[str, Primitive] = {
         k: _resolve_refs_in_value(session_id, v) for k, v in result_data.items()
@@ -261,3 +316,50 @@ async def execute_external(intent: ToolIntent, session_id: str) -> ToolResult:
         result=resolved_result,
         entity_refs=intent.entity_refs,
     )
+
+
+def _audit_parse_failure(session_id: str, intent: ToolIntent, reason: str) -> None:
+    audit_log.write_entry(
+        audit_log.AuditLogEntry(
+            session_id=session_id,
+            tool=intent.tool,
+            action=intent.action,
+            status="error",
+            response_summary=reason,  # sanitised: reason only, never the raw body
+        )
+    )
+
+
+def _parse_gemini_result(
+    gemini_response: dict[str, Any], *, session_id: str, intent: ToolIntent
+) -> dict[str, Primitive]:
+    """Extract and validate the JSON object Gemini returned in its single
+    candidate's text part. Any parse/shape failure is sanitised (8.4:
+    never echo the raw response body back out through an exception or
+    the audit log) before being raised.
+    """
+    candidates = gemini_response.get("candidates") or []
+    if not candidates:
+        _audit_parse_failure(session_id, intent, "no candidates returned")
+        raise ExternalCallError("cloud egress failed: no candidates returned")
+
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+
+    try:
+        parsed = json.loads(text) if text else {}
+    except json.JSONDecodeError:
+        _audit_parse_failure(session_id, intent, "non-JSON response body")
+        raise ExternalCallError("cloud egress failed: non-JSON response") from None
+
+    if not isinstance(parsed, dict):
+        _audit_parse_failure(session_id, intent, "response was not a JSON object")
+        raise ExternalCallError("cloud egress failed: response was not a JSON object")
+
+    result: dict[str, Primitive] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not isinstance(value, Primitive):
+            _audit_parse_failure(session_id, intent, "response value was not a primitive")
+            raise ExternalCallError("cloud egress failed: response value was not a primitive")
+        result[key] = value
+    return result
