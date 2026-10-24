@@ -2,7 +2,7 @@
 
 ```yaml
 status: RUNNING                # NOT_STARTED | RUNNING | BLOCKED | DONE
-wave: W0   # P0.1-P0.6 delivered; audit PR open -> then W1
+wave: W1
 mode: balanced                 # economy | balanced | turbo
 concurrency_cap: 3
 integration_branch: pivot
@@ -18,8 +18,8 @@ Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT
 
 | ID | Title | Agent | Deps | Status | Branch | PR | Notes |
 |----|-------|-------|------|--------|--------|----|-------|
-| P0.1–P0.3, P0.6 | Audit, coupling, envcheck | repo-auditor/devops | – | review | | | done |
-| P0.4/P0.5 | Target design + task table | architect | P0.3 | review | | | done (this file) |
+| P0.1–P0.3, P0.6 | Audit, coupling, envcheck | repo-auditor/devops | – | merged | | | done |
+| P0.4/P0.5 | Target design + task table | architect | P0.3 | merged | | | done (this file) |
 | P1.0 | Delete dead weight (M0) | backend | – | todo | | | pure deletion |
 | P1.1 | CI on pivot: ruff/mypy/pytest + pgvector svc + red-team job + secret scan | devops | – | todo | | |  |
 | P1.2a | Postgres image AGE→pgvector | devops | – | todo | | | recreate dev volume |
@@ -76,13 +76,13 @@ _none_
 - P3.4, P3.6 blocked on H16 (Gmail scope, ADR-0007) - do not build the ADR default before the human answers.
 - H15: Docker daemon down; blocks P1.2b onward integration verification.
 - ADR-0010 Proposed (H18); blocks P3.0 lanes design.
-- PR #1: round 1 (73%) and round 2 (69%) fixed by orchestrator on user instruction ("Option 1"); awaiting reviewer round 3 sign-off.
+- PR #1 merged (ffccc5a) after 3 review rounds (73/69/91%).
 
 ## Notes
 - envcheck (W0 start): REQ tools all OK (git, gh authed as devampatel03, uv 0.8.17, python 3.14.3, docker 27.0.3). All optional env vars missing (Telegram, LLM, Google, Notion, healthcheck) -> tracked H2-H8; FakeLLM/fixtures until provided.
 - `.claude/settings.json` in working tree is the kit's MERGE template and has clobbered the original hooks (pre-tool-guard, protect-files, enforce-boundary, graphify). NOT committed; HEAD version is the original. See HUMAN_TODO H12.
 
 ## Next 3 actions
-1. Merge audit PR (`task/P0-audit` -> `pivot`) after CI + reviewer.
-2. Start W1 batch {P1.0, P1.1, P1.2a} (non-PROT); then {P1.2b, P1.4a}.
-3. Hold PROT tasks (P1.2c, P1.3a/b, P1.4c, P1.5, ...) until H14 is answered; start Docker Desktop (H15) before P1.2b.
+1. Run W1 batch {P1.0, P1.1, P1.2a}; then {P1.2b, P1.4a}.
+2. Hold PROT tasks (P1.2c onward) until H14; P3.4/P3.6 until H16; P3.0 until H18.
+3. Docker Desktop (H15) must be up before P1.2b.
