@@ -4,7 +4,7 @@ Agents build everything that can be built without these (using FakeLLM, recorded
 
 | # | Item | Blocks | Needed by wave | Done |
 |---|------|--------|---------------|------|
-| H1 | Write the **character card** (`personality/character_card.md` (the path the code loads; ADR-0015)): who the assistant is — voice, values, quirks, what it will push back on. Hand-authored; add the line `human-authored: true` at the top. | P2.6 (real card), P5.3 evals meaning | W2 | [ ] |
+| H1 | Write the **character card** (`personality/character_card.md` (path the code loads; ADR-0015): who the assistant is — voice, values, quirks, what it will push back on. Hand-authored; add the line `human-authored: true` at the top. | P2.6 (real card), P5.3 evals meaning | W2 | [ ] |
 | H2 | Create Telegram bot via @BotFather → `TELEGRAM_BOT_TOKEN` (prod). Create a **second** bot for staging → `TELEGRAM_BOT_TOKEN_STAGING`. Find your numeric user id (e.g. via @userinfobot) → `TELEGRAM_ALLOWED_USER_ID`. Enable Telegram 2-step verification + a passcode lock. | P2.1 live test, P6.5 | W2 / W6 | [ ] |
 | H3 | Model provider account with **billing enabled** (paid tier; not AI Studio/free tier) → `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. For the bake-off, 2–3 providers' keys (e.g. Gemini paid, Anthropic Haiku-class, OpenAI nano/mini-class). Set a provider-side budget alert. | P5.4, P5.5 | W5 | [ ] |
 | H4 | Google Cloud project + OAuth consent screen set to **In production** (unverified; personal use; you'll click through the warning once) → `GOOGLE_CLIENT_ID/SECRET`. Scopes: Calendar, Gmail **compose/readonly only (no send)**, Drive readonly/file. Do the one-time consent when the agent asks. | P3.4–P3.8 live | W3 | [ ] |
@@ -24,3 +24,4 @@ _(append below: id, what, why, which task it blocks, interim workaround)_
 - **H15** (W0): start Docker Desktop (daemon was down; 26 integration/INV-5 tests error without it). Needed before P1.2b and for verifying any Redis/Qdrant removal.
 - **H16** (architect Q2, ADR-0007): Gmail has no drafts-only scope; `gmail.compose` also permits sending. Default: request compose, ship no send code, block send endpoints in `src/net`, disclose. Or readonly-only (loses drafts / UAT 6). Brief R6 wording ("no send scope") is stricter than what Google offers - your call. Blocks P3.4, P3.6.
 - **H17** (Q3/Q4/Q5, defaults applied unless you object): egress = app-level hostname allowlist + nftables port rules (no squid); Drive scope `drive.readonly`; user-set reminders bypass quiet hours/6-per-day cap.
+- **H18** (reviewer, ADR-0010 / Q7): short untrusted fields skipping the quarantine LLM call weakens Brief §2.1 / INV-6. ADR is now Proposed; default is to quarantine ALL untrusted bodies until you approve the bypass. Blocks P3.0.

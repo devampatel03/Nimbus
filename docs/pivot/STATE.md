@@ -72,7 +72,11 @@ _none_
 15 ADRs in `docs/decisions/0001-0015` (P0.4): plain Postgres+pgvector (no AGE), Brief INV numbering canonical, `src/llm`+`src/net` sole egress, LangGraph and Approver removed, Postgres SKIP LOCKED jobs, deterministic policy + HMAC approvals. Open deviations needing human OK: ADR-0007 (Gmail compose scope), ADR-0010 (short untrusted fields skip quarantine call), ADR-0004 (app-level egress allowlist).
 
 ## Blockers
-_none_  (human items: see HUMAN_TODO.md)
+- PROT tasks wait on H14 (batch approval to edit tests/eval/**).
+- P3.4, P3.6 blocked on H16 (Gmail scope, ADR-0007) - do not build the ADR default before the human answers.
+- H15: Docker daemon down; blocks P1.2b onward integration verification.
+- ADR-0010 Proposed (H18); blocks P3.0 lanes design.
+- PR #1 review round 1: CHANGES_REQUESTED (73%); fixes in progress.
 
 ## Notes
 - envcheck (W0 start): REQ tools all OK (git, gh authed as devampatel03, uv 0.8.17, python 3.14.3, docker 27.0.3). All optional env vars missing (Telegram, LLM, Google, Notion, healthcheck) -> tracked H2-H8; FakeLLM/fixtures until provided.

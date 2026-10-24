@@ -276,10 +276,10 @@ A crash between steps 1 and 6 re-runs the turn from the persisted update. Tool e
 
 ### 4.4 Email read ("what did Priya send about the lease?")
 1. `[T]` turn. The model calls `gmail_draft.search` (READ, `returns_untrusted=True`).
-2. `ToolOutput.data` holds ids, from and date (structured). `ToolOutput.untrusted` holds subject and body, with HTML and hidden text stripped and lengths capped.
-3. `dispatch` sees the untrusted output:
-   - Bodies longer than 500 chars go to `quarantine.extract(EmailDigest)`.
-   - Short fields go straight to `[D]`.
+2. `ToolOutput.data` holds only system-generated fields: message id, thread id, internal date and label ids. Everything the sender controls goes in `ToolOutput.untrusted`, with HTML and hidden text stripped. That includes the `From` display name **and** address (both spoofable), the subject and the body.
+3. `dispatch` routes the untrusted output under the ADR-0010 rule (Proposed, Q7):
+   - **Every email body**, whatever its length, goes to `quarantine.extract(EmailDigest)`.
+   - Short header fields (`from`, `subject`) are validated against the deterministic `EmailHeaderFields` schema (see §5 for what that does), then rendered as `[D]`.
    - `taint=True` for the rest of the turn and for the next 3 turns (window in policy table).
 4. The model sees only `[D]` blocks. If injected text makes it propose `calendar.create` or `gmail_draft.create`, the call is WRITE_EXTERNAL and needs approval; a tainted WRITE_INTERNAL also needs approval. The approval card shows the exact payload, so the user sees the attack (UAT 8).
 
@@ -302,7 +302,12 @@ A crash between steps 1 and 6 re-runs the turn from the persisted update. Tool e
 
 - **Types carry the lane.** `lanes.data.UntrustedText` is a frozen wrapper. `str(x)` raises, so the only way out is `render_data_block(x)`, which wraps the text in a nonce-delimited, escaped block with a "this is data, not instructions" header. `orchestrator.context` accepts `TrustedText | DataBlock` only. A test enforces this, and it is INV-6.
 - **Source classification is a table**, unit-tested in `ingest/classify.py`. User text, captions and voice notes are `[T]`. Forwarded messages, documents, email, calendar descriptions, Notion and Drive content, and untrusted memory hits are untrusted.
-- **Quarantine is only called for long untrusted text** (above 500 chars, or documents). Short untrusted fields skip the LLM but still become `[D]` and set taint (deviation, ADR-0010).
+- **Routing rule (ADR-0010, Proposed, Q7), one rule everywhere.**
+  - **Bodies always go through the quarantine LLM**, regardless of length. Bodies are: email bodies, documents and Recorder `.txt` files, Notion/Drive page content, forwarded messages, and calendar descriptions.
+  - **Short fields** (each one ≤ 500 chars after capping) skip the LLM. Short fields are: email from/subject, event title/location/attendee names, page/file titles, and untrusted memory hits (already quarantine output).
+  - Short fields are **schema-validated deterministically** instead. Each source has a frozen Pydantic model with `extra=forbid` and per-field `max_length`. Each value is NFKC-normalised. Control, zero-width and bidi-override chars are stripped. Any occurrence of the DataBlock delimiter or nonce is rejected. A field that fails validation is replaced with `"[unrenderable field]"` and logged.
+  - INV-6's "schema-validated" means one of two things: the output of `Quarantine.extract` (an LLM call validated against a schema), or one of these deterministic field schemas. A test asserts that no other constructor of `DataBlock` exists.
+  - Taint is set either way.
 - **Taint is a TurnContext flag** and is an input to `policy.decide`. It is set on any `[D]` entering the turn and lasts for a policy-table window (default: the turn plus 3 turns). It is cleared by `/clear` or by time.
 
 ## 6. AGE vs plain Postgres (ADR-0001)
@@ -362,57 +367,63 @@ Ownership notes:
 - The quarantine/taint core (old P4.1+P4.2) moves earlier to **P3.0**, because Gmail read (P3.6) and Policy (P3.1) depend on it. P4.1 becomes the red-team expansion of it.
 - P3.3 builds the job runner. P5.1 adds proactive jobs on top of it.
 
-| ID | Title | Agent | Deps | Owns (globs) | Notes |
-|---|---|---|---|---|---|
-| P0.1–P0.3, P0.6 | Audit, coupling, envcheck | repo-auditor/devops | – | docs/pivot/reports/** | done |
-| P0.4/P0.5 | Target design + task table | architect | P0.3 | docs/pivot/reports/TARGET_DESIGN.md, docs/decisions/** | done (this file) |
-| P1.0 | Delete dead weight (M0) | backend | – | mobile/**, src/perception/**, src/personality/models/**, infra/nginx/**, infra/scripts/** (+O: pyproject arq, compose vllm, .env.example VLLM_*) | pure deletion |
-| P1.1 | CI on pivot: ruff/mypy/pytest + pgvector svc + red-team job + secret scan | devops | – | .github/** | |
-| P1.2a | Postgres image AGE→pgvector | devops | – | infra/docker/postgres/** (+O compose) | recreate dev volume |
-| P1.2b | Alembic baseline: personality tables revision + upgrade==ORM test | backend | P1.2a | migrations/**, tests/integration/test_migrations.py | |
-| P1.2c | Pivot schema: event/memory_chunk/job/llm_audit/system_flag/pending_action/inbound_update; provenance cols; append-only triggers; db/crypto.py | backend+memory | P1.2b | migrations/**, src/memory/schemas/**, src/db/**, tests/integration/test_schema_*.py, tests/eval/invariants/test_inv3*, test_inv5*→test_r7* | PROT |
-| P1.3a | Redis out (M5) | memory | P1.2c | src/memory/manager.py, src/db/redis.py, src/orchestrator/graph.py, src/api/{main,health}.py, src/api/routes/memory.py, tests/integration/test_warm_context.py, tests/integration/test_manager.py, tests/unit/{test_health,test_graph}.py, tests/conftest.py, tests/eval/locomo/harness.py, tests/eval/invariants/test_inv4* | PROT, cf |
-| P1.3b | pgvector MemoryStore episodic + Qdrant out (M6) | memory | P1.3a | src/memory/** (excl. extractor.py), src/db/qdrant.py, tests/integration/test_manager.py, tests/integration/test_pgvector_store.py, tests/conftest.py, tests/eval/locomo/** | PROT, cf |
-| P1.4a | `src/net` egress client + R13 test | security | P1.1 | src/net/**, tests/unit/net/** | parallel with P1.2*/P1.3* |
-| P1.4b | `src/llm` guard/adapter/pricing/FakeLLM (R4, R5) | backend | P1.4a, P1.2c | src/llm/**, src/security/{pii_detector,kill_switch,audit_log}.py, tests/unit/llm/**, tests/fakes/** | |
-| P1.4c | Delete execute_external + intent-builder tools; INV-1 rewrite; INV-2 delete (M9) | security | P1.4b | src/security/**, src/tools/integrations/{calendar,gmail,drive}.py, tests/unit/{test_scrubber_gemini,test_entity_substitution,test_kill_switch,test_gmail_drive_reminders,test_tool_discovery}.py, tests/adversarial/test_scrubber.py, tests/eval/invariants/test_inv1*, test_inv2* | PROT |
-| P1.5 | Module settings pattern, .env.example, scrubbing log filter, INV-7 test | backend | P1.4b | config/**, src/core/**, tests/unit/core/**, tests/eval/invariants/test_inv7* (+O .env.example) | PROT |
-| P2.1a | Telegram Gateway (long poll, allowlist, persisted offset/updates, rate limit, chunk/escape, no previews) | bot | P1.4a, P1.2c | src/gateway/**, tests/unit/gateway/**, tests/integration/gateway/** | R1–R3 |
-| P2.1b | App entrypoint (one process, 3 loops) + delete src/api + FastAPI/JWT deps | bot | P2.1a, P1.3b | src/app/**, src/api/**, tests/unit/{test_auth,test_chat,test_ws,test_health}.py (+O deps) | |
-| P2.2 | Ingest + Event/Transcript contracts; retire SessionBundle/DiarizedTranscript; extractor retyped | bot | P2.1a, P1.4b | src/ingest/**, src/contracts/{event,transcript,session_bundle,diarized_transcript,__init__}.py, src/memory/extractor.py, tests/unit/ingest/**, tests/unit/test_contracts.py, tests/fixtures/** | |
-| P2.3 | Embedder: batch/async Qwen3 local + API fallback in llm; measure on arm64 | memory | P1.3b, P1.4b | src/memory/embedder.py, src/llm/embeddings_api.py, tests/unit/test_embedder*.py | ARM latency needs H6 (or QEMU estimate, flagged) |
-| P2.4 | Retrieval rerank + bi-temporal as_of + untrusted filters; LoCoMo re-baseline + provisional-gate ADR | memory | P2.3 | src/memory/{store,retriever}.py, tests/integration/test_retrieval*.py, tests/eval/locomo/** | PROT |
-| P2.5a | Orchestrator plain tool loop + context + exposure (≤12) + interim DenyAllWritesPolicy | orchestrator(backend) | P1.4b, P1.3b | src/orchestrator/{loop,context,exposure,dispatch}.py, tests/unit/orchestrator/** | |
-| P2.5b | Delete Approver, LangGraph, ToolIntent/ToolResult; Tool protocol v2 for tasks/reminders | backend | P2.5a, P1.4c | src/orchestrator/{graph,approver,state,context_builder}.py, src/contracts/tool_intent.py, src/tools/{base,registry}.py, src/tools/integrations/{tasks,reminders}.py, tests/unit/{test_approver,test_risk_gating,test_graph}.py, tests/adversarial/test_approver_injection_selfcheck.py, tests/eval/injection/red_team.py, tests/conftest.py | PROT, cf. Red team returns in P4.7 |
-| P2.6 | Character card loader + R9 guard (marker + not-placeholder CI check) | personality | P1.5 | src/personality/agent_character.py, tests/unit/test_r9_character_card.py (+O .claude/hooks/protect-files.sh) | card text = H1 |
-| P3.0 | Lanes core: UntrustedText/DataBlock, Quarantine.extract, taint in TurnContext, INV-6 | security | P2.5b, P2.2 | src/lanes/**, tests/unit/lanes/**, tests/eval/invariants/test_inv6* | PROT |
-| P3.1 | Policy engine (table-driven, ≥95% cov) + wire into dispatch; INV-5 | security | P3.0 | src/policy/**, src/orchestrator/dispatch.py, tests/unit/policy/**, tests/eval/invariants/test_inv5_policy* | PROT |
-| P3.2 | Approvals: HMAC token, expiry, single-use, user-only, TOTP, cards | security+bot | P3.1 | src/approvals/**, src/gateway/callbacks.py, tests/unit/approvals/** | |
-| P3.3 | Scheduler job runner + reminders/tasks persisted + IST resolution + catch-up | backend | P2.5b, P2.1b | src/scheduler/{jobs,runner}.py, src/core/timeparse.py, src/tools/integrations/{reminders,tasks}.py, tests/unit/scheduler/** | fake clock |
-| P3.4 | Google OAuth one-time loopback flow, encrypted token store, scope-lint | tools | P1.4a | src/integrations/google/auth.py, scripts/google_oauth.py, docs/runbooks/google_oauth.md, tests/unit/integrations/google/test_auth*.py | H4 for live |
-| P3.5 | Calendar tool (list/create/update, idempotent ids, preview) | tools | P3.4, P3.2 | src/integrations/google/calendar_api.py, src/tools/integrations/calendar.py, tests/**/calendar* | recorded fixtures |
-| P3.6 | Gmail tool: search/read (untrusted) + draft create only; send-path denylist; R6 test | tools+security | P3.4, P3.0 | src/integrations/google/gmail_api.py, src/tools/integrations/gmail_draft.py, tests/**/gmail* | ADR-0007 |
-| P3.7 | Notion tool: search/read (untrusted)/append | tools | P3.0, P1.4a | src/integrations/notion/**, src/tools/integrations/notion.py, tests/**/notion* | H5 for live |
-| P3.8 | Drive read-only tool | tools | P3.4, P3.0 | src/integrations/google/drive_api.py, src/tools/integrations/drive_read.py, tests/**/drive* | scope per Q4 |
-| P3.9 | Commitment ledger wired to chat (candidate → confirm) | memory | P3.2, P2.4 | src/memory/commitments.py, src/tools/integrations/memory_recall.py, tests/eval/fixtures/commitments/** | |
-| P4.1 | Quarantine red-team: email/invite/doc/recorded speech categories | security | P3.6, P3.7 | tests/adversarial/lanes/** | |
-| P4.3 | Exfil: markdown image/URL stripping, previews off, reply URL allowlist | security | P2.1a | src/gateway/render.py, tests/adversarial/exfil/** | |
-| P4.4 | Canary strings + outbound blocking + alert | security | P1.4b, P2.1a | src/llm/scrub.py, src/core/canary.py, tests/adversarial/canary/** | |
-| P4.5 | Container egress: compose networks (pg internal-only), host nftables outbound 443/53/123 only; doc honest limit | devops | P2.1b | deploy/network/**, (+O compose) | ADR-0004 |
-| P4.6 | Memory poisoning: untrusted never auto-promoted; review queue | memory+security | P2.4, P3.0 | src/memory/review.py, tests/adversarial/memory/** | |
-| P4.7 | Red-team corpus ≥100 cases, 12 categories, compromised-FakeLLM, CI | eval-qa | P4.1–P4.6 | tests/adversarial/redteam/**, tests/eval/injection/** | PROT |
-| P4.8 | Security review pass over diff since baseline | security+reviewer | P4.7 | docs/pivot/reports/SECURITY_REVIEW.md | |
-| P5.1 | Proactive jobs: morning brief, check-in, nudges, weekly review; budget ≤6/day, quiet hours, snooze | backend | P3.3, P3.9 | src/scheduler/{budget,proactive}.py, tests/unit/scheduler/test_budget*.py | ADR-0011 |
-| P5.2 | Trait model + "forget that about me" veto | personality | P2.4 | src/personality/user_profile.py, tests/**/test_user_profile*.py | |
-| P5.3 | Friction/stance live with real model; re-run personality evals | personality+eval-qa | P5.4 | src/personality/agent_character.py, tests/eval/personality/** | PROT, H3 |
-| P5.4 | Bake-off harness (evals, tool-calling, injection, transcription incl. ogg, latency/cost) | eval-qa | P4.7 | tests/eval/bakeoff/**, docs/pivot/reports/BAKEOFF.md | H3 |
-| P5.5 | Model ADR + pricing table + spend cap + LoCoMo gate | architect | P5.4 | docs/decisions/**, src/llm/pricing.py (+O quality/thresholds.yaml) | |
-| P6.1–P6.8 | Unchanged from SDLC (Dockerfile arm64 with HF weights baked, deploy/, backups+restore drill, observability, staging soak, UAT, PRR, runbooks) | devops/eval-qa/reviewer | W5 | Dockerfile, deploy/**, docs/runbooks/**, tests/e2e/** | H6–H9 |
-| P7.1–P7.5 | Unchanged (docs, CLAUDE/MEMORY consolidation incl. INV table §7, supersede banners, final PR, post-mortem) | docs/architect | W6 | docs/**, README* | H10 |
+Additional ownership rules:
+- **Shared-file sequencing.** These files have more than one owning task. The tasks are ordered by deps, so no two of them share a batch. `config/settings.py` goes P1.3a → P1.3b → P1.4c → P1.5. `tests/unit/test_contracts.py` goes P2.2 → P2.4 → P5.1 → P5.2.
+- **P1.4b does not touch `src/security/**`.** P1.4b *copies* the `pii_detector` patterns and the audit and kill-switch logic into `src/llm/{scrub,guard}.py`, Postgres-backed. `scrubber.py` and its tests keep importing the untouched `src/security` modules. P1.4c then deletes `src/security/**` as a unit. The duplication lasts exactly one PR, and no re-export shim is needed. The `src/llm` settings live in `src/llm/settings.py` (module-local, prefix `LLM_`, same env names as today), so P1.4b does not edit `config/settings.py`.
+
+| ID | Title | Agent | Deps | Owns (globs) | Acceptance (SDLC + additions) | Notes |
+|---|---|---|---|---|---|---|
+| P0.1–P0.3, P0.6 | Audit, coupling, envcheck | repo-auditor/devops | – | docs/pivot/reports/** | per SDLC | done |
+| P0.4/P0.5 | Target design + task table | architect | P0.3 | docs/pivot/reports/TARGET_DESIGN.md, docs/decisions/** | ADRs for every deviation; ownership globs disjoint per batch | this file |
+| P1.0 | Delete dead weight (M0) | backend | – | mobile/**, src/perception/**, src/personality/models/**, infra/nginx/**, infra/scripts/** (+O: pyproject arq, compose vllm, .env.example VLLM_*) | dirs gone; `arq` gone from lock; suite green | pure deletion |
+| P1.1 | CI on pivot: ruff/mypy/pytest + pgvector svc + red-team job + secret scan; **fix the 3 existing `ruff check .` errors** | devops | – | .github/**, scripts/envcheck.py, tests/unit/test_gmail_drive_reminders.py (import order only) | CI green on empty change; `uv run ruff check .` = 0 errors (today 3: envcheck.py:100,116 RUF059; test_gmail_drive_reminders.py:10 I001) | test file is deleted later by P1.4c |
+| P1.2a | Postgres image AGE→pgvector | devops | – | infra/docker/postgres/** (+O compose) | `CREATE EXTENSION vector` works; image runs on arm64 (buildx) | recreate dev volume |
+| P1.2b | Alembic baseline: personality tables revision + upgrade==ORM test | backend | P1.2a | migrations/**, tests/integration/test_migrations.py | migrations apply from empty; autogenerate diff vs ORM empty | |
+| P1.2c | Pivot schema: event/memory_chunk/job/llm_audit/system_flag/pending_action/inbound_update; provenance cols; append-only triggers; db/crypto.py | backend+memory | P1.2b | migrations/**, src/memory/schemas/**, src/db/postgres.py, src/db/crypto.py, tests/integration/test_schema_*.py, tests/eval/invariants/test_inv3*, test_inv5*→test_r7* | INV-3 test incl. DB trigger; provenance_coverage = 1.0; downgrade round-trip | PROT |
+| P1.3a | Redis out (M5) | memory | P1.2c | src/memory/manager.py, src/db/redis.py, src/orchestrator/graph.py, src/api/{main,health}.py, src/api/routes/memory.py, config/settings.py (redis_* only), tests/integration/{test_warm_context,test_manager}.py, tests/unit/{test_health,test_graph}.py, tests/conftest.py, tests/eval/locomo/harness.py, tests/eval/invariants/test_inv4* | no `redis` import anywhere; suite green; LoCoMo harness still runs | PROT, cf |
+| P1.3b | pgvector MemoryStore episodic + Qdrant out (M6) | memory | P1.3a | src/memory/** (excl. extractor.py, embedder.py), src/db/qdrant.py, **src/api/{main,health}.py, src/api/routes/memory.py, config/settings.py (qdrant_* only), tests/unit/test_health.py**, tests/integration/{test_manager,test_pgvector_store}.py, tests/conftest.py, tests/eval/locomo/** | no `qdrant_client` import (import-lint); suite green; **LoCoMo harness still runs (score may be low; recorded, not gated)** | PROT, cf |
+| P1.4a | `src/net` egress client + R13 test | security | P1.1 | src/net/**, tests/unit/net/** | R13 test: non-allowlisted host raises; transport import scan passes (scrubber.py temporarily allow-listed) | parallel with P1.2*/P1.3* |
+| P1.4b | `src/llm` guard/adapter/pricing/FakeLLM (R4, R5) | backend | P1.4a, P1.2c | src/llm/**, tests/unit/llm/**, **tests/unit/test_llm_client.py** (moved to tests/unit/llm/), tests/fakes/** | R4, R5 tests (kill switch/spend cap/scrub hit → zero transport calls; audit row per call); **import-lint test: no module outside src/llm imports an LLM SDK** | copies, does not edit, src/security (see rule above) |
+| P1.4c | Delete execute_external + src/security/** + intent-builder tools; INV-1 rewrite; INV-2 delete (M9) | security | P1.4b, P1.3b | src/security/**, src/tools/integrations/{calendar,gmail,drive}.py, config/settings.py (gemini_*/cloud_egress_* only), tests/unit/{test_scrubber_gemini,test_entity_substitution,test_kill_switch,test_gmail_drive_reminders,test_tool_discovery}.py, tests/adversarial/test_scrubber.py (retarget → tests/adversarial/llm/test_scrub.py), tests/eval/invariants/test_inv1*, test_inv2* | new INV-1 test green; `src/security` gone; no `send` anywhere in gmail code; 50 PII/secret adversarial cases retargeted at llm.scrub | PROT |
+| P1.5 | Module settings pattern, .env.example, scrubbing log filter, INV-7 test | backend | P1.4c | config/**, src/core/**, tests/unit/core/**, tests/eval/invariants/test_inv7* (+O .env.example) | R12 test; INV-7 log-scrubber test | PROT |
+| P2.1a | Telegram Gateway (long poll, allowlist, persisted offset/updates, rate limit, chunk/escape, no previews) | bot | P1.4a, P1.2c | src/gateway/**, tests/unit/gateway/**, tests/integration/gateway/** | R1, R2, R3 tests; replay-after-restart test (no lost/duplicate updates) | |
+| P2.1b | App entrypoint (one process, 3 loops) + healthcheck CLI + delete src/api + FastAPI/JWT deps | bot | P2.1a, P1.5 | src/app/**, src/api/**, tests/unit/{test_auth,test_chat,test_ws,test_health}.py (+O deps) | `python -m src.app` starts against fakes; healthcheck exits non-zero on stale heartbeat; no fastapi import | |
+| P2.2 | Ingest + Event/Transcript contracts; retire SessionBundle/DiarizedTranscript; extractor retyped | bot | P2.1a, P1.4b | src/ingest/**, src/contracts/{event,transcript,session_bundle,diarized_transcript,__init__}.py, src/memory/extractor.py, tests/unit/ingest/**, tests/unit/test_contracts.py, tests/fixtures/{event,transcript,session_bundle,diarized_transcript}* | fixtures for text/voice/recorder; oversized/hostile file tests; golden-contract tests | |
+| P2.3 | Embedder: batch/async Qwen3 local + API fallback in llm; measure on arm64 | memory | P1.3b, P1.4b | src/memory/embedder.py, src/llm/embeddings_api.py, tests/unit/test_embedder*.py | embedding dim/migration test; latency measured on target VM class (or flagged "not measured") | ADR-0013 flip criterion; H6 |
+| P2.4 | Retrieval rerank + bi-temporal as_of + untrusted filters; LoCoMo re-baseline + provisional-gate ADR | memory | P2.3, P2.2 | src/memory/{store,retriever}.py, **src/contracts/memory_query.py**, tests/fixtures/memory_*.json, tests/unit/test_contracts.py, tests/integration/test_retrieval*.py, tests/eval/locomo/** | LoCoMo re-baseline recorded in reports/; provisional gate ADR | PROT |
+| P2.5a | Orchestrator plain tool loop + context + exposure (≤12) + interim DenyAllWritesPolicy | backend | P1.4b, P1.3b | src/orchestrator/{loop,context,exposure,dispatch}.py, **src/personality/prompt_assembler.py**, tests/unit/orchestrator/**, tests/unit/test_prompt_assembler.py | transcripts in tests; budget exceeded → graceful message; tool exposure ≤ 12 asserted | |
+| P2.5b | Delete Approver, LangGraph, ToolIntent/ToolResult; Tool protocol v2 for tasks/reminders | backend | P2.5a, P1.4c | src/orchestrator/{graph,approver,state,context_builder}.py, src/contracts/tool_intent.py, src/tools/{base,registry}.py, src/tools/integrations/{tasks,reminders}.py, tests/unit/{test_approver,test_risk_gating,test_graph}.py, tests/adversarial/test_approver_injection_selfcheck.py, tests/eval/injection/red_team.py, tests/conftest.py | no `langgraph`/`Approver`/`ToolIntent` import; suite green | PROT, cf; red team returns in P4.7 |
+| P2.6 | Character card loader + R9 guard | personality | P1.5 | src/personality/agent_character.py, tests/unit/test_r9_character_card.py (+O .claude/hooks/protect-files.sh) | R9 test (marker + not-placeholder + sha256) | card text = H1 |
+| P3.0 | Lanes core: UntrustedText/DataBlock, Quarantine.extract, deterministic field schemas, taint in TurnContext, INV-6 | security | P2.5b, P2.2 | src/lanes/**, tests/unit/lanes/**, tests/eval/invariants/test_inv6* | INV-6 test (DataBlock only built by quarantine or field schemas); taint tests | PROT; ADR-0010/Q7 |
+| P3.1 | Policy engine + wire into dispatch; INV-5 | security | P3.0 | src/policy/**, src/orchestrator/dispatch.py, tests/unit/policy/**, tests/eval/invariants/test_inv5_policy* | INV-5; ≥ 95% coverage; table-driven tests | PROT |
+| P3.2 | Approvals: HMAC token, expiry, single-use, user-only, TOTP, cards | security+bot | P3.1 | src/approvals/**, src/gateway/callbacks.py, tests/unit/approvals/** | forgery/replay/expiry tests; callback from other user ignored; token ≤ 64 bytes | |
+| P3.3 | Scheduler job runner + reminders/tasks persisted + IST resolution + catch-up | backend | P2.5b, P2.1b | src/scheduler/{jobs,runner}.py, src/core/timeparse.py, src/tools/integrations/{reminders,tasks}.py, tests/unit/scheduler/** | R11 tests with fake clock; catch-up after downtime; no apscheduler import | |
+| P3.4 | Google OAuth one-time loopback flow, encrypted token store, scope-lint | tools | P1.4a, P1.2c | src/integrations/google/auth.py, scripts/google_oauth.py, docs/runbooks/google_oauth.md, tests/unit/integrations/google/test_auth*.py | R15 documented; scope-lint test (exact scope set, no gmail.send) | H4 live |
+| P3.5 | Calendar tool | tools | P3.4, P3.2 | src/integrations/google/calendar_api.py, src/tools/integrations/calendar.py, tests/**/calendar* | recorded tests; confirmation shows absolute datetimes; idempotent re-send | sandbox UAT manual |
+| P3.6 | Gmail tool: search/read (untrusted) + draft create only; send-path denylist | tools+security | P3.4, P3.0 | src/integrations/google/gmail_api.py, src/tools/integrations/gmail_draft.py, tests/**/gmail* | R6 test: no send scope, no send method, net denies send paths; HTML/hidden-text stripping; from/subject in `untrusted` | ADR-0007/Q2 |
+| P3.7 | Notion tool: search/read (untrusted)/append | tools | P3.0, P1.4a | src/integrations/notion/**, src/tools/integrations/notion.py, tests/**/notion* | recorded tests; chunking/retries/size limits | H5 live |
+| P3.8 | Drive read-only tool | tools | P3.4, P3.0 | src/integrations/google/drive_api.py, src/tools/integrations/drive_read.py, tests/**/drive* | scope-lint | Q4 |
+| P3.9 | Commitment ledger (candidate → confirm) | memory | P3.2, P2.4 | src/memory/commitments.py, src/tools/integrations/memory_recall.py, tests/eval/fixtures/commitments/** | eval fixtures | PROT (fixtures dir) |
+| P4.1 | Quarantine red-team: email/invite/doc/recorded speech | security | P3.6, P3.7 | tests/adversarial/lanes/** | red-team categories email/invite/doc/recorded speech, incl. short-field payloads | |
+| P4.3 | Exfil: markdown image/URL stripping, previews off, reply URL allowlist | security | P2.1a | src/gateway/render.py, tests/adversarial/exfil/** | markdown_image_exfil, link_preview_exfil | |
+| P4.4 | Canary strings + outbound blocking + alert | security | P1.4b, P2.1a | src/llm/scrub.py, src/core/canary.py, tests/adversarial/canary/** | canary_exfil | |
+| P4.5 | Container egress rules; honest-limit doc | devops+security | P2.1b | deploy/network/** (+O compose) | R13 (app-level test + container rules verified from inside container); registry has no generic fetch | ADR-0004/Q3 |
+| P4.6 | Memory poisoning: untrusted never auto-promoted; review queue | memory+security | P2.4, P3.0 | src/memory/review.py, tests/adversarial/memory/** | untrusted_auto_promotion = 0 | |
+| P4.7 | Red-team corpus ≥100 cases, 12 categories, compromised-FakeLLM, CI | eval-qa | P4.1–P4.6 | tests/adversarial/redteam/**, tests/eval/injection/** | thresholds.security all pass | PROT |
+| P4.8 | Security review pass | security+reviewer | P4.7 | docs/pivot/reports/SECURITY_REVIEW.md | no HIGH open | |
+| P5.1 | Proactive jobs + interruption budget | backend | P3.3, P3.9 | src/scheduler/{budget,proactive}.py, **src/contracts/proactive_candidate.py**, tests/unit/scheduler/test_budget*.py, tests/unit/test_contracts.py | R11 tests, fake clock | ADR-0011/Q5 |
+| P5.2 | Trait model + "forget that about me" veto | personality | P2.4, P5.1 | src/personality/user_profile.py, **src/contracts/user_profile_slice.py**, tests/**/test_user_profile*.py, tests/unit/test_contracts.py | confidence ≥ 0.6 gate test | |
+| P5.3 | Friction/stance live with real model; personality evals | personality+eval-qa | P5.4 | src/personality/agent_character.py, tests/eval/personality/** | thresholds.personality | PROT, H3 |
+| P5.4 | Bake-off harness (incl. ogg transcription) | eval-qa | P4.7 | tests/eval/bakeoff/**, docs/pivot/reports/BAKEOFF.md | reports/BAKEOFF.md; FakeLLM keeps pipeline green until H3 | H3 |
+| P5.5 | Model ADR + pricing + spend cap + LoCoMo gate | architect | P5.4 | docs/decisions/**, src/llm/pricing.py (+O quality/thresholds.yaml) | ADR merged; thresholds updated by PR | |
+| P6.1–P6.8 | Unchanged from SDLC | devops/eval-qa/reviewer | W5 | Dockerfile, deploy/**, docs/runbooks/**, tests/e2e/** | per SDLC W6 (arm64 build, R14 restore drill, ops thresholds, 72 h soak, UAT, PRR) | H6–H9 |
+| P7.1–P7.5 | Unchanged | docs/architect | W6 | docs/**, README* | per SDLC W7 | H10 |
+
+Every file under `src/` and `tests/` that exists today now has an owner, either in a task above or as a KEEP that no task touches. The untouched KEEPs are `src/memory/graph.py`, `src/db/postgres.py` (P1.2c only), `src/personality/user_profile.py` until P5.2, and the integration tests `test_supersession`, `test_contradiction`, `test_stance_log` and `test_user_profile`.
 
 **Parallel batches** (cap 3, disjoint owners):
-- W1: {P1.0, P1.1, P1.2a}, then {P1.2b, P1.4a}, then P1.2c, then {P1.3a, P1.4b}, then {P1.3b, P1.4c}, then P1.5.
-- W2: {P2.1a, P2.3, P2.5a}, then {P2.1b, P2.2, P2.6}, then {P2.4, P2.5b}.
+- W1: {P1.0, P1.1, P1.2a}, then {P1.2b, P1.4a}, then P1.2c, then {P1.3a, P1.4b}, then P1.3b, then P1.4c, then P1.5. P1.3b and P1.4c are serialized because both edit `config/settings.py`.
+- W2: {P2.1a, P2.3, P2.5a}, then {P2.1b, P2.2, P2.6}, then {P2.4, P2.5b}. P2.4 and P2.2 share `test_contracts.py`, so P2.4 runs after P2.2.
 - W3: {P3.0, P3.3, P3.4}, then {P3.1, P3.7}, then P3.2, then {P3.5, P3.6, P3.8}, then P3.9.
 
 ## 10. Open questions needing human decisions
@@ -424,4 +435,5 @@ Ownership notes:
 | Q3 | Egress: hostnames are allowlisted at app level, with only coarse port rules at network level (ADR-0004). Is that acceptable vs. adding a squid sidecar? | app-level + nftables | P4.5 |
 | Q4 | Drive scope: `drive.readonly` (restricted, whole Drive) vs. `drive.file` (only files the app created or opened, so users would need a picker UI we don't have). | `drive.readonly` | P3.8 |
 | Q5 | Should reminders bypass quiet hours (ADR-0011)? | yes | P5.1 |
+| Q7 | Quarantine routing (ADR-0010, Proposed). Bodies always go to the quarantine LLM; short fields get deterministic schema validation and become a DataBlock, with no LLM call. Accept, or quarantine every untrusted field (the Brief, read literally: more LLM calls per calendar/email list)? | short-field bypass, as in §5 | P3.0, P3.5–P3.8, P4.1 |
 | Q6 | Fix HUMAN_TODO H1: the card path should be `personality/character_card.md` (ADR-0015). | orchestrator edits H1 | P2.6 |

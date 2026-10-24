@@ -83,7 +83,7 @@ Verdict key: KEEP / MODIFY / REMOVE / CREATE. Risk: L / M / H.
 | `src/memory/schemas/{base,graph}.py` | Declarative base; `graph_node`, `graph_edge` | KEEP | bi-temporal, provenance CHECKs | `schemas/graph.py:48-65` | L | P1.2 |
 | `src/memory/schemas/{commitment,decision,person}.py` | ORM | KEEP | R7; `commitment` needed for reminders | | L | P1.2 |
 | `src/memory/schemas/session.py` | persisted voice-session | MODIFY | Becomes `event` table (lane, untrusted flag, source) | `session.py:4-9` | M | P1.2 |
-| `src/orchestrator/graph.py` (319) | LangGraph route/retrieve/think/act/respond | MODIFY | Keep (langgraph is already used and tested via `tests/unit/test_graph.py`, `test_risk_gating.py`); replace `Approver` with policy + approvals, add lane/taint to `AgentState`, drop `get_warm_context` | `graph.py:55 (MemoryManager)`, `:117 (get_warm_context)`, imports `Approver`, `VLLMClient` | H | policy, lanes |
+| `src/orchestrator/graph.py` (319) | LangGraph route/retrieve/think/act/respond | MODIFY (**superseded by ADR-0006: replaced by plain async loop**) | Keep (langgraph is already used and tested via `tests/unit/test_graph.py`, `test_risk_gating.py`); replace `Approver` with policy + approvals, add lane/taint to `AgentState`, drop `get_warm_context` | `graph.py:55 (MemoryManager)`, `:117 (get_warm_context)`, imports `Approver`, `VLLMClient` | H | policy, lanes |
 | `src/orchestrator/state.py` (39) | `AgentState` | MODIFY | add `lane`, `tainted` | imports contracts | L | policy |
 | `src/orchestrator/context_builder.py` (94) | assemble personality prompt | KEEP | | imports personality only | L | none |
 | `src/orchestrator/approver.py` (251) | heuristic markers + LLM judge, fail-closed | REMOVE | Brief §2.4: replaced by deterministic policy + user approval buttons. Its destructive-confirmation concept moves to policy. | importers: `orchestrator/graph.py`, `tests/unit/test_approver.py`, `test_risk_gating.py:23`, `tests/adversarial/test_approver_injection_selfcheck.py:40`, `tests/eval/injection/red_team.py:43` | M | policy CREATE first |
@@ -147,8 +147,8 @@ Verdict key: KEEP / MODIFY / REMOVE / CREATE. Risk: L / M / H.
 | `sentence-transformers` | MOVE to optional extra | sole importer `src/memory/embedder.py` (lazy) |
 | `openai` | KEEP | `src/llm/client.py` |
 | `httpx` | KEEP | scrubber now; Google/Notion/Telegram later; also dev dep for tests |
-| `apscheduler` | KEEP-pending | reminders; if used, needs SQLAlchemy jobstore (sync driver) or replace by Postgres jobs per Brief §7 |
-| `langgraph` | KEEP | orchestrator; `langchain_core` should be declared explicitly |
+| `apscheduler` | **SUPERSEDED by ADR-0008 (REMOVE)**; was KEEP-pending | reminders; if used, needs SQLAlchemy jobstore (sync driver) or replace by Postgres jobs per Brief §7 |
+| `langgraph` | **SUPERSEDED by ADR-0006 (REMOVE)**; was KEEP | orchestrator; `langchain_core` should be declared explicitly |
 | `sqlalchemy[asyncio]`, `asyncpg`, `alembic`, `pydantic`, `pydantic-settings` | KEEP | |
 | `pgvector`, a Telegram lib (aiogram/python-telegram-bot or raw httpx), Google API libs, `notion-client`, `cryptography`, `pyotp` | ADD | none declared |
 | `.pre-commit-config.yaml` mypy deps | MODIFY | lists redis, qdrant-client, fastapi, pyjwt, sentence-transformers |
