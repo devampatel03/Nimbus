@@ -76,11 +76,7 @@ _none_
 - P3.4, P3.6 blocked on H16 (Gmail scope, ADR-0007) - do not build the ADR default before the human answers.
 - H15: Docker daemon down; blocks P1.2b onward integration verification.
 - ADR-0010 Proposed (H18); blocks P3.0 lanes design.
-- **PR #1 BLOCKED after 2 review rounds** (73% -> 69%). Remaining, all doc fixes to TARGET_DESIGN §9 / HUMAN_TODO:
-  - HIGH: P2.5b deletes ToolIntent/ToolResult but test_contracts.py + src/contracts/__init__.py (owned P2.2/P2.4) still import them; add to P2.5b Owns, serialize test_contracts (P2.2 -> P2.4 -> P2.5b -> P5.1 -> P5.2), split {P2.4, P2.5b} batch.
-  - MED: unowned test_retriever.py, test_agent_character.py, fixtures tool_intent/tool_result/proactive_candidate/user_profile_slice.json; Q7 vs H18 default contradict (pick "quarantine all untrusted fields"); H1 unclosed paren.
-  - LOW: jwt_* settings owner in P2.1b; db/postgres.py owned by P1.2c; P3.9 PROT missing from H14 list.
-  - Not blocking W1 tasks P1.0/P1.1/P1.2a (their ownership is not in dispute).
+- PR #1: round 1 (73%) and round 2 (69%) fixed by orchestrator on user instruction ("Option 1"); awaiting reviewer round 3 sign-off.
 
 ## Notes
 - envcheck (W0 start): REQ tools all OK (git, gh authed as devampatel03, uv 0.8.17, python 3.14.3, docker 27.0.3). All optional env vars missing (Telegram, LLM, Google, Notion, healthcheck) -> tracked H2-H8; FakeLLM/fixtures until provided.
