@@ -40,7 +40,7 @@ class CryptoError(Exception):
 
 def _aesgcm_cls() -> Any:
     try:
-        from cryptography.hazmat.primitives.ciphers.aead import (  # type: ignore[import-not-found,unused-ignore]
+        from cryptography.hazmat.primitives.ciphers.aead import (
             AESGCM,
         )
     except ImportError as exc:  # pragma: no cover - environment problem
