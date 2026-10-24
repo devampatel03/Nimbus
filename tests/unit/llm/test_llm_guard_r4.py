@@ -26,7 +26,6 @@ from src.llm.types import (
 )
 from tests.fakes.llm import API_KEY, Env, RecordingTransport, build_env
 
-
 SK_SECRET = "sk-" + "abcdefghijklmnopqrstuvwxyz" + "123456"  # pragma: allowlist secret
 
 
