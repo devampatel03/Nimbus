@@ -52,15 +52,7 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      # TODO(P1.3): remove redis and qdrant service containers when the code moves to pgvector/Postgres jobs.
-      redis:
-        image: redis:7
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+      # TODO(P1.3b): remove the qdrant service container when the code moves to pgvector.
       qdrant:
         image: qdrant/qdrant:latest
         ports: ["6333:6333"]
@@ -70,7 +62,6 @@ jobs:
       POSTGRES_USER: nimbus
       POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
       POSTGRES_DB: nimbus
-      REDIS_HOST: localhost
       QDRANT_HOST: localhost
     steps:
       - uses: actions/checkout@v4
