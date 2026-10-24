@@ -6,8 +6,8 @@
 
 Not a frozen contract, not INV-4-constrained: this is an operator debug
 tool, not a Mode A turn, so it is fine for it to do the full
-Qdrant+Postgres round trip that `get_warm_context`/Mode A deliberately
-avoid.
+Qdrant+Postgres round trip that the (now-deleted) warm-context cache
+used to avoid.
 
 `user_id` defaults to the nil UUID: per AD-8, Nimbus is single-user and
 self-hosted, so one instance holds one user's data and there is no real
@@ -22,7 +22,7 @@ from uuid import UUID
 from fastapi import APIRouter, Query
 
 from src.contracts.memory_query import MemoryQuery, MemoryResult
-from src.db import postgres, qdrant, redis
+from src.db import postgres, qdrant
 from src.memory.manager import MemoryManager
 
 _NIL_USER_ID = UUID(int=0)
@@ -37,7 +37,5 @@ async def list_memories(
     user_id: UUID = Query(_NIL_USER_ID),
 ) -> list[MemoryResult]:
     async with postgres.get_session() as session:
-        manager = MemoryManager(
-            pg_session=session, qdrant=qdrant.qdrant_client, redis=redis.redis_client
-        )
+        manager = MemoryManager(pg_session=session, qdrant=qdrant.qdrant_client)
         return await manager.query(q, MemoryQuery(user_id=user_id, query_text=q, top_k=top_k))

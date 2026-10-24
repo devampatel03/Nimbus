@@ -22,7 +22,6 @@ def make_app() -> FastAPI:
 async def test_health_all_stores_ok():
     with (
         patch("src.api.health.postgres.check_health", new=AsyncMock(return_value=True)),
-        patch("src.api.health.redis.check_health", new=AsyncMock(return_value=True)),
         patch("src.api.health.qdrant.check_health", new=AsyncMock(return_value=True)),
     ):
         transport = ASGITransport(app=make_app())
@@ -33,7 +32,7 @@ async def test_health_all_stores_ok():
     body = response.json()
     assert body == {
         "status": "ok",
-        "stores": {"postgres": "ok", "redis": "ok", "qdrant": "ok"},
+        "stores": {"postgres": "ok", "qdrant": "ok"},
     }
 
 
@@ -41,8 +40,7 @@ async def test_health_all_stores_ok():
 async def test_health_one_store_down_reports_degraded():
     with (
         patch("src.api.health.postgres.check_health", new=AsyncMock(return_value=True)),
-        patch("src.api.health.redis.check_health", new=AsyncMock(return_value=False)),
-        patch("src.api.health.qdrant.check_health", new=AsyncMock(return_value=True)),
+        patch("src.api.health.qdrant.check_health", new=AsyncMock(return_value=False)),
     ):
         transport = ASGITransport(app=make_app())
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -51,4 +49,4 @@ async def test_health_one_store_down_reports_degraded():
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "degraded"
-    assert body["stores"]["redis"] == "unavailable"
+    assert body["stores"]["qdrant"] == "unavailable"

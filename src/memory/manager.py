@@ -2,7 +2,7 @@
 # Private, unpublished, proprietary. Do not distribute.
 
 """Unified memory manager (docs/TECHNICAL_ARCHITECTURE.md section 6, MEM-1):
-working (Redis), episodic (Qdrant) and semantic (Postgres graph) tiers
+episodic (Qdrant) and semantic (Postgres graph) tiers
 behind one interface.
 
 Scope notes (T1.6/T1.7):
@@ -12,7 +12,7 @@ Scope notes (T1.6/T1.7):
   (Qwen/Qwen3-Embedding-0.6B). `DeterministicStubEmbedder` below remains
   for tests to inject explicitly via the `Embedder` protocol, so unit/
   integration tests stay fast and hermetic (no model download/load) --
-  see `tests/integration/test_manager.py`/`test_warm_context.py`, which
+  see `tests/integration/test_manager.py`, which
   now pass `embedder=DeterministicStubEmbedder()` explicitly. `write_episodic`/
   `query` run `Embedder.embed()` via `asyncio.to_thread` -- a real CPU model's
   forward pass is slow enough (seconds per call under load) that calling it
@@ -29,8 +29,6 @@ Scope notes (T1.6/T1.7):
 - No per-user filter at the Qdrant query layer: Nimbus is a single-user,
   self-hosted deployment (PRD section 1), so one instance holds one user's
   data and collection-wide search is correct, not an isolation gap.
-- `SessionState` here is an internal placeholder for whatever the
-  orchestrator eventually passes post-turn, not a frozen contract.
 """
 
 import asyncio
@@ -41,9 +39,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from qdrant_client import AsyncQdrantClient, models
-from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -56,8 +53,6 @@ from src.memory.schemas.graph import GraphEdge, GraphNode
 
 EPISODIC_COLLECTION = "episodic_memory"
 EMBED_DIM = DEFAULT_EMBED_DIM
-_WARM_KEY_PREFIX = "warm_context:"
-_DEFAULT_WARM_TTL_SECONDS = 300
 
 
 class Embedder(Protocol):
@@ -100,43 +95,20 @@ class SemanticFact(BaseModel):
     source_speaker: uuid.UUID | None = None
 
 
-class WarmContextSlice(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    session_id: uuid.UUID
-    results: list[MemoryResult]
-    computed_at: datetime
-
-
-class SessionState(BaseModel):
-    """Internal input to `refresh_warm_context` — not a frozen contract."""
-
-    session_id: uuid.UUID
-    user_id: uuid.UUID
-    query_text: str
-    active_entities: list[str] = Field(default_factory=list)
-    present_speakers: list[uuid.UUID] = Field(default_factory=list)
-    top_k: int = 10
-
-
 class MemoryManager:
     def __init__(
         self,
         *,
         pg_session: AsyncSession,
         qdrant: AsyncQdrantClient,
-        redis: Redis,
         embedder: Embedder | None = None,
         weights: RetrievalWeights = DEFAULT_WEIGHTS,
-        warm_ttl_seconds: int = _DEFAULT_WARM_TTL_SECONDS,
     ) -> None:
         self._session = pg_session
         self._qdrant = qdrant
-        self._redis = redis
         self._embedder = embedder or Qwen3Embedder()
         self._graph_repo = GraphRepository(pg_session)
         self._weights = weights
-        self._warm_ttl_seconds = warm_ttl_seconds
 
     # -- episodic (Qdrant) --------------------------------------------
 
@@ -323,40 +295,3 @@ class MemoryManager:
                 )
             )
         return results
-
-    # -- warm context (Redis, Mode A) ------------------------------------
-
-    async def get_warm_context(
-        self, session_id: uuid.UUID, topic_embedding: Sequence[float] | None = None
-    ) -> WarmContextSlice | None:
-        """Return the precomputed warm-context slice for `session_id`, or
-        None on a cache miss. `topic_embedding` is accepted for interface
-        parity with a future multi-topic slice cache; today exactly one
-        slice is cached per session, so it is not yet used to select among
-        candidates.
-        """
-        raw = await self._redis.get(_WARM_KEY_PREFIX + str(session_id))
-        if raw is None:
-            return None
-        return WarmContextSlice.model_validate_json(raw)
-
-    async def refresh_warm_context(self, session_state: SessionState) -> WarmContextSlice:
-        query_context = MemoryQuery(
-            user_id=session_state.user_id,
-            query_text=session_state.query_text,
-            top_k=session_state.top_k,
-            active_entities=session_state.active_entities,
-            present_speakers=session_state.present_speakers,
-        )
-        results = await self.query(session_state.query_text, query_context)
-        warm_slice = WarmContextSlice(
-            session_id=session_state.session_id,
-            results=results,
-            computed_at=datetime.now(UTC),
-        )
-        await self._redis.set(
-            _WARM_KEY_PREFIX + str(session_state.session_id),
-            warm_slice.model_dump_json(),
-            ex=self._warm_ttl_seconds,
-        )
-        return warm_slice

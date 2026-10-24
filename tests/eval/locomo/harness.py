@@ -72,7 +72,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import httpx
 from qdrant_client import AsyncQdrantClient
-from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from config.settings import settings
@@ -173,14 +172,13 @@ async def run(max_samples: int | None = None, top_k: int = 5) -> dict[str, objec
 
     engine = create_async_engine(settings.postgres_dsn)
     qdrant = AsyncQdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
 
     totals: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
     try:
         await _reset_episodic_collection(qdrant)
         async with engine.connect() as conn:
             pg_session = AsyncSession(bind=conn, expire_on_commit=False)
-            manager = MemoryManager(pg_session=pg_session, qdrant=qdrant, redis=redis)
+            manager = MemoryManager(pg_session=pg_session, qdrant=qdrant)
 
             for sample in dataset:
                 per_category = await _run_sample(manager, sample, top_k)
@@ -192,7 +190,6 @@ async def run(max_samples: int | None = None, top_k: int = 5) -> dict[str, objec
         await _reset_episodic_collection(qdrant)
         await engine.dispose()
         await qdrant.close()
-        await redis.aclose()
 
     scored_correct = sum(totals[n]["correct"] for n in totals if n != "adversarial")
     scored_total = sum(totals[n]["total"] for n in totals if n != "adversarial")
