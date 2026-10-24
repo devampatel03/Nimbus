@@ -1,6 +1,6 @@
 # 0010 — Trust-lane classification, typed DataBlocks, and quarantine routing (bodies always; short fields via deterministic schema)
 
-- Status: **Proposed.** It **deviates from Brief §2** ("any externally-authored text → quarantine LLM"). Human decision: TARGET_DESIGN §10 Q7.
+- Status: **Proposed.** It **deviates from Brief §2** ("any externally-authored text → quarantine LLM"). Human decision: TARGET_DESIGN §10 Q7. **Interim default until the human approves: quarantine every untrusted field** (no short-field bypass); the bypass described below is the proposal only.
 
 ## Context
 The Brief routes all externally authored text through a quarantine LLM call. Calendar lists, email headers and Notion/Drive titles produce many short untrusted strings per turn. An LLM call for each one adds cost and latency (p95 ≤ 8 s). The protection against injection comes from deterministic layers (DataBlock delimiting, taint → policy → approvals), not from the paraphrase. Brief INV-6 still requires that untrusted text enter the trusted lane only as **schema-validated**, delimited DATA, so any bypass of the LLM must define its own validation. Telegram *forwarded* messages and untrusted memory hits were also unclassified.
