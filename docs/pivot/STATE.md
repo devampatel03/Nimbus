@@ -74,9 +74,9 @@ _none_
 ## Blockers
 - P1.4a blocked on H14: finished branch fails protected INV-1 test; do not merge until the human approves the one-line allow-list edit to tests/eval/invariants/test_inv1_single_egress_point.py.
 - P1.2a acceptance unmeasured until Docker is up (H15); do not mark done.
-- PROT tasks wait on H14 (batch approval to edit tests/eval/**).
+- H14 approved by user 2026-10-25 (scope: TARGET_DESIGN Q1). PROT tasks unblocked; edits to tests/eval/** limited to that scope.
 - P3.4, P3.6 blocked on H16 (Gmail scope, ADR-0007) - do not build the ADR default before the human answers.
-- H15: Docker daemon down; blocks P1.2b onward integration verification.
+- H15 resolved: Docker running.
 - ADR-0010 Proposed (H18); blocks P3.0 lanes design.
 - PR #1 merged (ffccc5a) after 3 review rounds (73/69/91%).
 
