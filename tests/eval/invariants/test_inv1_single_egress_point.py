@@ -21,6 +21,10 @@ SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
 EGRESS_MODULES = {"httpx", "requests", "aiohttp"}
 SCRUBBER_FILE = SRC_ROOT / "security" / "scrubber.py"
 SCRUBBER_FUNCTION = "execute_external"
+# P1.4a (H14-approved edit): src/net is the sanctioned transport layer (ADR-0004);
+# its httpx use is exempt here. Any httpx/requests/aiohttp call elsewhere in src/
+# must still be exactly the scrubber's. P1.4c rewrites this test around src/net/src/llm.
+SANCTIONED_TRANSPORT_PREFIX = "src/net/"
 
 
 def _egress_aliases(tree: ast.Module) -> set[str]:
@@ -87,12 +91,14 @@ def _find_egress_call_sites() -> list[tuple[str, int, str | None]]:
 
 
 def test_only_scrubber_execute_external_calls_cloud_model():
-    hits = _find_egress_call_sites()
+    hits = [
+        h for h in _find_egress_call_sites() if not h[0].startswith(SANCTIONED_TRANSPORT_PREFIX)
+    ]
 
     if not SCRUBBER_FILE.exists():
-        assert hits == [], (
-            "INV-1: found outbound HTTP call site(s) before the scrubber " f"exists: {hits}"
-        )
+        assert (
+            hits == []
+        ), f"INV-1: found outbound HTTP call site(s) before the scrubber exists: {hits}"
         return
 
     assert (
