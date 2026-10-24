@@ -10,7 +10,6 @@ never does), the gmail `send` dry-run, and the ALLOWED_TOOLS drift check
 import uuid
 from typing import Any
 
-
 from src.contracts.tool_intent import RiskClass, ToolIntent, ToolResult
 from src.security import scrubber
 from src.tools.integrations.drive import DriveTool
