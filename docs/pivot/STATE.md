@@ -22,7 +22,7 @@ Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT
 | P0.4/P0.5 | Target design + task table | architect | P0.3 | merged | | | done (this file) |
 | P1.0 | Delete dead weight (M0) | backend | – | todo | | | pure deletion |
 | P1.1 | CI on pivot: ruff/mypy/pytest + pgvector svc + red-team job + secret scan | devops | – | todo | | |  |
-| P1.2a | Postgres image AGE→pgvector | devops | – | todo | | | recreate dev volume |
+| P1.2a | Postgres image AGE→pgvector | devops | – | merged-partial | | | PR #2 (85%). Static only: docker build/CREATE EXTENSION/arm64 buildx NOT MEASURED (H15). Run reviewer's commands when Docker is up; `docker compose down -v` first. Pin tag digest in P6.1. Stale 'Apache AGE' comment config/settings.py:17 -> fix in P1.5 |
 | P1.2b | Alembic baseline: personality tables revision + upgrade==ORM test | backend | P1.2a | todo | | |  |
 | P1.2c | Pivot schema: event/memory_chunk/job/llm_audit/system_flag/pending_action/inbound_update; provenance cols; append-only triggers; db/crypto.py | backend+memory | P1.2b | todo | | | PROT |
 | P1.3a | Redis out (M5) | memory | P1.2c | todo | | | PROT, cf |
@@ -72,6 +72,7 @@ _none_
 15 ADRs in `docs/decisions/0001-0015` (P0.4): plain Postgres+pgvector (no AGE), Brief INV numbering canonical, `src/llm`+`src/net` sole egress, LangGraph and Approver removed, Postgres SKIP LOCKED jobs, deterministic policy + HMAC approvals. Open deviations needing human OK: ADR-0007 (Gmail compose scope), ADR-0010 (short untrusted fields skip quarantine call), ADR-0004 (app-level egress allowlist).
 
 ## Blockers
+- P1.2a acceptance unmeasured until Docker is up (H15); do not mark done.
 - PROT tasks wait on H14 (batch approval to edit tests/eval/**).
 - P3.4, P3.6 blocked on H16 (Gmail scope, ADR-0007) - do not build the ADR default before the human answers.
 - H15: Docker daemon down; blocks P1.2b onward integration verification.
