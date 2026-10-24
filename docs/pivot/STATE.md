@@ -27,7 +27,7 @@ Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT
 | P1.2c | Pivot schema: event/memory_chunk/job/llm_audit/system_flag/pending_action/inbound_update; provenance cols; append-only triggers; db/crypto.py | backend+memory | P1.2b | todo | | | PROT |
 | P1.3a | Redis out (M5) | memory | P1.2c | todo | | | PROT, cf |
 | P1.3b | pgvector MemoryStore episodic + Qdrant out (M6) | memory | P1.3a | todo | | | PROT, cf |
-| P1.4a | `src/net` egress client + R13 test | security | P1.1 | todo | | | parallel with P1.2*/P1.3* |
+| P1.4a | `src/net` egress client + R13 test | security | P1.1 | blocked | | |  Branch task/P1.4a-net-egress pushed (b44f6eb), NO PR: code done (408 unit pass, ruff/mypy clean, src/net 99% cov) but protected INV-1 test fails (6 httpx sites; needs src/net/http.py allow-listed) -> needs H14. Orchestrator-side follow-ups: .env.example NET_* vars, httpx in pre-commit mypy deps, ActionSpec no-URL rule in P2.5b; MED: no size cap in build_sdk_http_client, no post-DNS private-IP check (P4.5).
 | P1.4b | `src/llm` guard/adapter/pricing/FakeLLM (R4, R5) | backend | P1.4a, P1.2c | todo | | |  |
 | P1.4c | Delete execute_external + intent-builder tools; INV-1 rewrite; INV-2 delete (M9) | security | P1.4b | todo | | | PROT |
 | P1.5 | Module settings pattern, .env.example, scrubbing log filter, INV-7 test | backend | P1.4b | todo | | | PROT |
@@ -72,6 +72,7 @@ _none_
 15 ADRs in `docs/decisions/0001-0015` (P0.4): plain Postgres+pgvector (no AGE), Brief INV numbering canonical, `src/llm`+`src/net` sole egress, LangGraph and Approver removed, Postgres SKIP LOCKED jobs, deterministic policy + HMAC approvals. Open deviations needing human OK: ADR-0007 (Gmail compose scope), ADR-0010 (short untrusted fields skip quarantine call), ADR-0004 (app-level egress allowlist).
 
 ## Blockers
+- P1.4a blocked on H14: finished branch fails protected INV-1 test; do not merge until the human approves the one-line allow-list edit to tests/eval/invariants/test_inv1_single_egress_point.py.
 - P1.2a acceptance unmeasured until Docker is up (H15); do not mark done.
 - PROT tasks wait on H14 (batch approval to edit tests/eval/**).
 - P3.4, P3.6 blocked on H16 (Gmail scope, ADR-0007) - do not build the ADR default before the human answers.
@@ -84,6 +85,6 @@ _none_
 - `.claude/settings.json` in working tree is the kit's MERGE template and has clobbered the original hooks (pre-tool-guard, protect-files, enforce-boundary, graphify). NOT committed; HEAD version is the original. See HUMAN_TODO H12.
 
 ## Next 3 actions
-1. Run W1 batch {P1.0, P1.1, P1.2a}; then {P1.2b, P1.4a}.
-2. Hold PROT tasks (P1.2c onward) until H14; P3.4/P3.6 until H16; P3.0 until H18.
-3. Docker Desktop (H15) must be up before P1.2b.
+1. When H14 is answered: apply INV-1 allow-list edit on task/P1.4a-net-egress, open PR, review, merge; then P1.2c onward (PROT).
+2. When Docker is up (H15): run P1.2a verification commands, then P1.2b.
+3. W1 has no other ready task: nothing buildable remains without H14 or H15.
