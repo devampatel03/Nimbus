@@ -97,7 +97,7 @@ def git_checks() -> list[Check]:
             else f"{n} uncommitted paths (orchestrator will leave unrelated ones alone)",
         )
     )
-    rc, remote = run(["git", "remote", "get-url", "origin"])
+    rc, _remote = run(["git", "remote", "get-url", "origin"])
     out.append(
         Check(
             "git remote origin",
@@ -113,7 +113,7 @@ def git_checks() -> list[Check]:
 def gh_checks() -> list[Check]:
     if not shutil.which("gh"):
         return [Check("gh auth", "MISSING", True, "gh CLI not installed", "PRs/merge")]
-    rc, out = run(["gh", "auth", "status"])
+    rc, _out = run(["gh", "auth", "status"])
     return [
         Check(
             "gh auth",
