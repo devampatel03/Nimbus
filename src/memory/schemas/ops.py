@@ -102,7 +102,7 @@ class PendingAction(Base):
             "status IN ('pending', 'consumed', 'expired', 'cancelled', 'rejected')",
             name="ck_pending_action_status",
         ),
-        CheckConstraint("char_length(payload_sha256) = 64", name="ck_pending_action_sha256"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="ck_pending_action_sha256"),
         CheckConstraint("expires_at > created_at", name="ck_pending_action_expiry"),
         CheckConstraint(
             "(status = 'consumed') = (consumed_at IS NOT NULL)",

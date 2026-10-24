@@ -51,5 +51,5 @@ class Decision(Base):
     lane: Mapped[str] = mapped_column(nullable=False, server_default=text("'trusted'"))
     promoted: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
     promoted_approval_id: Mapped[uuid.UUID | None] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True
+        PGUUID(as_uuid=True), ForeignKey("pending_action.id"), nullable=True
     )

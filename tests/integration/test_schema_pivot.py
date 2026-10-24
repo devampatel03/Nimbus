@@ -185,6 +185,7 @@ async def test_expected_check_constraints_exist(engine: AsyncEngine) -> None:
         "ck_job_status",
         "ck_pending_action_status",
         "ck_pending_action_sha256",
+        "ck_memory_chunk_not_self_superseded",
         "ck_pending_action_expiry",
         "ck_pending_action_consumed_at",
         "ck_llm_audit_status",
@@ -378,10 +379,72 @@ async def test_untrusted_cannot_be_promoted_without_approval(engine: AsyncEngine
     cid = await mk_chunk(engine, eid, lane="untrusted", promoted=False)
     msg = await fails(engine, "UPDATE memory_chunk SET promoted=true WHERE id=:i", i=cid)
     assert "ck_memory_chunk_untrusted_promotion" in msg
-    await run(
+    # a fabricated approval id is rejected by the FK ...
+    assert "fk_memory_chunk_promoted_approval_id" in await fails(
         engine,
         "UPDATE memory_chunk SET promoted=true, promoted_approval_id=gen_random_uuid() WHERE id=:i",
         i=cid,
+    )
+    # ... a real pending_action row is accepted
+    aid = uuid.uuid4()
+    await run(
+        engine,
+        "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
+        "expires_at) VALUES (:i, 'n', 'promote', '{}'::jsonb, :h, '\\x00'::bytea, "
+        "now() + interval '10 minutes')",
+        i=aid,
+        h="c" * 64,
+    )
+    await run(
+        engine,
+        "UPDATE memory_chunk SET promoted=true, promoted_approval_id=:a WHERE id=:i",
+        i=cid,
+        a=aid,
+    )
+
+
+@pytest.mark.parametrize("table", ["memory_chunk", "graph_edge", "commitment", "decision"])
+async def test_promoted_approval_id_has_fk_to_pending_action(
+    engine: AsyncEngine, table: str
+) -> None:
+    rows = await run(
+        engine,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE contype='f' "
+        "AND conrelid=CAST(:t AS regclass) AND conname=:n",
+        t=table,
+        n=f"fk_{table}_promoted_approval_id",
+    )
+    assert rows and "REFERENCES pending_action(id)" in rows[0][0]
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "event",
+        "llm_audit",
+        "inbound_update",
+        "memory_chunk",
+        "graph_edge",
+        "commitment",
+        "decision",
+        "pending_action",
+    ],
+)
+async def test_truncate_is_forbidden_on_append_only_tables(engine: AsyncEngine, table: str) -> None:
+    assert "TRUNCATE is forbidden" in await fails(engine, f"TRUNCATE {table} CASCADE")
+
+
+async def test_low_hardening_checks(engine: AsyncEngine) -> None:
+    ins = (
+        "INSERT INTO pending_action (tool, action, payload, payload_sha256, nonce, expires_at) "
+        "VALUES ('t','a','{}'::jsonb, :h, '\\x00'::bytea, now() + interval '5 minutes')"
+    )
+    assert "ck_pending_action_sha256" in await fails(engine, ins, h="A" * 64)  # uppercase
+    assert "ck_pending_action_sha256" in await fails(engine, ins, h="g" * 64)
+    eid = await mk_event(engine)
+    cid = await mk_chunk(engine, eid)
+    assert "ck_memory_chunk_not_self_superseded" in await fails(
+        engine, "UPDATE memory_chunk SET superseded_by=id WHERE id=:i", i=cid
     )
 
 

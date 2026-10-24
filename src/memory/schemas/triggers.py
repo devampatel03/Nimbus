@@ -68,6 +68,16 @@ END
 $fn$
 """
 
+NO_TRUNCATE_FN_SQL = """
+CREATE OR REPLACE FUNCTION nimbus_no_truncate() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    RAISE EXCEPTION 'append-only table %: TRUNCATE is forbidden (INV-3)', TG_TABLE_NAME
+        USING ERRCODE = 'integrity_constraint_violation';
+END
+$fn$
+"""
+
 # table -> (mutable columns, set-once columns)
 APPEND_ONLY_TABLES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "event": ((), ()),
@@ -119,6 +129,13 @@ SINGLE_USE_TRIGGER_SQL = (
 )
 
 
+def truncate_guard_sql(table: str) -> str:
+    return (
+        f"CREATE TRIGGER trg_{table}_no_truncate BEFORE TRUNCATE ON {table} "
+        f"FOR EACH STATEMENT EXECUTE FUNCTION nimbus_no_truncate()"
+    )
+
+
 def _ddl(sql: str) -> DDL:
     # DDL() applies %-formatting; literal percent signs must be doubled.
     return DDL(sql.replace("%", "%%")).execute_if(  # type: ignore[no-untyped-call]
@@ -132,10 +149,12 @@ def install_orm_ddl(metadata: MetaData) -> None:
     event.listen(metadata, "before_create", _ddl("CREATE EXTENSION IF NOT EXISTS vector"))
     event.listen(metadata, "before_create", _ddl(APPEND_ONLY_FN_SQL))
     event.listen(metadata, "before_create", _ddl(SINGLE_USE_FN_SQL))
+    event.listen(metadata, "before_create", _ddl(NO_TRUNCATE_FN_SQL))
 
 
 def attach_table_triggers(table: Table) -> None:
     if table.name in APPEND_ONLY_TABLES:
         event.listen(table, "after_create", _ddl(append_only_trigger_sql(table.name)))
+        event.listen(table, "after_create", _ddl(truncate_guard_sql(table.name)))
     if table.name == "pending_action":
         event.listen(table, "after_create", _ddl(SINGLE_USE_TRIGGER_SQL))

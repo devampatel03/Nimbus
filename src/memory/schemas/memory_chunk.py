@@ -50,6 +50,7 @@ class MemoryChunk(Base):
         promotion_check("memory_chunk"),
         CheckConstraint("importance BETWEEN 0 AND 1", name="ck_memory_chunk_importance"),
         CheckConstraint(f"dim = {EMBED_DIM}", name="ck_memory_chunk_dim"),
+        CheckConstraint("superseded_by <> id", name="ck_memory_chunk_not_self_superseded"),
         UniqueConstraint("source_event_id", "chunk_index", name="uq_memory_chunk_event_idx"),
         Index(
             "idx_memory_chunk_embedding_hnsw",
@@ -82,7 +83,7 @@ class MemoryChunk(Base):
     # false explicitly (CHECK rejects untrusted+promoted without approval).
     promoted: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
     promoted_approval_id: Mapped[uuid.UUID | None] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True
+        PGUUID(as_uuid=True), ForeignKey("pending_action.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(_TZ, nullable=False, server_default=text("now()"))
     invalidated_at: Mapped[datetime | None] = mapped_column(_TZ, nullable=True)

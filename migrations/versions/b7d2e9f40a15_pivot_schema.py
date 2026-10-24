@@ -76,6 +76,18 @@ END
 $fn$
 """
 
+NO_TRUNCATE_FN = """
+CREATE OR REPLACE FUNCTION nimbus_no_truncate() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    RAISE EXCEPTION 'append-only table %: TRUNCATE is forbidden (INV-3)', TG_TABLE_NAME
+        USING ERRCODE = 'integrity_constraint_violation';
+END
+$fn$
+"""
+
+APPROVAL_FK_TABLES = ("memory_chunk", "graph_edge", "commitment", "decision")
+
 # table -> (mutable columns, set-once columns)
 APPEND_ONLY: dict[str, tuple[str, str]] = {
     "event": ("", ""),
@@ -187,6 +199,7 @@ def upgrade() -> None:
         sa.CheckConstraint(PROMO_SQL, name="ck_memory_chunk_untrusted_promotion"),
         sa.CheckConstraint("importance BETWEEN 0 AND 1", name="ck_memory_chunk_importance"),
         sa.CheckConstraint("dim = 1024", name="ck_memory_chunk_dim"),
+        sa.CheckConstraint("superseded_by <> id", name="ck_memory_chunk_not_self_superseded"),
     )
     op.create_index("idx_memory_chunk_created", "memory_chunk", ["created_at"])
     op.execute(
@@ -255,7 +268,7 @@ def upgrade() -> None:
             "status IN ('pending', 'consumed', 'expired', 'cancelled', 'rejected')",
             name="ck_pending_action_status",
         ),
-        sa.CheckConstraint("char_length(payload_sha256) = 64", name="ck_pending_action_sha256"),
+        sa.CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="ck_pending_action_sha256"),
         sa.CheckConstraint("expires_at > created_at", name="ck_pending_action_expiry"),
         sa.CheckConstraint(
             "(status = 'consumed') = (consumed_at IS NOT NULL)",
@@ -293,11 +306,26 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.String(), nullable=True),
     )
 
+    # R8: an approval reference must be a real pending_action row (no fabricated UUIDs).
+    for table in APPROVAL_FK_TABLES:
+        op.create_foreign_key(
+            f"fk_{table}_promoted_approval_id",
+            table,
+            "pending_action",
+            ["promoted_approval_id"],
+            ["id"],
+        )
+
     # Append-only triggers (INV-3 / R7). Installed last so the column adds above
     # are not subject to them.
     op.execute(APPEND_ONLY_FN)
     op.execute(SINGLE_USE_FN)
+    op.execute(NO_TRUNCATE_FN)
     for table, (mutable, once) in APPEND_ONLY.items():
+        op.execute(
+            f"CREATE TRIGGER trg_{table}_no_truncate BEFORE TRUNCATE ON {table} "
+            f"FOR EACH STATEMENT EXECUTE FUNCTION nimbus_no_truncate()"
+        )
         op.execute(
             f"CREATE TRIGGER {_trigger_name(table)} BEFORE UPDATE OR DELETE ON {table} "
             f"FOR EACH ROW EXECUTE FUNCTION nimbus_append_only('{mutable}','{once}')"
@@ -310,9 +338,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table in APPEND_ONLY:
+        op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_no_truncate ON {table}")
         op.execute(f"DROP TRIGGER IF EXISTS {_trigger_name(table)} ON {table}")
     op.execute("DROP TRIGGER IF EXISTS trg_pending_action_single_use ON pending_action")
     op.execute("DROP FUNCTION IF EXISTS nimbus_single_use_guard()")
+    op.execute("DROP FUNCTION IF EXISTS nimbus_no_truncate()")
+    for table in APPROVAL_FK_TABLES:
+        op.drop_constraint(f"fk_{table}_promoted_approval_id", table, type_="foreignkey")
     op.execute("DROP FUNCTION IF EXISTS nimbus_append_only()")
 
     op.drop_table("system_flag")

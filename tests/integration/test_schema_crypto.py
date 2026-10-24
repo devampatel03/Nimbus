@@ -7,17 +7,11 @@ generated at runtime; nothing secret is committed. Requires the
 """
 
 import base64
-import importlib.util
 import logging
 
 import pytest
 
 from src.db.crypto import KEY_ENV_VAR, CryptoError, DataCipher, generate_key
-
-pytestmark = pytest.mark.skipif(
-    importlib.util.find_spec("cryptography") is None,
-    reason="cryptography not installed (dependency request pending)",
-)
 
 
 def _cipher() -> DataCipher:
@@ -91,3 +85,10 @@ def test_inv7_key_and_plaintext_never_leak(caplog: pytest.LogCaptureFixture) -> 
             surfaces += [str(exc), repr(exc)]
     for s in surfaces:
         assert key not in s and plaintext not in s
+
+
+def test_key_decoding_is_strict() -> None:
+    good = generate_key()
+    for bad in (good[:10] + "!!" + good[12:], good + "\n junk", " ".join([good[:20], good[20:]])):
+        with pytest.raises(CryptoError):
+            DataCipher.from_env({KEY_ENV_VAR: bad})

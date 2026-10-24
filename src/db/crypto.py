@@ -52,7 +52,7 @@ def _decode_key(raw: str) -> bytes:
     padded = raw.strip()
     padded += "=" * (-len(padded) % 4)
     try:
-        key = base64.urlsafe_b64decode(padded)
+        key = base64.b64decode(padded.replace("-", "+").replace("_", "/"), validate=True)
     except (binascii.Error, ValueError):
         raise CryptoError(f"{KEY_ENV_VAR} is not valid base64") from None
     if len(key) != _KEY_LEN:
