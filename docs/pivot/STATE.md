@@ -20,8 +20,8 @@ Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT
 |----|-------|-------|------|--------|--------|----|-------|
 | P0.1–P0.3, P0.6 | Audit, coupling, envcheck | repo-auditor/devops | – | merged | | | done |
 | P0.4/P0.5 | Target design + task table | architect | P0.3 | merged | | | done (this file) |
-| P1.0 | Delete dead weight (M0) | backend | – | todo | | | pure deletion |
-| P1.1 | CI on pivot: ruff/mypy/pytest + pgvector svc + red-team job + secret scan | devops | – | todo | | |  |
+| P1.0 | Delete dead weight (M0) | backend | – | merged | | | pure deletion | PR #4 (8/8). `.env.example` VLLM line -> H19; NOTICE still lists arq -> P1.5.
+| P1.1 | CI on pivot: ruff/mypy/pytest + pgvector svc + red-team job + secret scan | devops | – | merged | | |  | PR #3 (11/12). CI green on pivot; qdrant:latest unpinned until P1.3; secret-scan uses detect-secrets-hook (no unaudited-baseline flag).
 | P1.2a | Postgres image AGE→pgvector | devops | – | merged-partial | | | PR #2 (85%). Static only: docker build/CREATE EXTENSION/arm64 buildx NOT MEASURED (H15). Run reviewer's commands when Docker is up; `docker compose down -v` first. Pin tag digest in P6.1. Stale 'Apache AGE' comment config/settings.py:17 -> fix in P1.5 |
 | P1.2b | Alembic baseline: personality tables revision + upgrade==ORM test | backend | P1.2a | todo | | |  |
 | P1.2c | Pivot schema: event/memory_chunk/job/llm_audit/system_flag/pending_action/inbound_update; provenance cols; append-only triggers; db/crypto.py | backend+memory | P1.2b | todo | | | PROT |
