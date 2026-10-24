@@ -80,7 +80,7 @@ qdrant-client           Apache License, Version 2.0
 langgraph               MIT License
 pydantic                MIT License
 pydantic-settings       MIT License
-arq                     MIT License
+cryptography            Apache-2.0 OR BSD-3-Clause (confirmed via installed package metadata)
 httpx                   BSD 3-Clause License
 apscheduler             MIT License
 

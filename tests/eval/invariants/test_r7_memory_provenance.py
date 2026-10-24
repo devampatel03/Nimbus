@@ -1,13 +1,15 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""INV-5: Every derived memory row has non-null provenance.
+"""R7 (was repo INV-5, renumbered by ADR-0002): every derived memory row has
+non-null provenance.
 
-Acceptance: any row in `graph_edge`, `commitment` or `decision` — the
-tables that carry a `source_session` provenance column — must have a
-non-null `source_session`, and the database must reject attempts to
-insert one with a null value (schema-level enforcement, not just current
-absence of bad rows).
+Acceptance: any row in `graph_edge`, `commitment` or `decision` -- the legacy
+tables carrying `source_session` -- must have a non-null `source_session`,
+`lane` and `confidence`; `event`/`memory_chunk` must have `source`/
+`source_event_id`, `lane`, `confidence`. The database must reject inserts
+with a null value (schema-level enforcement, not just absence of bad rows).
+Brief INV-5 (policy determinism) is a different invariant, built in P3.1.
 
 Against a real Postgres instance (docker compose up -d postgres), per
 AGENT_OPERATING_MANUAL.md's real-dependency requirement.
@@ -108,3 +110,34 @@ async def test_valid_source_session_is_accepted(db_session: AsyncSession):
     db_session.add(decision)
     await db_session.flush()
     assert decision.source_session == session_row.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("graph_edge", "lane"),
+        ("commitment", "lane"),
+        ("decision", "lane"),
+        ("decision", "confidence"),
+        ("event", "lane"),
+        ("event", "source"),
+        ("event", "confidence"),
+        ("memory_chunk", "source_event_id"),
+        ("memory_chunk", "lane"),
+        ("memory_chunk", "confidence"),
+    ],
+)
+async def test_provenance_columns_reject_null(db_session: AsyncSession, table: str, column: str):
+    from sqlalchemy import text
+
+    row = (
+        await db_session.execute(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = :t AND column_name = :c"
+            ),
+            {"t": table, "c": column},
+        )
+    ).scalar_one()
+    assert row == "NO", f"{table}.{column} must be NOT NULL (R7)"

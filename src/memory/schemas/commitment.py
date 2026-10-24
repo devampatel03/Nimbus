@@ -12,11 +12,12 @@ session's explicit instruction. `source_session` is non-null per INV-5.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.memory.schemas.base import Base
+from src.memory.schemas.provenance import lane_check, promotion_check
 
 _TZ = DateTime(timezone=True)
 
@@ -24,6 +25,8 @@ _TZ = DateTime(timezone=True)
 class Commitment(Base):
     __tablename__ = "commitment"
     __table_args__ = (
+        lane_check("commitment"),
+        promotion_check("commitment"),
         CheckConstraint("status IN ('open', 'closed', 'broken')", name="ck_commitment_status"),
     )
 
@@ -44,4 +47,14 @@ class Commitment(Base):
     closed_at: Mapped[datetime | None] = mapped_column(_TZ, nullable=True)
     closure_source_session: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("session.id"), nullable=True
+    )
+
+    # P1.2c provenance (R7/R8). Legacy writers omit these; server defaults keep them valid.
+    source_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("event.id"), nullable=True
+    )
+    lane: Mapped[str] = mapped_column(nullable=False, server_default=text("'trusted'"))
+    promoted: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
+    promoted_approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("pending_action.id"), nullable=True
     )
