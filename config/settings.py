@@ -1,7 +1,12 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Application configuration, loaded from environment / .env."""
+"""Shared application configuration (Postgres, API auth, CORS).
+
+Module-owned settings live next to their module (`src/llm/settings.py`,
+`src/net/settings.py`); see docs/pivot/SETTINGS_PATTERN.md. Do not add a
+module's knobs here.
+"""
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,22 +19,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Postgres (semantic memory + bi-temporal graph via Apache AGE, pgvector)
+    # Postgres (semantic memory, bi-temporal graph tables, pgvector episodic memory)
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "nimbus"
     postgres_password: str = Field(default="nimbus")
     postgres_db: str = "nimbus"
-
-    # Local LLM (vLLM, OpenAI-compatible, this session). NOT cloud egress --
-    # `llm_base_url` defaults to loopback; `src/llm` owns scrub/audit/kill
-    # switch/spend cap (the old src/security scrubber is gone). Dev default model is
-    # the small Qwen2.5-7B-Instruct; production's Qwen3.8-27B needs a
-    # bigger GPU and is set via `.env`, not this default.
-    llm_base_url: str = "http://localhost:8000/v1"
-    llm_api_key: str = "not-needed"  # vLLM's OpenAI-compatible server ignores this by default
-    llm_model: str = "Qwen/Qwen2.5-7B-Instruct"
-    llm_timeout_seconds: float = 60.0
 
     # API auth (Nimbus is single-user, self-hosted, PRD section 1 -- there is
     # no user table, just one shared login secret). Dev-only defaults below,
