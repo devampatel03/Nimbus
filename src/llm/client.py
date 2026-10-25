@@ -1,36 +1,40 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Local LLM client (this session): an OpenAI-compatible client for a locally
-served model (vLLM, `docker-compose.yml`'s `vllm` service or the standalone
-`vllm serve` command documented there).
+"""Back-compat shim (P1.4b, TARGET_DESIGN M8). DEPRECATED.
 
-NOT an egress point: `base_url` defaults to `settings.llm_base_url`
-(loopback), and nothing here is ever called through
-`src/security/scrubber.py:execute_external`. This uses the `openai` SDK
-(which wraps `httpx` internally) rather than `httpx`/`requests`/`aiohttp`
-directly, so it does not appear in INV-1's AST scan of `src/` for those
-three module names -- that scan is specifically about which layer of this
-codebase reaches a transport library directly, not what an approved local
-client uses under the hood.
+`LLMClient` / `VLLMClient` / `ChatMessage` here are the pre-pivot
+complete / stream / structured API, still imported by `src/orchestrator`,
+`src/memory/extractor.py`, the approver and `src/personality`. They are now a
+thin adapter over `GuardedLLM`, so every legacy call also passes the guard
+(kill switch, spend cap, scrub, audit) and egresses only via `src.net`.
+New code uses `src.llm.protocols.LLMClient` / `src.llm.types.ChatRequest`.
+P2.5b / P2.x remove the legacy callers; this file is deleted with them.
 
-`LLMClient` is a `Protocol` (same pattern as `src/memory/manager.py`'s
-`Embedder`/`Qwen3Embedder`, AD-7/Step 11): production code depends on the
-protocol and defaults to `VLLMClient()`, so tests can inject a fake/mock
-without hitting a real network endpoint.
+Behavioural notes vs. the old client: the target is a cloud HTTPS provider
+(the loopback vLLM URL is refused by the egress allowlist); `stream()` yields
+the whole reply as one chunk (the pivot never streams); `structured()` raises
+`LLMResponseError` instead of pydantic's `ValidationError` on a bad reply.
 """
+
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Protocol, TypeVar
 
-from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from config.settings import settings
+from src.llm.factory import build_guarded_llm
+from src.llm.guard import GuardedLLM
+from src.llm.settings import LLMSettings
+from src.llm.types import ChatMessage as _Message
+from src.llm.types import ChatRequest, Lane, LLMResponseError, Purpose
 
 ChatMessage = dict[str, str]  # {"role": "system"|"user"|"assistant", "content": "..."}
 
 T = TypeVar("T", bound=BaseModel)
+
+_DEFAULT_MAX_TOKENS = 800
 
 
 class LLMClient(Protocol):
@@ -59,14 +63,12 @@ class LLMClient(Protocol):
     ) -> T: ...
 
 
+def _convert(messages: list[ChatMessage]) -> tuple[_Message, ...]:
+    return tuple(_Message(role=m["role"], content=m["content"]) for m in messages)  # type: ignore[arg-type]
+
+
 class VLLMClient:
-    """`LLMClient` backed by a local vLLM (or any OpenAI-compatible)
-    server. Construction does no I/O (`AsyncOpenAI.__init__` opens no
-    connection), so the default-factory pattern used in
-    `GraphDependencies`/`Approver`/extraction workers is cheap even when
-    no server is actually running -- only an actual `complete`/`stream`/
-    `structured` call reaches the network.
-    """
+    """Legacy-API client over `GuardedLLM`. Construction does no I/O."""
 
     def __init__(
         self,
@@ -75,13 +77,21 @@ class VLLMClient:
         api_key: str | None = None,
         model: str | None = None,
         timeout: float | None = None,
+        guarded: GuardedLLM | None = None,
     ) -> None:
-        self._model = model or settings.llm_model
-        self._client = AsyncOpenAI(
-            base_url=base_url or settings.llm_base_url,
-            api_key=api_key or settings.llm_api_key,
-            timeout=timeout or settings.llm_timeout_seconds,
-        )
+        if guarded is not None:
+            self._llm = guarded
+            return
+        overrides: dict[str, object] = {}
+        if base_url:
+            overrides["base_url"] = base_url
+        if api_key:
+            overrides["api_key"] = api_key
+        if model:
+            overrides["model"] = model
+        if timeout:
+            overrides["timeout_seconds"] = timeout
+        self._llm = build_guarded_llm(LLMSettings(**overrides))  # type: ignore[arg-type]
 
     async def complete(
         self,
@@ -90,13 +100,16 @@ class VLLMClient:
         temperature: float = 0.3,
         max_tokens: int | None = None,
     ) -> str:
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
+        result = await self._llm.chat(
+            ChatRequest(
+                purpose=Purpose.CHAT,
+                lane=Lane.SYSTEM,
+                messages=_convert(messages),
+                temperature=temperature,
+                max_output_tokens=max_tokens or _DEFAULT_MAX_TOKENS,
+            )
         )
-        return response.choices[0].message.content or ""
+        return result.text or ""
 
     async def stream(
         self,
@@ -105,17 +118,9 @@ class VLLMClient:
         temperature: float = 0.3,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
-        response_stream = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-        )
-        async for chunk in response_stream:  # type: ignore[union-attr]
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        text = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        if text:
+            yield text
 
     async def structured(
         self,
@@ -124,19 +129,15 @@ class VLLMClient:
         schema: type[T],
         temperature: float = 0.0,
     ) -> T:
-        """Guided JSON decoding via vLLM's `guided_json` extra_body param
-        (its OpenAI-compatible server's extension over the base API);
-        `response_format={"type": "json_object"}` is the standard OpenAI
-        hint most servers honor even without that extension. The response
-        is always validated client-side against `schema` regardless of
-        whether the server actually enforced it server-side.
-        """
-        response = await self._client.chat.completions.create(  # type: ignore[call-overload]
-            model=self._model,
-            messages=messages,
-            temperature=temperature,
-            response_format={"type": "json_object"},
-            extra_body={"guided_json": schema.model_json_schema()},
+        result = await self._llm.chat(
+            ChatRequest(
+                purpose=Purpose.CHAT,
+                lane=Lane.SYSTEM,
+                messages=_convert(messages),
+                response_schema=schema,
+                temperature=temperature,
+            )
         )
-        content = response.choices[0].message.content or "{}"
-        return schema.model_validate_json(content)
+        if not isinstance(result.parsed, schema):
+            raise LLMResponseError("schema_mismatch")
+        return result.parsed
