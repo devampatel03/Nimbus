@@ -52,6 +52,27 @@ def _file_ref(obj: dict[str, Any], kind: UpdateKind) -> FileRef | None:
     )
 
 
+def _is_users_private_chat(chat: Any, allowed_user_id: int) -> bool:
+    return (
+        isinstance(chat, dict)
+        and chat.get("type") == "private"
+        and _int(chat.get("id")) == allowed_user_id
+    )
+
+
+# Anything here means someone other than the user (or a bot) authored/relayed
+# the content (INV-6): treat as untrusted.
+_THIRD_PARTY_KEYS = (
+    "forward_origin",
+    "forward_date",
+    "forward_from",
+    "forward_from_chat",
+    "forward_sender_name",
+    "via_bot",
+    "is_automatic_forward",
+)
+
+
 def _is_text_document(doc: dict[str, Any]) -> bool:
     name = (_str(doc.get("file_name")) or "").lower()
     mime = (_str(doc.get("mime_type")) or "").lower()
@@ -84,6 +105,10 @@ def parse_update(raw: Any, allowed_user_id: int) -> Parsed | None:
         mid = _int(msg.get("message_id")) if isinstance(msg, dict) else None
         if not cb_id or data is None:
             return Parsed(update_id, sender, UpdateKind.MALFORMED, None)
+        # The button must live in the user's own private chat; inline-message
+        # callbacks (no `message`) and anything else are not served.
+        if not (isinstance(msg, dict) and _is_users_private_chat(msg.get("chat"), allowed_user_id)):
+            return Parsed(update_id, sender, UpdateKind.DROPPED, None)
         return Parsed(
             update_id,
             sender,
@@ -100,16 +125,11 @@ def parse_update(raw: Any, allowed_user_id: int) -> Parsed | None:
     if not isinstance(message, dict):
         return Parsed(update_id, sender, UpdateKind.UNSUPPORTED, None)
 
-    chat = message.get("chat")
-    if not (
-        isinstance(chat, dict)
-        and chat.get("type") == "private"
-        and _int(chat.get("id")) == allowed_user_id
-    ):
+    if not _is_users_private_chat(message.get("chat"), allowed_user_id):
         return Parsed(update_id, sender, UpdateKind.DROPPED, None)
 
     mid = _int(message.get("message_id"))
-    forwarded = "forward_origin" in message or "forward_date" in message
+    forwarded = any(k in message for k in _THIRD_PARTY_KEYS)
 
     voice = message.get("voice")
     document = message.get("document")

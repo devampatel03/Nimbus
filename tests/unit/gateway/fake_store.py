@@ -12,7 +12,9 @@ from src.gateway.store import Seen
 
 
 class MemStore:
-    def __init__(self) -> None:
+    def __init__(self, max_deliveries: int = 5) -> None:
+        self.max_deliveries = max_deliveries
+        self.deliveries: dict[int, int] = {}
         self.offset: int | None = None
         self.rows: dict[int, bool] = {}  # update_id -> processed
 
@@ -21,8 +23,16 @@ class MemStore:
 
     async def begin(self, update_id: int, from_user_id: int | None, kind: str) -> Seen:
         if update_id in self.rows:
-            return Seen.DONE if self.rows[update_id] else Seen.REDELIVERY
+            if self.rows[update_id]:
+                return Seen.DONE
+            self.deliveries[update_id] = self.deliveries.get(update_id, 1) + 1
+            if self.deliveries[update_id] > self.max_deliveries:
+                self.rows[update_id] = True
+                self._advance()
+                return Seen.POISON
+            return Seen.REDELIVERY
         self.rows[update_id] = False
+        self.deliveries[update_id] = 1
         return Seen.NEW
 
     def _advance(self) -> None:

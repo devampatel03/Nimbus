@@ -291,3 +291,62 @@ def test_gateway_package_imports_no_http_library() -> None:
 def test_gateway_never_calls_install_log_scrubbing() -> None:
     for p in pathlib.Path("src/gateway").glob("*.py"):
         assert "install_log_scrubbing" not in p.read_text(encoding="utf-8")
+
+
+# ---- round 1 review: M4, L1, L3, L4 ----
+
+
+async def test_429_penalizes_limiter_so_next_send_is_pushed_back() -> None:
+    fake = FakeTelegram()
+    fake.scripted = [
+        httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 7}}),
+    ]
+
+    class Frozen(Clock):
+        async def sleep(self, s: float) -> None:  # time does not pass: isolates the limiter
+            self.sleeps.append(s)
+
+    clock = Frozen()
+    gw = build(fake, clock)
+    await gw.send_text("a")  # 429 -> api sleeps 7 -> retry ok
+    clock.sleeps.clear()
+    await gw.send_text("b")
+    assert clock.sleeps and clock.sleeps[0] >= 7.0 - 1e-9
+
+
+@pytest.mark.parametrize("bad", [float("nan"), -5, float("-inf"), True, "7", None])
+async def test_retry_after_nonsense_falls_back_to_one_second(bad: object) -> None:
+    fake = FakeTelegram()
+    fake.scripted = [
+        httpx.Response(429, content=_json({"ok": False, "parameters": {"retry_after": bad}}))
+    ]
+    clock = Clock()
+    gw = build(fake, clock)
+    await gw.send_text("x")
+    assert 1.0 in clock.sleeps
+    assert all(s >= 0 for s in clock.sleeps)
+
+
+def _json(obj: object) -> bytes:
+    import json
+
+    return json.dumps(obj).encode()  # allow_nan default True: emits NaN/-Infinity
+
+
+async def test_edit_and_answer_callback_go_through_the_limiter() -> None:
+    fake = FakeTelegram()
+    clock = Clock()
+    gw = build(fake, clock)
+    await gw.answer_callback("cb1")
+    await gw.answer_callback("cb2")
+    await gw.close_approval(MessageRef(5), outcome="approved")
+    assert clock.t == pytest.approx(3.0)  # 4 limiter slots at 1 per second
+
+
+async def test_chunks_respect_utf16_code_units() -> None:
+    fake = FakeTelegram()
+    gw = build(fake)
+    await gw.send_text("😀" * 4096)  # 4096 chars, 8192 UTF-16 units
+    assert len(fake.sent) >= 2
+    for body in fake.sent:
+        assert len(body["text"].encode("utf-16-le")) // 2 <= 4096

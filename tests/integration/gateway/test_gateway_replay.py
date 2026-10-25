@@ -185,3 +185,37 @@ async def test_strangers_and_callbacks_replay(sf: async_sessionmaker[AsyncSessio
     assert set(fake.methods()) == {"getUpdates"}
     rows = await _rows(sf)
     assert rows[base + 1] and rows[base + 2] and rows[base + 3]
+
+
+async def test_poison_budget_survives_restarts_and_unblocks_queue(
+    sf: async_sessionmaker[AsyncSession],
+) -> None:
+    base = 9_700_000_000
+    fake = FakeTelegram()
+    fake.push(*(message(base + i, "m") for i in range(1, 151)))
+    delivered: list[int] = []
+    # Each "process" gets exactly one delivery of the poison update, then crashes.
+    for _ in range(3):
+        gw = TelegramGateway(
+            make_settings(), make_egress(fake), UpdateStore(sf, max_deliveries=4), sleep=_no_sleep
+        )
+        async for u in gw.inbound():
+            delivered.append(u.update_id)
+            break
+    assert delivered == [base + 1] * 3  # budget counted across restarts
+    gw = TelegramGateway(
+        make_settings(), make_egress(fake), UpdateStore(sf, max_deliveries=4), sleep=_no_sleep
+    )
+    got: list[int] = []
+    async for u in gw.inbound():
+        if u.update_id == base + 1:
+            got.append(u.update_id)  # 4th delivery: still within budget (never acked)
+            continue
+        got.append(u.update_id)
+        await gw.ack(u)
+        if u.update_id == base + 150:
+            await gw.aclose()
+    assert got.count(base + 1) == 1  # 3 earlier runs + this = 4 = budget
+    assert {base + i for i in range(2, 151)} <= set(got)
+    assert (await _rows(sf))[base + 1] is True  # poisoned: processed, offset moved on
+    assert await UpdateStore(sf).get_offset() == base + 151

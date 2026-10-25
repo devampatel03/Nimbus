@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -74,7 +75,12 @@ class TelegramApi:
             params = body.get("parameters") if isinstance(body, dict) else None
             if code == 429:
                 retry_after = params.get("retry_after") if isinstance(params, dict) else None
-                if not isinstance(retry_after, int | float) or isinstance(retry_after, bool):
+                if (
+                    not isinstance(retry_after, int | float)
+                    or isinstance(retry_after, bool)
+                    or not math.isfinite(retry_after)
+                    or retry_after < 0
+                ):
                     retry_after = 1
                 if retry_after > self._s.max_retry_after_s or attempts >= self._s.max_429_retries:
                     raise TelegramRateLimited("rate_limited", code=429)
@@ -86,6 +92,8 @@ class TelegramApi:
                 continue
             if code in (401, 404):
                 raise TelegramAuthError("unauthorized", code=code)
+            if code == 409:  # another getUpdates consumer, or a leftover webhook
+                raise TelegramError("conflict", code=409)
             raise TelegramError(
                 "api_error" if isinstance(body, dict) else "bad_response", code=code
             )

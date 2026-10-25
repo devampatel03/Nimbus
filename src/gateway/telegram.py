@@ -26,7 +26,13 @@ from typing import Any
 from src.gateway.api import TelegramApi
 from src.gateway.parse import parse_update
 from src.gateway.ratelimit import RateLimiter
-from src.gateway.render import MAX_MESSAGE_CHARS, escape_html, render_chunks, sanitize
+from src.gateway.render import (
+    MAX_MESSAGE_CHARS,
+    escape_html,
+    render_chunks,
+    sanitize,
+    utf16_len,
+)
 from src.gateway.settings import GatewaySettings
 from src.gateway.store import Seen, UpdateStore
 from src.gateway.types import (
@@ -67,7 +73,12 @@ class TelegramGateway:
             global_interval_s=settings.global_interval_s,
             sleep=sleep,
         )
-        self._api = TelegramApi(egress, settings, sleep=sleep)
+        self._api = TelegramApi(
+            egress,
+            settings,
+            sleep=sleep,
+            on_retry_after=lambda secs: self._limiter.penalize(self._chat, secs),
+        )
         self._closed = False
 
     async def aclose(self) -> None:
@@ -77,6 +88,7 @@ class TelegramGateway:
 
     async def inbound(self) -> AsyncIterator[InboundUpdate]:
         backoff = 1.0
+        stall = 1.0
         while not self._closed:
             try:
                 offset = await self._store.get_offset()
@@ -91,18 +103,31 @@ class TelegramGateway:
                 backoff = min(backoff * 2, _MAX_BACKOFF_S)
                 continue
             await asyncio.sleep(0)  # always cede the loop (empty polls must not spin)
+            progressed = not raw_updates
             for raw in raw_updates:
                 if self._closed:
                     return
-                item = await self._admit(raw)
+                item, fresh = await self._admit(raw)
+                progressed = progressed or fresh
                 if item is not None:
                     yield item
+            if self._closed:
+                return
+            if not progressed:
+                # Everything returned was already delivered and not yet acked
+                # (or already done): do not re-poll in a hot loop.
+                await self._sleep(stall)
+                stall = min(stall * 2, _MAX_BACKOFF_S)
+            else:
+                stall = 1.0
 
-    async def _admit(self, raw: Any) -> InboundUpdate | None:
+    async def _admit(self, raw: Any) -> tuple[InboundUpdate | None, bool]:
+        """Returns (update to deliver, made_progress). Progress means new
+        information: a first delivery, a drop, or a poison resolution."""
         parsed = parse_update(raw, self._s.allowed_user_id)
         if parsed is None:
             logger.warning("discarded update without usable update_id")
-            return None
+            return None, True
         if parsed.update is None:
             level = logging.WARNING if parsed.kind is UpdateKind.DROPPED else logging.INFO
             logger.log(
@@ -115,13 +140,18 @@ class TelegramGateway:
             await self._store.record_dropped(
                 parsed.update_id, parsed.from_user_id, parsed.kind.value
             )
-            return None
+            return None, True
         seen = await self._store.begin(parsed.update_id, parsed.from_user_id, parsed.kind.value)
         if seen is Seen.DONE:
             # Telegram resent something we already finished (offset lagged).
             await self._store.complete(parsed.update_id)
-            return None
-        return parsed.update
+            return None, False
+        if seen is Seen.POISON:
+            logger.error(
+                "poison update dropped after redelivery budget update_id=%d", parsed.update_id
+            )
+            return None, True
+        return parsed.update, seen is Seen.NEW
 
     async def ack(self, update: InboundUpdate, *, event_id: uuid.UUID | None = None) -> None:
         await self._store.complete(update.update_id, event_id=event_id)
@@ -165,7 +195,7 @@ class TelegramGateway:
         body = (
             "Approval needed. Exact payload:\n<pre>" + escape_html(sanitize(card.text)) + "</pre>"
         )
-        if len(body) > MAX_MESSAGE_CHARS:
+        if utf16_len(body) > MAX_MESSAGE_CHARS:
             # Never truncate what the user is approving.
             raise MessageTooLong("approval_payload_too_long")
         markup = {
@@ -179,6 +209,7 @@ class TelegramGateway:
         return await self._send_one(body, reply_to=None, markup=markup)
 
     async def close_approval(self, ref: MessageRef, *, outcome: str) -> None:
+        await self._limiter.acquire(self._chat)
         await self._api.call(
             "editMessageReplyMarkup",
             {
@@ -190,6 +221,7 @@ class TelegramGateway:
         await self.send_text(f"Approval {outcome}", reply_to=ref)
 
     async def answer_callback(self, callback_id: str, text: str | None = None) -> None:
+        await self._limiter.acquire(self._chat)
         payload: dict[str, Any] = {"callback_query_id": callback_id}
         if text:
             payload["text"] = sanitize(text)[:200]

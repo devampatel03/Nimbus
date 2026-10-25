@@ -39,8 +39,13 @@ def escape_markdown_v2(text: str) -> str:
     return _MDV2_RESERVED.sub(r"\\\1", text)
 
 
+def utf16_len(s: str) -> int:
+    """Telegram counts message length in UTF-16 code units."""
+    return len(s.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
 def _elen(s: str) -> int:
-    return len(escape_html(s))
+    return utf16_len(escape_html(s))
 
 
 def _hard_split(piece: str, limit: int) -> list[str]:

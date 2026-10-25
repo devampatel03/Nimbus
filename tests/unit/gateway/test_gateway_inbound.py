@@ -281,3 +281,164 @@ def test_no_inbound_ports() -> None:
             if isinstance(n, ast.Attribute | ast.Name):
                 name = n.attr if isinstance(n, ast.Attribute) else n.id
                 assert name not in banned, (p, name)
+
+
+# ---- round 1 review: M1/M2 (R2 chat checks), L2 (untrusted origins) ----
+
+
+@pytest.mark.parametrize(
+    "chat",
+    [
+        {"type": "private", "id": 777},  # allowed sender, someone else's private chat
+        {"type": "group", "id": USER},  # right id, wrong chat type
+        {"type": "private"},
+        {"type": "private", "id": True},
+        None,
+        "private",
+    ],
+)
+def test_message_from_allowed_user_in_wrong_chat_is_dropped(chat: Any) -> None:
+    raw = message(1, "x")
+    raw["message"]["chat"] = chat
+    p = parse_update(raw, USER)
+    assert p is not None and p.kind is UpdateKind.DROPPED and p.update is None
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        None,
+        {"message_id": 7},  # no chat
+        {"message_id": 7, "chat": {"type": "group", "id": USER}},
+        {"message_id": 7, "chat": {"type": "private", "id": 777}},
+        "str",
+    ],
+)
+def test_callback_requires_message_in_users_private_chat(msg: Any) -> None:
+    raw = callback(1)
+    if msg is None:
+        del raw["callback_query"]["message"]
+    else:
+        raw["callback_query"]["message"] = msg
+    p = parse_update(raw, USER)
+    assert p is not None and p.kind is UpdateKind.DROPPED and p.update is None
+
+
+def test_inline_message_callback_is_dropped() -> None:
+    raw = callback(1)
+    del raw["callback_query"]["message"]
+    raw["callback_query"]["inline_message_id"] = "abc"
+    p = parse_update(raw, USER)
+    assert p is not None and p.update is None
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "forward_origin",
+        "forward_date",
+        "forward_from",
+        "forward_from_chat",
+        "via_bot",
+        "is_automatic_forward",
+    ],
+)
+def test_third_party_origin_markers_make_text_untrusted(key: str) -> None:
+    raw = message(1, "hi")
+    raw["message"][key] = {"x": 1} if key != "forward_date" else 1700000000
+    p = parse_update(raw, USER)
+    assert p and p.update and p.update.untrusted
+
+
+def test_forwarded_voice_untrusted() -> None:
+    raw = message(1, "")
+    del raw["message"]["text"]
+    raw["message"]["voice"] = {"file_id": "f", "file_unique_id": "u"}
+    raw["message"]["via_bot"] = {"id": 1}
+    p = parse_update(raw, USER)
+    assert p and p.update and p.update.untrusted
+
+
+# ---- H1: poison update / redelivery budget / stalled-poll backoff ----
+
+
+async def test_poison_update_is_dropped_after_budget_and_queue_drains(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeTelegram()
+    fake.push(*(message(i, f"SECRETTEXT{i}") for i in range(1, 151)))
+    store = MemStore(max_deliveries=3)
+    gw, _ = build(fake, store)
+    delivered: list[int] = []
+    with caplog.at_level(logging.INFO, logger="nimbus.gateway"):
+        async for u in gw.inbound():
+            delivered.append(u.update_id)
+            if u.update_id != 1:  # update 1 is poison: never acked
+                await gw.ack(u)
+            if {*range(2, 151)} <= set(delivered):
+                await gw.aclose()
+            if len(delivered) > 2000:
+                pytest.fail("hot loop")
+    assert delivered.count(1) == 3  # exactly the budget
+    assert store.rows[1] is True and store.offset == 151
+    assert {*range(2, 151)} <= set(delivered)  # >100 queued behind it all got through
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "poison" in text and "update_id=1" in text and "SECRETTEXT" not in text
+    assert fake.methods().count("getUpdates") < 20
+
+
+async def test_stalled_polls_back_off_instead_of_hot_looping() -> None:
+    fake = FakeTelegram()
+    fake.push(message(1, "a"))
+    sleeps: list[float] = []
+
+    async def sleep(s: float) -> None:
+        sleeps.append(s)
+
+    gw = TelegramGateway(
+        make_settings(), make_egress(fake), MemStore(max_deliveries=8), sleep=sleep
+    )
+    n = 0
+    async for _ in gw.inbound():  # never ack
+        n += 1
+        if n == 5:
+            await gw.aclose()
+    assert sleeps[:3] == [1.0, 2.0, 4.0]  # exponential, no zero-delay re-poll
+    assert max(sleeps) <= 30.0
+
+
+async def test_backoff_resets_after_progress() -> None:
+    fake = FakeTelegram()
+    fake.push(message(1, "a"))
+    sleeps: list[float] = []
+
+    async def sleep(s: float) -> None:
+        sleeps.append(s)
+
+    gw = TelegramGateway(make_settings(), make_egress(fake), MemStore(), sleep=sleep)
+    seen: list[int] = []
+    async for u in gw.inbound():
+        seen.append(u.update_id)
+        if len(seen) == 2:
+            await gw.ack(u)
+            fake.push(message(2, "b"))
+        elif len(seen) == 3:
+            await gw.ack(u)
+            await gw.aclose()
+    assert sleeps == [1.0]  # one stall, then progress, no further waits
+
+
+def test_poll_timeout_must_be_at_least_one_second() -> None:
+    with pytest.raises(ValueError):
+        make_settings(poll_timeout_s=0)
+    assert make_settings(poll_timeout_s=1).poll_timeout_s == 1
+
+
+async def test_conflict_409_logged_as_distinct_reason(caplog: pytest.LogCaptureFixture) -> None:
+    fake = FakeTelegram()
+    fake.scripted = [httpx.Response(409, json={"ok": False, "error_code": 409})]
+    fake.push(message(1))
+    gw, _ = build(fake)
+    with caplog.at_level(logging.WARNING, logger="nimbus.gateway"):
+        await take(gw, 1)
+    assert any("reason=conflict" in r.getMessage() for r in caplog.records)

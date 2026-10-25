@@ -3,7 +3,8 @@
 
 """Postgres persistence for the poll offset and inbound updates, using the
 P1.2c tables `inbound_update` (UNIQUE update_id) and `system_flag`
-(`telegram.offset`). No new table is needed.
+(`telegram.offset`, `telegram.redeliveries`). No new table is needed
+(ADR-0016).
 
 Why the offset lags: `inbound_update` stores no payload, so once Telegram is
 told (via the `getUpdates` offset) that an update is confirmed it cannot be
@@ -11,8 +12,17 @@ re-fetched. The offset therefore only moves past an update in the *same
 transaction* that marks it processed (`complete`), never when it is merely
 received. A crash between delivery and ack leaves the offset behind, Telegram
 resends the update, and `begin()` reports it as `REDELIVERY`; one already
-processed is `DONE` and skipped. That gives no loss and no duplicate effect
-(R1) without storing message bodies.
+processed is `DONE` and skipped.
+
+Delivery is AT LEAST ONCE: a crash after the consumer stored its event but
+before `ack` redelivers the update. The consumer must therefore be idempotent
+on `event.source_key = "telegram:<update_id>"` (P2.2 acceptance). This module
+does not by itself guarantee "no duplicate effect".
+
+Poison updates: every redelivery increments a persisted per-update counter
+(`telegram.redeliveries`, survives crash loops). Past `max_deliveries` the
+update is marked processed (`processed_at` set, no event) and the offset moves
+on, so one un-ackable update cannot pin the offset or starve the queue.
 
 The offset is `min(unprocessed update_id)` if any row is unprocessed, else
 `max(update_id) + 1`, and never decreases.
@@ -31,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.memory.schemas.ops import InboundUpdate, SystemFlag
 
 OFFSET_KEY = "telegram.offset"
+REDELIVERY_KEY = "telegram.redeliveries"
 _UPDATED_BY = "gateway"
 
 
@@ -38,11 +49,15 @@ class Seen(enum.Enum):
     NEW = "new"
     REDELIVERY = "redelivery"
     DONE = "done"
+    POISON = "poison"  # redelivery budget exhausted: marked processed, do not deliver
 
 
 class UpdateStore:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], *, max_deliveries: int = 5
+    ) -> None:
         self._sf = session_factory
+        self._max = max_deliveries
 
     async def get_offset(self) -> int | None:
         async with self._sf() as s:
@@ -66,7 +81,40 @@ class UpdateStore:
             done = await s.scalar(
                 select(InboundUpdate.processed_at).where(InboundUpdate.update_id == update_id)
             )
-            return Seen.DONE if done is not None else Seen.REDELIVERY
+            if done is not None:
+                return Seen.DONE
+            counts = await self._counts(s, lock=True)
+            n = int(counts.get(str(update_id), 1)) + 1
+            if n > self._max:
+                counts.pop(str(update_id), None)
+                await self._save_counts(s, counts)
+                await s.execute(
+                    update(InboundUpdate)
+                    .where(
+                        InboundUpdate.update_id == update_id, InboundUpdate.processed_at.is_(None)
+                    )
+                    .values(processed_at=func.now())
+                )
+                await self._advance(s)
+                return Seen.POISON
+            counts[str(update_id)] = n
+            await self._save_counts(s, counts)
+            return Seen.REDELIVERY
+
+    async def _counts(self, s: AsyncSession, *, lock: bool) -> dict[str, Any]:
+        await s.execute(
+            pg_insert(SystemFlag)
+            .values(key=REDELIVERY_KEY, value={}, updated_by=_UPDATED_BY)
+            .on_conflict_do_nothing(index_elements=[SystemFlag.key])
+        )
+        q = select(SystemFlag).where(SystemFlag.key == REDELIVERY_KEY)
+        row = (await s.execute(q.with_for_update() if lock else q)).scalar_one()
+        return dict(row.value)
+
+    async def _save_counts(self, s: AsyncSession, counts: dict[str, Any]) -> None:
+        await s.execute(
+            update(SystemFlag).where(SystemFlag.key == REDELIVERY_KEY).values(value=counts)
+        )
 
     async def complete(self, update_id: int, *, event_id: uuid.UUID | None = None) -> None:
         """Mark processed and advance the offset, atomically."""
@@ -79,6 +127,9 @@ class UpdateStore:
                 .where(InboundUpdate.update_id == update_id, InboundUpdate.processed_at.is_(None))
                 .values(**vals)
             )
+            counts = await self._counts(s, lock=True)
+            if counts.pop(str(update_id), None) is not None:
+                await self._save_counts(s, counts)
             await self._advance(s)
 
     async def record_dropped(self, update_id: int, from_user_id: int | None, kind: str) -> None:

@@ -45,7 +45,7 @@ def callback(update_id: int, data: str = "ap:xyz", *, user: int = USER) -> dict:
             "id": f"cb{update_id}",
             "from": {"id": user},
             "data": data,
-            "message": {"message_id": 7},
+            "message": {"message_id": 7, "chat": {"id": user, "type": "private"}},
         },
     }
 

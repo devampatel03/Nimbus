@@ -32,7 +32,7 @@ class GatewaySettings(BaseSettings):
     bot_token: SecretStr
     allowed_user_id: int = Field(gt=0)
 
-    poll_timeout_s: int = Field(default=20, ge=0, le=50)
+    poll_timeout_s: int = Field(default=20, ge=1, le=50)  # ge=1: 0 is short polling (hot loop)
     # Our own caps, deliberately below Telegram's 20 MB.
     max_voice_bytes: int = Field(default=10 * 1024 * 1024, gt=0, le=TELEGRAM_FILE_HARD_CAP)
     max_document_bytes: int = Field(default=1 * 1024 * 1024, gt=0, le=TELEGRAM_FILE_HARD_CAP)

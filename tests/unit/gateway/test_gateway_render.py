@@ -94,3 +94,11 @@ def test_entity_never_split_across_chunks() -> None:
     chunks = render_chunks("&" * (MAX_MESSAGE_CHARS // 5 * 3))
     for c in chunks:
         assert c.count("&") == c.count(";")
+
+
+@pytest.mark.parametrize("n", [2047, 2048, 2049, 4096])
+def test_utf16_limit_with_astral_chars(n: int) -> None:
+    out = render_chunks("😀" * n)
+    for c in out:
+        assert len(c.encode("utf-16-le")) // 2 <= MAX_MESSAGE_CHARS
+    assert "".join(out) == "😀" * n
