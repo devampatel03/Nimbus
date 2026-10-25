@@ -55,6 +55,7 @@ from src.llm.types import (
     Lane,
     LLMAuditError,
     LLMMode,
+    LLMProviderError,
     LLMRefused,
     LLMResponseError,
     ProviderResponse,
@@ -68,6 +69,7 @@ IST = ZoneInfo("Asia/Kolkata")
 KILL_SWITCH_KEY = "llm_kill_switch"  # value {"engaged": bool}
 SPEND_MODE_KEY = "llm_spend_mode"  # value {"mode": "read_only", "day": "YYYY-MM-DD" (IST)}
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+_NOT_SENT_CODES = frozenset({"egress_denied", "egress_failed", "egress_config"})
 _REPAIR_PROMPT = (
     "Your previous reply was not valid JSON for the required schema. "
     "Reply again with only the corrected JSON object."
@@ -194,13 +196,28 @@ class GuardedLLM:
 
             try:
                 resp = await self._provider.complete(scrubbed)
+            except asyncio.CancelledError:
+                # Request may be in flight and billed: record it (shielded so
+                # the cancel cannot abort the write) and hold the reservation.
+                keep = True
+                await asyncio.shield(self._audit_error(req, model, started, None, reserved))
+                raise
             except LLMResponseError as exc:
                 # The transport answered (and billed) but the body was unusable:
                 # bill the parsed usage, else the reserved estimate (pessimistic).
-                await self._audit_error(req, model, started, exc.usage, reserved)
+                keep = not await self._audit_error(req, model, started, exc.usage, reserved)
+                raise
+            except LLMProviderError as exc:
+                # Sent-but-no-body failures (timeout/connection/unexpected) may
+                # be billed; 4xx/5xx statuses and pre-send egress failures are not.
+                sent = exc.status is None and exc.code not in _NOT_SENT_CODES
+                wrote = await self._audit_error(
+                    req, model, started, None, reserved if sent else Decimal(0)
+                )
+                keep = sent and not wrote
                 raise
             except Exception:
-                await self._audit_error(req, model, started, None, Decimal(0))
+                keep = not await self._audit_error(req, model, started, None, reserved)
                 raise
             if req.lane is Lane.QUARANTINE and resp.tool_calls:
                 logger.warning("quarantine lane: dropping provider-invented tool calls")
@@ -388,12 +405,12 @@ class GuardedLLM:
         started: datetime,
         usage: Usage | None,
         reserved: Decimal,
-    ) -> None:
+    ) -> bool:
+        """Write the error row; True iff it was committed."""
         if usage is not None and (usage.tokens_in or usage.tokens_out):
             cost = self._pricing.cost_inr(model, usage.tokens_in, usage.tokens_out)
-            await self._audit_safely(req, model, started, "error", None, usage, cost)
-        else:
-            await self._audit_safely(req, model, started, "error", None, None, reserved)
+            return await self._audit_safely(req, model, started, "error", None, usage, cost)
+        return await self._audit_safely(req, model, started, "error", None, None, reserved)
 
     async def _audit_safely(
         self,
@@ -404,7 +421,7 @@ class GuardedLLM:
         reason: str | None,
         usage: Usage | None = None,
         cost: Decimal = Decimal(0),
-    ) -> None:
+    ) -> bool:
         now = self._clock()
         record = AuditRecord(
             purpose=req.purpose.value,
@@ -419,9 +436,11 @@ class GuardedLLM:
             latency_ms=_ms(now - started),
             turn_id=req.turn_id,
         )
+        written = True
         try:
             await self._audit.write(record)
         except Exception:  # noqa: BLE001 - never mask the original failure
+            written = False
             logger.error("llm audit write failed for status=%s", status)
         logger.info(
             "llm call purpose=%s model=%s status=%s reason=%s",
@@ -430,6 +449,7 @@ class GuardedLLM:
             status,
             reason,
         )
+        return written
 
 
 def _real_secrets(settings: LLMSettings) -> tuple[str, ...]:

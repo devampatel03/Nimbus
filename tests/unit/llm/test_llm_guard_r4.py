@@ -323,6 +323,14 @@ async def test_provider_failure_writes_error_row_and_raises() -> None:
         await env.llm.chat(req())
 
     assert [r.status for r in env.audit.records] == ["error"]
+    # A timeout was sent and may be billed: the reserved estimate is recorded (R5).
+    assert env.audit.records[0].cost_inr > 0
+
+
+async def test_provider_status_failure_is_not_billed() -> None:
+    env = build_env(provider=FakeLLM([LLMProviderError("provider_status", status=503)]))
+    with pytest.raises(LLMProviderError):
+        await env.llm.chat(req())
     assert env.audit.records[0].cost_inr == 0
 
 

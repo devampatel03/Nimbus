@@ -251,3 +251,97 @@ async def test_audit_write_failure_keeps_reservation_so_cap_still_trips() -> Non
             outcomes.append("cap")
     assert "cap" in outcomes
     assert outcomes.count("audit_err") <= 3
+
+
+_BILLED = {
+    "*": ModelPrice(in_per_mtok_inr=Decimal("0.001"), out_per_mtok_inr=Decimal(10000))
+}  # estimate for req() ~= 1.00 INR
+
+
+async def test_timeouts_after_send_are_billed_per_send_and_trip_cap() -> None:
+    import httpx
+
+    from src.llm.types import LLMProviderError
+
+    def handler(r: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=r)
+
+    t = RecordingTransport(handler)
+    env = build_env(transport=t, daily_spend_cap_inr="1.50", price_table=_BILLED)
+    outcomes: list[str] = []
+    for _ in range(10):
+        try:
+            await env.llm.chat(req())
+        except LLMProviderError:
+            outcomes.append("err")
+        except SpendCapExceeded:
+            outcomes.append("cap")
+    assert "cap" in outcomes
+    assert len(t.calls) <= 2  # ceil(1.50 / 1.00)
+    errored = [r for r in env.audit.records if r.status == "error"]
+    assert errored and all(r.cost_inr > 0 for r in errored)
+
+
+async def test_provider_4xx_refusal_is_not_billed() -> None:
+    import httpx
+
+    from src.llm.types import LLMProviderError
+
+    t = RecordingTransport(lambda r: httpx.Response(401, json={"error": "x"}))
+    env = build_env(transport=t, price_table=_BILLED)
+    with pytest.raises(LLMProviderError):
+        await env.llm.chat(req())
+    assert all(r.cost_inr == 0 for r in env.audit.records)
+
+
+async def test_failing_error_row_write_holds_reservation() -> None:
+    from src.llm.types import LLMResponseError
+    from tests.fakes.llm import completion_response
+
+    bad = {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "nope"}}
+    t = RecordingTransport(
+        lambda r: completion_response(
+            None, tool_calls=[bad], prompt_tokens=10, completion_tokens=100
+        )
+    )
+    env = build_env(transport=t, daily_spend_cap_inr="1.50", price_table=_BILLED)
+    real = env.audit.write
+
+    async def write(rec):  # type: ignore[no-untyped-def]
+        if rec.status == "error":
+            raise OSError("disk full")
+        return await real(rec)
+
+    env.audit.write = write  # type: ignore[method-assign]
+    outcomes: list[str] = []
+    for _ in range(10):
+        try:
+            await env.llm.chat(req())
+        except LLMResponseError:
+            outcomes.append("err")
+        except SpendCapExceeded:
+            outcomes.append("cap")
+    assert "cap" in outcomes
+    assert len(t.calls) <= 2
+
+
+async def test_cancelled_in_flight_calls_are_billed() -> None:
+    from tests.fakes.llm import completion_response
+
+    gate = asyncio.Event()
+
+    async def slow(r):  # type: ignore[no-untyped-def]
+        await gate.wait()
+        return completion_response("ok")
+
+    t = RecordingTransport(slow)
+    env = build_env(transport=t, daily_spend_cap_inr="1.50", price_table=_BILLED)
+    task = asyncio.create_task(env.llm.chat(req()))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    errored = [r for r in env.audit.records if r.status == "error"]
+    assert len(errored) == 1 and all(r.cost_inr > 0 for r in errored)
+    with pytest.raises(SpendCapExceeded):
+        await env.llm.chat(req())

@@ -186,18 +186,18 @@ async def test_never_retries_4xx(status: int) -> None:
     assert len(t.calls) == 1 and ei.value.status == status
 
 
-async def test_retries_timeouts() -> None:
-    calls = {"n": 0}
+async def test_timeouts_are_not_retried_in_adapter() -> None:
+    # The request was sent and may be billed; a retry here would bypass the
+    # guard's per-call reservation and audit row (R5). Callers retry via guard.
+    t = RecordingTransport(_raise_timeout)
+    env = build_env(transport=t)
+    with pytest.raises(LLMProviderError) as ei:
+        await env.llm.chat(req())
+    assert ei.value.code == "timeout" and len(t.calls) == 1
 
-    def handler(r: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise httpx.ReadTimeout("slow", request=r)
-        return completion_response("late")
 
-    env = build_env(transport=RecordingTransport(handler))
-    assert (await env.llm.chat(req())).text == "late"
-    assert calls["n"] == 3
+def _raise_timeout(r: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("slow", request=r)
 
 
 async def test_retry_after_header_is_honoured_but_capped() -> None:

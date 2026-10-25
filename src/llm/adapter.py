@@ -7,7 +7,7 @@ an LLM SDK (`openai`); the import-lint test enforces that.
 Egress: the SDK's HTTP client is `src.net.build_sdk_http_client(Service.LLM)`,
 so every request, including retries, passes the host allowlist and deny rules.
 The SDK's own retries are disabled (`max_retries=0`); this module retries
-429 / 5xx / timeouts / connection errors with bounded exponential backoff and
+429 / 5xx with bounded exponential backoff and
 NEVER retries 4xx (auth, validation) or an egress denial.
 
 INV-7: SDK exception text can echo the key prefix ("Incorrect API key ...")
@@ -206,9 +206,13 @@ class OpenAICompatProvider:
                     hint = None
             code = "provider_status"
         elif isinstance(exc, openai.APITimeoutError):
+            # Sent, no body: possibly billed. Never retried here (R5); the
+            # caller retries through the guard so each send is reserved/billed.
             code = "timeout"
+            retryable = False
         elif isinstance(exc, openai.APIConnectionError):
             code = "connection"
+            retryable = False
         else:
             code = "unexpected"
             retryable = False

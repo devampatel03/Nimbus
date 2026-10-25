@@ -80,6 +80,8 @@ def _tg_token() -> str:
         "https://api.telegram.org/bot{t}/sendMessage",
         "bot{t}",
         "Bot{t}",
+        "mybot{t}",
+        "my_BOT{t}",
         "BOT{t}",
         "https://api.telegram.org/BOT{t}/getMe",
         "{t}",
