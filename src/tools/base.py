@@ -13,10 +13,9 @@ per-action distinction.
 
 `schema` describes the primitive params each action accepts -- this is
 what `src/tools/registry.py` and the orchestrator use to validate a
-proposed `ToolIntent.params` shape before it ever reaches the scrubber
-(the scrubber's own whitelist, `ALLOWED_TOOLS`, is a separate, narrower
-tool/action gate per MEMORY.md's tech-debt note; the two are not yet
-unified -- see that note before assuming this schema is enforced there).
+proposed `ToolIntent.params` shape before the tool runs. (The old
+scrubber `ALLOWED_TOOLS` whitelist was deleted with `src/security` in
+P1.4c; Tool protocol v2 lands in P2.5b.)
 """
 
 from abc import ABC, abstractmethod
@@ -53,13 +52,9 @@ class BaseTool(ABC):
     async def run(
         self, action: str, params: dict[str, Primitive], *, session_id: str
     ) -> ToolResult:
-        """Execute `action`. `session_id` scopes the scrubber's per-session
-        entity-ref store (AD-12) for tools whose action needs the cloud
-        model to execute against a third-party service -- those tools call
-        `src.security.scrubber.execute_external` from within this method
-        rather than reaching a transport library directly, keeping the
-        scrubber the sole egress point (INV-1). A purely local tool (no
-        third-party API, no cloud reasoning -- e.g. the internal task
-        store) ignores `session_id` and never touches the scrubber.
+        """Execute `action`. A tool that needs a third-party service must
+        use `src.net` (the only module allowed to import a transport, INV-1)
+        and never import a transport library itself. Purely local tools
+        (tasks, reminders) ignore `session_id`.
         """
         raise NotImplementedError

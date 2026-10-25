@@ -1,10 +1,10 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""ToolIntent / ToolResult: Agent-runtime agent -> Scrubber agent. Frozen at P3.
+"""ToolIntent / ToolResult: orchestrator -> tool. Frozen at P3; deleted in P2.5b.
 
-ToolIntent is the ONLY object the scrubber's execute_external (INV-1) may
-accept. Per section 8.1: no transcripts, memory rows, graph edges,
+Originally the ONLY object the (now deleted, P1.4c) scrubber's
+`execute_external` accepted. Per section 8.1: no transcripts, memory rows, graph edges,
 personality traits, stance entries, reasoning chains, raw user utterances
 or person names may cross this boundary — params are primitives only and
 entities are opaque local refs.

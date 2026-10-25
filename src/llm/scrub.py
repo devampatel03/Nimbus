@@ -41,7 +41,8 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "credential_assignment",
         re.compile(
             r"(?i)\b(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret)"
-            r"\s*[:=]\s*['\"]?[A-Za-z0-9._~+/=-]{12,}"
+            # optional closing quote: JSON/YAML/dict keys ("password": "...")
+            r"['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9._~+/=-]{12,}"
         ),
     ),
 )

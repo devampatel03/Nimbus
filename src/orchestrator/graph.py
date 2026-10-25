@@ -22,12 +22,10 @@ Design decisions worth flagging (see MEMORY.md AD-14 and this session's AD):
   approval gate, now via `deps.approver.review_async` (this session's
   LLM-based judgment; see `approver.py`'s module docstring for why the
   sync `review` heuristic is kept alongside it, unchanged, for the
-  protected `tests/eval/injection/red_team.py` harness). INV-1
-  compliance is transitive: `CalendarTool.run` (the only tool here
-  needing a third-party service) calls `scrubber.execute_external`
-  internally; `TasksTool.run` is genuinely local and never reaches the
-  scrubber (see `src/tools/base.py`'s docstring). `act` itself never
-  imports `httpx`/holds a second egress call site.
+  protected `tests/eval/injection/red_team.py` harness). The registered
+  tools (tasks, reminders) are purely local; the scrubber-backed
+  calendar/gmail/drive intent builders were deleted in P1.4c. `act`
+  itself imports no transport (INV-1: only `src/net` may).
 - `respond` calls `context_builder.build_system_prompt`, which only does
   a local (non-network) file read plus string formatting before handing
   the assembled prompt to the LLM client -- the local model call is the
