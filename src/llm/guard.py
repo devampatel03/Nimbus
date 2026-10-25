@@ -70,6 +70,7 @@ KILL_SWITCH_KEY = "llm_kill_switch"  # value {"engaged": bool}
 SPEND_MODE_KEY = "llm_spend_mode"  # value {"mode": "read_only", "day": "YYYY-MM-DD" (IST)}
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 _NOT_SENT_CODES = frozenset({"egress_denied", "egress_failed", "egress_config"})
+_SENT_STATUSES = frozenset({408, 504})
 _REPAIR_PROMPT = (
     "Your previous reply was not valid JSON for the required schema. "
     "Reply again with only the corrected JSON object."
@@ -194,42 +195,46 @@ class GuardedLLM:
                 await self._audit_blocked(req, model, started, "guard_error")
                 raise LLMRefused("guard_error") from None
 
+            # From here the request may be billed. Hold the reservation until
+            # a committed audit row is CONFIRMED (cancel/crash/failed write all
+            # leave it held for the IST day).
+            keep = True
             try:
                 resp = await self._provider.complete(scrubbed)
             except asyncio.CancelledError:
-                # Request may be in flight and billed: record it (shielded so
-                # the cancel cannot abort the write) and hold the reservation.
-                keep = True
                 await asyncio.shield(self._audit_error(req, model, started, None, reserved))
                 raise
             except LLMResponseError as exc:
                 # The transport answered (and billed) but the body was unusable:
                 # bill the parsed usage, else the reserved estimate (pessimistic).
-                keep = not await self._audit_error(req, model, started, exc.usage, reserved)
+                keep = not await asyncio.shield(
+                    self._audit_error(req, model, started, exc.usage, reserved)
+                )
                 raise
             except LLMProviderError as exc:
-                # Sent-but-no-body failures (timeout/connection/unexpected) may
-                # be billed; 4xx/5xx statuses and pre-send egress failures are not.
-                sent = exc.status is None and exc.code not in _NOT_SENT_CODES
-                wrote = await self._audit_error(
-                    req, model, started, None, reserved if sent else Decimal(0)
+                # Sent-but-no-body failures (timeout/connection/unexpected, 408/504)
+                # may be billed; other statuses and pre-send egress failures not.
+                sent = exc.code not in _NOT_SENT_CODES and (
+                    exc.status is None or exc.status in _SENT_STATUSES
+                )
+                wrote = await asyncio.shield(
+                    self._audit_error(req, model, started, None, reserved if sent else Decimal(0))
                 )
                 keep = sent and not wrote
                 raise
             except Exception:
-                keep = not await self._audit_error(req, model, started, None, reserved)
+                keep = not await asyncio.shield(
+                    self._audit_error(req, model, started, None, reserved)
+                )
                 raise
             if req.lane is Lane.QUARANTINE and resp.tool_calls:
                 logger.warning("quarantine lane: dropping provider-invented tool calls")
                 resp = resp.model_copy(update={"tool_calls": ()})
             # The reservation is released only AFTER the audit row is committed
             # (in `finally`), so the ledger never under-counts in between (R5).
-            try:
-                return await self._finish(req, model, started, resp, payload)
-            except LLMAuditError:
-                # Unrecorded spend: never release the reservation (fail closed).
-                keep = True
-                raise
+            result = await asyncio.shield(self._finish(req, model, started, resp, payload))
+            keep = False  # reached only if the audit row committed
+            return result
         finally:
             if reserved:
                 async with self._lock:

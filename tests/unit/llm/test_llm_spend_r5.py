@@ -345,3 +345,69 @@ async def test_cancelled_in_flight_calls_are_billed() -> None:
     assert len(errored) == 1 and all(r.cost_inr > 0 for r in errored)
     with pytest.raises(SpendCapExceeded):
         await env.llm.chat(req())
+
+
+async def _cancel_during_write(slow_status: str, handler) -> None:  # type: ignore[no-untyped-def]
+    t = RecordingTransport(handler)
+    env = build_env(transport=t, daily_spend_cap_inr="1.50", price_table=_BILLED)
+    real = env.audit.write
+
+    async def w(rec):  # type: ignore[no-untyped-def]
+        if rec.status == slow_status:
+            await asyncio.sleep(10)
+        return await real(rec)
+
+    env.audit.write = w  # type: ignore[method-assign]
+    capped = False
+    for _ in range(6):
+        n0 = len(t.calls)
+        task = asyncio.create_task(env.llm.chat(req()))
+        for _i in range(200):
+            if len(t.calls) > n0 or task.done():
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except SpendCapExceeded:
+            capped = True
+            break
+    assert capped
+    assert len(t.calls) <= 2  # ceil(1.50 / 1.00)
+
+
+async def test_cancel_during_ok_row_write_holds_reservation() -> None:
+    from tests.fakes.llm import completion_response
+
+    await _cancel_during_write(
+        "ok", lambda q: completion_response("ok", prompt_tokens=10, completion_tokens=100)
+    )
+
+
+async def test_cancel_during_error_row_write_holds_reservation() -> None:
+    from tests.fakes.llm import completion_response
+
+    bad = {"id": "c", "type": "function", "function": {"name": "t", "arguments": "nope"}}
+    await _cancel_during_write(
+        "error",
+        lambda q: completion_response(
+            None, tool_calls=[bad], prompt_tokens=10, completion_tokens=100
+        ),
+    )
+
+
+@pytest.mark.parametrize("status", [504, 408])
+async def test_gateway_timeout_statuses_are_billed_and_not_retried(status: int) -> None:
+    import httpx
+
+    from src.llm.types import LLMProviderError
+
+    t = RecordingTransport(lambda r: httpx.Response(status, json={"error": "x"}))
+    env = build_env(transport=t, daily_spend_cap_inr="1.50", price_table=_BILLED)
+    with pytest.raises(LLMProviderError):
+        await env.llm.chat(req())
+    assert len(t.calls) == 1
+    assert env.audit.records[0].cost_inr > 0

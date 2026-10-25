@@ -197,7 +197,8 @@ class OpenAICompatProvider:
         hint: float | None = None
         if isinstance(exc, openai.APIStatusError):
             status = exc.status_code
-            retryable = status == 429 or status >= 500
+            # 408/504: the upstream may have processed (and billed) the request.
+            retryable = status in (429, 502, 503) or (status >= 500 and status != 504)
             retry_after = exc.response.headers.get("retry-after")
             if retry_after is not None:
                 try:
