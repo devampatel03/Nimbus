@@ -1,7 +1,7 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Shared fixtures for tests that need real Postgres/Qdrant instances
+"""Shared fixtures for tests that need real Postgres instance
 (per AGENT_OPERATING_MANUAL.md: measurements must use real dependencies, not
 mocks). Requires `docker compose up -d`.
 
@@ -16,7 +16,6 @@ tool-proposal logic `tests/unit/test_graph.py`'s own fake uses.
 from collections.abc import AsyncIterator
 
 import pytest
-from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from config.settings import settings
@@ -102,12 +101,3 @@ async def db_session(pg_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await outer_tx.rollback()
-
-
-@pytest.fixture
-async def qdrant_client() -> AsyncIterator[AsyncQdrantClient]:
-    client = AsyncQdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
-    yield client
-    for collection in (await client.get_collections()).collections:
-        await client.delete_collection(collection.name)
-    await client.close()
