@@ -105,3 +105,43 @@ def test_settings_errors_and_reprs_hide_values() -> None:
     _no_secret(str(ej.value))
     s = LLMSettings(_env_file=None, api_key=SK)  # type: ignore[call-arg]
     _no_secret(repr(s) + str(s) + repr(s.model_dump()))
+
+
+def test_extras_and_every_record_attribute_never_carry_secrets(root_log: io.StringIO) -> None:
+    """Sinks render EVERY attribute: a formatter with %(hdr)s and a capture
+    handler asserting on repr(record.__dict__) (round-1 HIGH-1)."""
+    records: list[logging.LogRecord] = []
+
+    class Cap(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    buf = io.StringIO()
+    sink = logging.StreamHandler(buf)
+    sink.setFormatter(logging.Formatter("%(message)s | hdr=%(hdr)s"))
+    lg = logging.getLogger("nimbus.test.inv7.extras")
+    lg.propagate = False
+    lg.handlers[:] = [Cap(), sink]
+    lg.setLevel(logging.DEBUG)
+    try:
+        for s in SECRETS:
+            lg.info("m", extra={"hdr": f"Bearer {s}"})
+            lg.info("m", extra={"hdr": s})
+            lg.info("m", extra={"hdr": {"k": s}})
+            lg.info("m", extra={"hdr": [s, (s,)]})
+        _no_secret(buf.getvalue())
+        assert records
+        _no_secret("".join(repr(r.__dict__) for r in records))
+    finally:
+        lg.handlers.clear()
+
+
+def test_shared_settings_errors_and_reprs_hide_values() -> None:
+    from config.settings import Settings
+
+    with pytest.raises(ValidationError) as ei:
+        Settings(_env_file=None, postgres_port=SK)  # type: ignore[call-arg,arg-type]
+    _no_secret(str(ei.value))
+    s = Settings(_env_file=None, postgres_password=SK)  # type: ignore[call-arg,arg-type]
+    _no_secret(repr(s) + str(s) + repr(s.model_dump()))
+    assert SK in s.postgres_dsn  # the DSN property is the one deliberate unwrap

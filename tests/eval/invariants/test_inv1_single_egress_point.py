@@ -17,7 +17,19 @@ needed a path-prefix hack to tolerate `src/net`.
 Here *any* import of a forbidden module -- `import x`, `import x.y as z`,
 `from x import y`, `from x.y import z`, function-local imports, and
 string-literal `importlib.import_module("x")` / `__import__("x")` -- is a
-violation unless the file is on the allow-list below.
+violation unless the file is on the allow-list below. Also flagged: any load of
+`import_module`/`__import__` (not just calls; non-literal arguments fail
+closed), bare `exec`/`eval`/`compile`, `urllib.request.*`/`http.client.*`
+attribute chains (import aliases resolved), and connect-by-name calls
+(`open_connection`, `create_connection`, `sock_connect`, ...).
+
+NOT detected (known gaps; a determined in-repo author can evade them):
+`getattr(module, "name")` tricks, `Service.__members__`/`for s in Service`
+enumeration reaching `Service.LLM`, `globals()["__import__"]`, imports built by
+string concatenation inside `exec`d code (exec itself is flagged), and
+third-party libraries that open sockets internally without a flagged import.
+This is a lint for accidents and review-visible shortcuts, not a sandbox; the
+runtime zero-transport check (guard tests) and the network allowlist back it.
 """
 
 from __future__ import annotations
@@ -86,9 +98,12 @@ CONNECT_CALLS = frozenset(
         "open_unix_connection",
         "create_unix_connection",
         "create_datagram_endpoint",
+        "sock_connect",
     }
 )
 _DYNAMIC_IMPORTERS = frozenset({"__import__", "import_module"})
+# Dynamic code execution: can build any import/call from a string.
+_DYNAMIC_CODE = frozenset({"exec", "eval", "compile"})
 # Attribute-chain prefixes that reach a transport without a matching import
 # statement (`import urllib` + `urllib.request.urlopen(...)` after another
 # module imported the submodule).
@@ -130,9 +145,17 @@ def _scan(tree: ast.AST, modules: frozenset[str], *, with_calls: bool) -> list[t
     it cannot be proven safe, so it fails closed."""
     hits: list[tuple[int, str]] = []
     importers = set(_DYNAMIC_IMPORTERS)
-    for node in ast.walk(tree):  # aliases: `from importlib import import_module as im`
+    aliases: dict[str, str] = {}  # local name -> full dotted module/object
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             importers |= {a.asname for a in node.names if a.asname and a.name in _DYNAMIC_IMPORTERS}
+            if node.module and node.level == 0:
+                for a in node.names:
+                    aliases[a.asname or a.name] = f"{node.module}.{a.name}"
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    aliases[a.asname] = a.name
     for node in ast.walk(tree):
         names: list[str] = []
         label: str | None = None
@@ -154,13 +177,27 @@ def _scan(tree: ast.AST, modules: frozenset[str], *, with_calls: bool) -> list[t
                     label = "dynamic-import"
             elif with_calls and callee in CONNECT_CALLS:
                 label = f"call:{callee}"
-        elif with_calls and isinstance(node, ast.Attribute):
-            dotted = _dotted(node)
+            elif (
+                with_calls
+                and callee in _DYNAMIC_CODE
+                # bare exec/eval/compile or builtins.X -- NOT re.compile etc.
+                and (isinstance(node.func, ast.Name) or _dotted(node.func) == f"builtins.{callee}")
+            ):
+                label = "dynamic-code"
+        elif with_calls and isinstance(node, ast.Name | ast.Attribute):
+            # Any *load* of import_module/__import__ (alias assignment, passing
+            # it around), not only a direct call.
+            ident = node.id if isinstance(node, ast.Name) else node.attr
+            if ident in importers and isinstance(node.ctx, ast.Load):
+                label = "dynamic-import"
+            dotted = _dotted(node) if isinstance(node, ast.Attribute) else None
             if dotted is not None:
+                root, _, rest = dotted.partition(".")
+                if root in aliases:
+                    dotted = aliases[root] + ("." + rest if rest else "")
                 for prefix in CHAIN_PREFIXES:
-                    if dotted == prefix or dotted.startswith(prefix + "."):
+                    if label is None and (dotted == prefix or dotted.startswith(prefix + ".")):
                         label = prefix
-                        break
         if label is None:
             for name in names:
                 label = _matches(name, modules)
@@ -374,6 +411,35 @@ def test_service_llm_scanner_detects(source: str) -> None:
 )
 def test_service_llm_scanner_ignores_benign(source: str) -> None:
     assert _service_llm_refs(ast.parse(source)) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib\nf = importlib.import_module",  # reference, not call
+        "from importlib import import_module\nf = import_module",
+        "f = __import__",
+        "import builtins\nf = builtins.__import__",
+        "exec('import socket')",
+        "eval('1')",
+        "compile('x', 'f', 'exec')",
+        "import urllib as u\nu.request.urlopen(x)",
+        "import http as h\nh.client.HTTPSConnection(x)",
+        "from urllib import request as r\nr.urlopen(x)",
+        "from http import client as c\nc.HTTPSConnection(x)",
+        "async def f(loop):\n    await loop.sock_connect(s, a)",
+    ],
+)
+def test_scanner_detects_round1_forms(source: str) -> None:
+    assert _imported_transports(ast.parse(source)), f"scanner missed: {source!r}"
+
+
+def test_re_compile_is_not_dynamic_code() -> None:
+    assert _imported_transports(ast.parse("import re\nre.compile('x')")) == []
+
+
+def test_dynamic_code_is_not_flagged_by_llm_sdk_scan() -> None:
+    assert _imported_llm_sdks(ast.parse("exec('x')")) == []
 
 
 def test_asyncio_connect_by_name_is_forbidden_even_in_src_net() -> None:

@@ -8,7 +8,7 @@ Module-owned settings live next to their module (`src/llm/settings.py`,
 module's knobs here.
 """
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,15 +17,20 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # INV-7: a ValidationError must never echo the offending value.
+        hide_input_in_errors=True,
     )
 
     # Postgres (semantic memory, bi-temporal graph tables, pgvector episodic memory)
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "nimbus"
-    postgres_password: str = Field(default="nimbus")
+    postgres_password: SecretStr = Field(default=SecretStr("nimbus"))
     postgres_db: str = "nimbus"
 
+    # TODO(P2.1b): auth_password / jwt_secret_key should be SecretStr too; left
+    # as str now because src/api and its tests (deleted/rewritten in P2.1b)
+    # read them as plain strings.
     # API auth (Nimbus is single-user, self-hosted, PRD section 1 -- there is
     # no user table, just one shared login secret). Dev-only defaults below,
     # same pattern as `postgres_password` above: MUST be overridden via
@@ -48,7 +53,7 @@ class Settings(BaseSettings):
     @property
     def postgres_dsn(self) -> str:
         return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password.get_secret_value()}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
