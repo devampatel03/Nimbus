@@ -25,6 +25,13 @@ from src.llm.types import ToolSpec
 
 log = logging.getLogger(__name__)
 
+# Tool output is attacker-influenced and re-enters the prompt, so it is bounded
+# well below the LLM guard's pre-call spend estimate (a huge output must not be
+# able to trip the daily cap and pause the model for the day).
+MAX_TOOL_OUTPUT_CHARS = 4000
+TRUNCATION_MARKER = "\n[truncated]"
+CALL_CAP_MESSAGE = "Denied: too many tool calls in this turn."
+
 
 class Risk(StrEnum):
     READ = "read"
@@ -40,7 +47,8 @@ class ToolError(Exception):
 @dataclass(frozen=True)
 class ToolOutput:
     text: str
-    untrusted: bool = False  # external free text -> rendered as a DataBlock
+    # Untrusted unless a tool explicitly opts out; rendered as a DataBlock.
+    untrusted: bool = True
 
 
 class LoopTool(Protocol):
@@ -103,6 +111,18 @@ class Dispatcher:
     async def dispatch(
         self, name: str, args: Mapping[str, Any], *, exposed: frozenset[str]
     ) -> DispatchResult:
+        result = await self._decide_and_run(name, args, exposed)
+        log.info(
+            "dispatch decision tool=%s verdict=%s rule_id=%s",
+            name[:64].encode("ascii", "backslashreplace").decode(),
+            "deny" if result.status == "denied" else "allow",
+            result.rule_id,
+        )
+        return result
+
+    async def _decide_and_run(
+        self, name: str, args: Mapping[str, Any], exposed: frozenset[str]
+    ) -> DispatchResult:
         tool = self._tools.get(name) if name in exposed else None
         call = ProposedCall(tool=name, args=args, risk=tool.risk if tool else None)
         try:
@@ -125,6 +145,7 @@ class Dispatcher:
         except Exception:  # noqa: BLE001 - fail closed
             log.warning("tool failure tool=%s", name)
             return DispatchResult(name, "error", "Tool error: failed.", rule_id=decision.rule_id)
-        return DispatchResult(
-            name, "ok", out.text, untrusted=out.untrusted, rule_id=decision.rule_id
-        )
+        text = out.text
+        if len(text) > MAX_TOOL_OUTPUT_CHARS:
+            text = text[:MAX_TOOL_OUTPUT_CHARS] + TRUNCATION_MARKER
+        return DispatchResult(name, "ok", text, untrusted=out.untrusted, rule_id=decision.rule_id)

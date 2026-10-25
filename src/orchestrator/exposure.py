@@ -44,12 +44,12 @@ def select_tools(
     seen: set[str] = set()
     out: list[ToolSpec] = []
     for t in sorted(candidates, key=rank):
+        if len(out) >= cap:
+            break
         if t.spec.name in seen:
             continue
         seen.add(t.spec.name)
         out.append(t.spec)
-        if len(out) >= cap:
-            break
     return tuple(out)
 
 

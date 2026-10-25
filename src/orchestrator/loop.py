@@ -29,7 +29,13 @@ from src.llm.types import (
     ToolCallRequest,
 )
 from src.orchestrator.context import MemoryRecall, build_context
-from src.orchestrator.dispatch import Dispatcher, DispatchResult, LoopTool, Policy
+from src.orchestrator.dispatch import (
+    CALL_CAP_MESSAGE,
+    Dispatcher,
+    DispatchResult,
+    LoopTool,
+    Policy,
+)
 from src.orchestrator.exposure import ExposableTool, names, select_tools
 from src.personality.agent_character import AgentStance
 from src.personality.prompt_assembler import DataBlock, render_data_block
@@ -50,6 +56,7 @@ class LoopConfig:
     token_budget: int = 6000
     max_tools: int = 12
     max_output_tokens: int = 800
+    max_tool_calls_per_turn: int = 8
 
 
 @dataclass(frozen=True)
@@ -118,6 +125,7 @@ class Orchestrator:
         ]
         events: list[DispatchResult] = []
         used = 0
+        attempted = 0
 
         def done(text: str, status: str) -> TurnResult:
             return TurnResult(text, status, tuple(events), used, tuple(messages))
@@ -125,18 +133,24 @@ class Orchestrator:
         for _ in range(self._cfg.max_iterations):
             if used >= self._cfg.token_budget:
                 return done(BUDGET_MESSAGE, "budget_exceeded")
+            remaining = self._cfg.token_budget - used
             req = ChatRequest(
                 purpose=Purpose.CHAT,
                 lane=Lane.TRUSTED,
                 messages=tuple(messages),
                 tools=exposed,
-                max_output_tokens=self._cfg.max_output_tokens,
+                # Remaining budget bounds the output; a call can still overshoot by
+                # its input tokens, which are only known after the fact.
+                max_output_tokens=max(1, min(self._cfg.max_output_tokens, remaining)),
                 turn_id=turn_id,
             )
             try:
                 res = await self._llm.chat(req)
             except LLMError as e:
                 log.warning("llm unavailable for turn: %s", type(e).__name__)
+                return done(UNAVAILABLE_MESSAGE, "unavailable")
+            except Exception as e:  # noqa: BLE001 - fail closed, type name only
+                log.warning("unexpected error in turn: %s", type(e).__name__)
                 return done(UNAVAILABLE_MESSAGE, "unavailable")
             used += res.usage.tokens_in + res.usage.tokens_out
             if not res.tool_calls:
@@ -145,6 +159,17 @@ class Orchestrator:
                 ChatMessage(role="assistant", content=res.text, tool_calls=res.tool_calls)
             )
             for call in res.tool_calls:
+                attempted += 1
+                if attempted > self._cfg.max_tool_calls_per_turn:
+                    events.append(
+                        DispatchResult(
+                            call.name, "denied", CALL_CAP_MESSAGE, rule_id="deny.call_cap"
+                        )
+                    )
+                    messages.append(
+                        ChatMessage(role="tool", content=CALL_CAP_MESSAGE, tool_call_id=call.id)
+                    )
+                    continue
                 messages.append(await self._run_call(call, exposed_names, events))
         return done(BUDGET_MESSAGE, "budget_exceeded")
 
