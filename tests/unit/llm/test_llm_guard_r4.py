@@ -184,12 +184,81 @@ async def test_kill_switch_is_checked_before_spend_and_scrub() -> None:
     assert env.alerts.messages == []  # spend check never ran
 
 
-async def test_spend_is_checked_before_scrub() -> None:
+async def test_scrub_is_checked_before_spend() -> None:
+    # TARGET_DESIGN section 2 order: kill -> lane -> scrub -> spend.
     env = build_env(daily_spend_cap_inr="10")
     await _trip_cap(env)
 
-    with pytest.raises(SpendCapExceeded):
+    with pytest.raises(LLMRefused) as ei:
         await env.llm.chat(req(SK_SECRET))
+    assert ei.value.reason == "scrub_blocked"
+    assert env.alerts.messages == []  # spend check never ran
+
+
+async def test_quarantine_drops_provider_invented_tool_calls() -> None:
+    from src.llm.types import ProviderResponse, ToolCallRequest
+
+    bogus = ToolCallRequest(id="c", name="send_money", arguments={})
+    env = build_env(provider=FakeLLM([ProviderResponse(text="x", tool_calls=(bogus,))]))
+    result = await env.llm.chat(req(lane=Lane.QUARANTINE))
+    assert result.tool_calls == () and result.text == "x"
+
+    env2 = build_env(provider=FakeLLM([ProviderResponse(text="x", tool_calls=(bogus,))]))
+    assert (await env2.llm.chat(req(lane=Lane.TRUSTED))).tool_calls == (bogus,)
+
+
+@pytest.mark.parametrize("value", ["true", 1, "yes", None, {}])
+async def test_malformed_kill_switch_value_fails_closed(value: Any) -> None:
+    transport = RecordingTransport()
+    env = build_env(transport=transport)
+    await env.flags.set(KILL_SWITCH_KEY, {"engaged": value}, updated_by="t")
+    with pytest.raises(LLMRefused):
+        await env.llm.chat(req())
+    assert transport.calls == []
+    assert await env.llm.mode() is LLMMode.KILLED
+
+
+async def test_kill_switch_missing_key_is_engaged_but_absent_flag_is_not() -> None:
+    env = build_env()
+    await env.flags.set(KILL_SWITCH_KEY, {}, updated_by="t")
+    with pytest.raises(LLMRefused):
+        await env.llm.chat(req())
+
+
+async def test_default_placeholder_key_is_not_a_secret() -> None:
+    from src.llm.settings import DEFAULT_API_KEY
+
+    env = build_env(api_key=DEFAULT_API_KEY)
+    result = await env.llm.chat(req(f"the config says {DEFAULT_API_KEY} here"))
+    assert result.text == "fake reply"
+
+
+async def test_tool_names_and_call_ids_are_scrubbed() -> None:
+    from src.llm.types import ToolCallRequest
+
+    env = build_env()
+    r = ChatRequest(
+        purpose=Purpose.CHAT,
+        lane=Lane.TRUSTED,
+        messages=(
+            ChatMessage(role="user", content="hi"),
+            ChatMessage(role="tool", content="r", tool_call_id=SK_SECRET),
+        ),
+    )
+    with pytest.raises(LLMRefused):
+        await env.llm.chat(r)
+    r2 = ChatRequest(
+        purpose=Purpose.CHAT,
+        lane=Lane.TRUSTED,
+        messages=(
+            ChatMessage(
+                role="assistant",
+                tool_calls=(ToolCallRequest(id=SK_SECRET, name="t", arguments={}),),
+            ),
+        ),
+    )
+    with pytest.raises(LLMRefused):
+        await env.llm.chat(r2)
 
 
 async def test_scrub_runs_on_every_message_not_just_the_last() -> None:

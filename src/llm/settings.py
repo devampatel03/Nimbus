@@ -18,12 +18,16 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_API_KEY = (
+    "not-needed"  # placeholder for key-less servers; not a secret  # pragma: allowlist secret
+)
+
 
 class ModelPrice(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    in_per_mtok_inr: Decimal = Field(ge=0)
-    out_per_mtok_inr: Decimal = Field(ge=0)
+    in_per_mtok_inr: Decimal = Field(gt=0)
+    out_per_mtok_inr: Decimal = Field(gt=0)
 
 
 # Deliberately pessimistic placeholder until the bake-off (P5.4) fixes the model.
@@ -43,7 +47,7 @@ class LLMSettings(BaseSettings):
     )
 
     base_url: str = "http://localhost:8000/v1"
-    api_key: SecretStr = SecretStr("not-needed")
+    api_key: SecretStr = SecretStr(DEFAULT_API_KEY)
     model: str = "Qwen/Qwen2.5-7B-Instruct"
     timeout_seconds: float = Field(default=60.0, gt=0, le=300)
 

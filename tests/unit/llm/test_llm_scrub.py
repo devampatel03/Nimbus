@@ -59,3 +59,34 @@ def test_names_emails_places_are_not_blocked() -> None:
     text = "Ask Priya Sharma (priya@example.com) about the Mumbai trip at Google."
     r = Scrubber().scrub(text)
     assert r.text == text and r.redactions == []
+
+
+def _tg_token() -> str:
+    # Runtime-built so no secret-shaped literal sits in the source.
+    return "".join(["123456789", ":", "AAH", "x" * 32, "_ab"])
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "https://api.telegram.org/bot{t}/sendMessage",
+        "bot{t}",
+        "{t}",
+        "token={t}",
+        '("{t}")',
+    ],
+)
+def test_telegram_token_blocked_in_url_and_bare_forms(template: str) -> None:
+    with pytest.raises(ScrubBlocked) as ei:
+        Scrubber().check(template.format(t=_tg_token()))
+    assert "telegram_token" in ei.value.categories
+
+
+def test_slack_token_blocked() -> None:
+    tok = "xox" + "b-" + "1234567890-abcdefghij"
+    with pytest.raises(ScrubBlocked):
+        Scrubber().check(f"use {tok}")
+
+
+def test_ordinary_time_like_text_not_mistaken_for_token() -> None:
+    Scrubber().check("ratio 12:30 and id 1234567890:short")

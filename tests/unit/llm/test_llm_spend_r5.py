@@ -119,7 +119,9 @@ async def test_concurrent_calls_cannot_overshoot_via_inflight_reservation() -> N
     env = build_env(
         provider=prov,
         daily_spend_cap_inr="0.15",
-        price_table={"*": ModelPrice(in_per_mtok_inr=Decimal(0), out_per_mtok_inr=Decimal(1000))},
+        price_table={
+            "*": ModelPrice(in_per_mtok_inr=Decimal("0.001"), out_per_mtok_inr=Decimal(1000))
+        },
     )
     t1 = asyncio.create_task(env.llm.chat(req()))
     await asyncio.sleep(0)
@@ -145,3 +147,34 @@ def test_ist_day_bounds_cross_utc_date() -> None:
     assert day == "2026-10-26"
     assert start == datetime(2026, 10, 25, 18, 30, tzinfo=UTC)
     assert end == datetime(2026, 10, 26, 18, 30, tzinfo=UTC)
+
+
+async def test_reservation_held_until_audit_row_committed() -> None:
+    """R5 regression: a second call arriving while the first call's audit write
+    is still in flight must see the first call's cost (reservation or row)."""
+    gate = asyncio.Event()
+    env = build_env(
+        provider=FakeLLM(default="x"),
+        daily_spend_cap_inr="1.50",
+        price_table={
+            "*": ModelPrice(in_per_mtok_inr=Decimal("0.001"), out_per_mtok_inr=Decimal(10000))
+        },
+    )
+    real_write = env.audit.write
+
+    async def slow_write(record):  # type: ignore[no-untyped-def]
+        if record.status == "ok":
+            await gate.wait()  # audit not yet committed
+        return await real_write(record)
+
+    env.audit.write = slow_write  # type: ignore[method-assign]
+    # estimate = 100 out tokens * 10000 / 1e6 = 1.00 INR per call; cap 1.50
+    t1 = asyncio.create_task(env.llm.chat(req()))
+    for _ in range(5):
+        await asyncio.sleep(0)  # t1 is now parked inside the audit write
+    with pytest.raises(SpendCapExceeded):
+        # wait_for: if the cap leaks, call 2 parks on the gate and times out (fails).
+        await asyncio.wait_for(env.llm.chat(req()), timeout=2)
+    gate.set()
+    await t1
+    assert sum(r.cost_inr for r in env.audit.records if r.status == "ok") <= Decimal("1.50")

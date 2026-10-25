@@ -7,10 +7,10 @@ Every call runs, in this order, before the provider is touched:
 
 1. kill switch (`system_flag`)           -> LLMRefused("kill_switch")
 2. lane check (QUARANTINE => no tools)   -> LLMRefused("lane_violation")
-3. spend cap (daily, INR, IST day)       -> SpendCapExceeded; flips the spend
-   mode to READ_ONLY for the rest of the IST day and fires the alert hook once
-4. scrub outbound text                   -> LLMRefused("scrub_blocked") on a
+3. scrub outbound text                   -> LLMRefused("scrub_blocked") on a
    secret/canary; card/Aadhaar/OTP are redacted in place
+4. spend cap (daily, INR, IST day)       -> SpendCapExceeded; flips the spend
+   mode to READ_ONLY for the rest of the IST day and fires the alert hook once
 5. provider call (the only transport use)
 6. audit row (`llm_audit` shape) + cost accounting
 
@@ -47,7 +47,7 @@ from src.llm.protocols import (
     SpendLedger,
 )
 from src.llm.scrub import Scrubber, ScrubBlocked
-from src.llm.settings import LLMSettings
+from src.llm.settings import DEFAULT_API_KEY, LLMSettings
 from src.llm.types import (
     ChatMessage,
     ChatRequest,
@@ -120,7 +120,7 @@ class GuardedLLM:
             if scrubber is not None
             else Scrubber(
                 canaries=self._settings.canaries,
-                secrets=(self._settings.api_key.get_secret_value(),),
+                secrets=_real_secrets(self._settings),
             )
         )
         self._pricing = pricing if pricing is not None else PriceTable(self._settings.price_table)
@@ -177,8 +177,8 @@ class GuardedLLM:
             try:
                 await self._check_kill_switch()
                 self._check_lane(req)
-                reserved = await self._check_spend(req, model, started)
                 scrubbed, payload = self._scrub(req)
+                reserved = await self._check_spend(req, model, started)
             except LLMRefused as exc:
                 await self._audit_blocked(req, model, started, exc.reason)
                 raise
@@ -192,12 +192,16 @@ class GuardedLLM:
             except Exception:
                 await self._audit_error(req, model, started)
                 raise
+            if req.lane is Lane.QUARANTINE and resp.tool_calls:
+                logger.warning("quarantine lane: dropping provider-invented tool calls")
+                resp = resp.model_copy(update={"tool_calls": ()})
+            # The reservation is released only AFTER the audit row is committed
+            # (in `finally`), so the ledger never under-counts in between (R5).
+            return await self._finish(req, model, started, resp, payload)
         finally:
             if reserved:
                 async with self._lock:
                     self._inflight -= reserved
-
-        return await self._finish(req, model, started, resp, payload)
 
     async def _check_kill_switch(self) -> None:
         try:
@@ -209,7 +213,11 @@ class GuardedLLM:
 
     async def _kill_engaged(self) -> bool:
         flag = await self._flags.get(KILL_SWITCH_KEY)
-        return bool(flag and flag.get("engaged") is True)
+        if flag is None:
+            return False
+        # Fail closed: only an explicit boolean False disengages the switch;
+        # malformed values ("true", 1, missing key) count as engaged.
+        return flag.get("engaged") is not False
 
     async def _read_only_today(self, day: str) -> bool:
         flag = await self._flags.get(SPEND_MODE_KEY)
@@ -261,6 +269,13 @@ class GuardedLLM:
                 if content is not None:
                     content = self._scrubber.scrub(content).text
                 calls = []
+                for ident in (
+                    m.tool_call_id,
+                    *(c.id for c in m.tool_calls),
+                    *(c.name for c in m.tool_calls),
+                ):
+                    if ident:
+                        self._scrubber.check(ident)
                 for tc in m.tool_calls:
                     args_json = json.dumps(tc.arguments, sort_keys=True)
                     clean = self._scrubber.scrub(args_json).text
@@ -271,6 +286,7 @@ class GuardedLLM:
                     )
                 out.append(m.model_copy(update={"content": content, "tool_calls": tuple(calls)}))
             for t in req.tools:
+                self._scrubber.check(t.name)
                 self._scrubber.check(t.description)
                 self._scrubber.check(json.dumps(t.parameters))
         except ScrubBlocked:
@@ -372,6 +388,11 @@ class GuardedLLM:
             status,
             reason,
         )
+
+
+def _real_secrets(settings: LLMSettings) -> tuple[str, ...]:
+    key = settings.api_key.get_secret_value()
+    return () if key == DEFAULT_API_KEY else (key,)
 
 
 def _ms(delta: timedelta) -> int:
