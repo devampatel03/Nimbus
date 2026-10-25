@@ -55,6 +55,37 @@ _OTP_RE = re.compile(
 )
 
 
+def _variants(text: str) -> set[str]:
+    variants = {text, unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH)}
+    variants |= {unicodedata.normalize("NFKC", unquote(v)).translate(_ZERO_WIDTH) for v in variants}
+    return variants
+
+
+def redact_secrets(text: str, literals: Iterable[str] = ()) -> str:
+    """Return `text` with secrets replaced by `[REDACTED:<category>]`.
+
+    Same patterns as `Scrubber.check`, so logs and prompts share one definition
+    of "secret". `literals` (canaries, provider keys; < 8 chars ignored) are
+    replaced verbatim. If a secret only shows up after NFKC/zero-width/percent-
+    decoding (i.e. it is obfuscated and cannot be located in `text`), the whole
+    text is replaced: fail closed. Never raises on any string input.
+    """
+    lits = tuple(s for s in literals if len(s) >= 8)
+    out = text
+    for lit in lits:
+        out = out.replace(lit, "[REDACTED:canary]")
+    for category, pattern in _SECRET_PATTERNS:
+        out = pattern.sub(f"[REDACTED:{category}]", out)
+    for variant in _variants(out):
+        if variant == out:
+            continue
+        if any(p.search(variant) for _, p in _SECRET_PATTERNS) or any(
+            lit in variant for lit in lits
+        ):
+            return "[REDACTED:obfuscated]"
+    return out
+
+
 class ScrubBlocked(Exception):
     """A secret/canary was found. `categories` are fixed codes, no text."""
 
@@ -90,10 +121,7 @@ class Scrubber:
 
     def check(self, text: str) -> None:
         """Raise `ScrubBlocked` if `text` holds a secret or canary."""
-        variants = {text, unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH)}
-        variants |= {
-            unicodedata.normalize("NFKC", unquote(v)).translate(_ZERO_WIDTH) for v in variants
-        }
+        variants = _variants(text)
         found: list[str] = []
         for variant in variants:
             for category, pattern in _SECRET_PATTERNS:
