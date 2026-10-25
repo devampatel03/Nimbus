@@ -7,7 +7,7 @@ code:
   lint_clean: true                 # uv run ruff check .
   types_clean: true                # uv run mypy src
   min_coverage_changed_lines: 0.80
-  min_coverage_security_policy: 0.95   # policy, approvals, quarantine, scrubber
+  min_coverage_security_policy: 0.95   # policy, approvals, quarantine, llm scrub (src/llm/scrub.py)
   max_pr_changed_files_soft: 40        # larger -> split unless pure deletion/rename
   no_secrets_in_diff: true  # pragma: allowlist secret
 
