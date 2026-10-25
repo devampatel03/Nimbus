@@ -6,10 +6,9 @@ T1.10, T4.1-T4.5, this session): route -> retrieve_memory -> think -> act -> res
 
 Design decisions worth flagging (see MEMORY.md AD-14 and this session's AD):
 
-- `retrieve_memory` reads `MemoryManager.get_warm_context` (Redis-only,
-  ~1ms per T1.7's measurement), not the full Qdrant+Postgres `query()` --
-  this is the Mode A-safe read; the expensive retrieval already happens
-  off-path in `refresh_warm_context` per T1.7's own design.
+- `retrieve_memory` is a no-op placeholder (P1.3a): the Redis warm-context
+  cache was deleted in the pivot (TARGET_DESIGN M5); retrieval becomes a
+  direct Postgres/pgvector call in a later task.
 - `think`/`respond` (this session) call `deps.llm_client` (a local vLLM-backed
   `LLMClient`, `src/llm/client.py`) for real tool-planning and response
   generation, replacing the earlier sessions' keyword heuristic and
@@ -40,7 +39,6 @@ Design decisions worth flagging (see MEMORY.md AD-14 and this session's AD):
   than silently assumed either way.
 """
 
-import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -113,11 +111,7 @@ def _make_retrieve_memory(
     async def retrieve_memory(state: AgentState, config: Config) -> dict[str, Any]:
         if deps.memory_manager is None:
             return {"retrieved_memories": []}
-        session_id = _get_session_id(config)
-        warm = await deps.memory_manager.get_warm_context(uuid.UUID(session_id))
-        if warm is None:
-            return {"retrieved_memories": []}
-        return {"retrieved_memories": warm.results}
+        return {"retrieved_memories": []}
 
     return retrieve_memory
 

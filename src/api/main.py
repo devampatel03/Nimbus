@@ -34,7 +34,7 @@ from config.settings import settings
 from src.api import auth, health
 from src.api.middleware.auth import JWTAuthMiddleware
 from src.api.routes import chat, memory, tasks
-from src.db import postgres, qdrant, redis
+from src.db import postgres, qdrant
 from src.orchestrator.graph import GraphDependencies, build_graph
 
 
@@ -42,7 +42,6 @@ from src.orchestrator.graph import GraphDependencies, build_graph
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await postgres.engine.dispose()
-    await redis.redis_client.aclose()
     await qdrant.qdrant_client.close()
 
 
