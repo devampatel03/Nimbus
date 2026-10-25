@@ -28,7 +28,7 @@ from src.llm.factory import build_guarded_llm
 from src.llm.guard import GuardedLLM
 from src.llm.settings import LLMSettings
 from src.llm.types import ChatMessage as _Message
-from src.llm.types import ChatRequest, Lane, Purpose
+from src.llm.types import ChatRequest, Lane, LLMResponseError, Purpose
 
 ChatMessage = dict[str, str]  # {"role": "system"|"user"|"assistant", "content": "..."}
 
@@ -138,5 +138,6 @@ class VLLMClient:
                 temperature=temperature,
             )
         )
-        assert isinstance(result.parsed, schema)  # GuardedLLM guarantees it or raises
+        if not isinstance(result.parsed, schema):
+            raise LLMResponseError("schema_mismatch")
         return result.parsed

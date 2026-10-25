@@ -72,8 +72,10 @@ class LLMResponseError(LLMError):
     """The provider answered but the answer is unusable (bad JSON, schema
     mismatch after the repair retry, malformed tool call)."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, usage: Usage | None = None) -> None:
         self.code = code
+        # Provider-reported usage when the body parsed far enough to have it.
+        self.usage = usage
         super().__init__(f"llm bad response code={code}")
 
 

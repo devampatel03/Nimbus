@@ -127,6 +127,10 @@ class GuardedLLM:
         self._alert = alert
         self._clock: Clock = clock if clock is not None else _utc_now
         self._inflight = Decimal(0)
+        # Reservations whose audit row could not be written: the spend is real
+        # but unrecorded, so they stay counted for the rest of that IST day.
+        self._held = Decimal(0)
+        self._held_day = ""
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ API
@@ -173,6 +177,7 @@ class GuardedLLM:
         started = self._clock()
         model = self._provider.model
         reserved = Decimal(0)
+        keep = False
         try:
             try:
                 await self._check_kill_switch()
@@ -189,19 +194,34 @@ class GuardedLLM:
 
             try:
                 resp = await self._provider.complete(scrubbed)
+            except LLMResponseError as exc:
+                # The transport answered (and billed) but the body was unusable:
+                # bill the parsed usage, else the reserved estimate (pessimistic).
+                await self._audit_error(req, model, started, exc.usage, reserved)
+                raise
             except Exception:
-                await self._audit_error(req, model, started)
+                await self._audit_error(req, model, started, None, Decimal(0))
                 raise
             if req.lane is Lane.QUARANTINE and resp.tool_calls:
                 logger.warning("quarantine lane: dropping provider-invented tool calls")
                 resp = resp.model_copy(update={"tool_calls": ()})
             # The reservation is released only AFTER the audit row is committed
             # (in `finally`), so the ledger never under-counts in between (R5).
-            return await self._finish(req, model, started, resp, payload)
+            try:
+                return await self._finish(req, model, started, resp, payload)
+            except LLMAuditError:
+                # Unrecorded spend: never release the reservation (fail closed).
+                keep = True
+                raise
         finally:
             if reserved:
                 async with self._lock:
                     self._inflight -= reserved
+                    if keep:
+                        day, _, _ = ist_day_bounds(started)
+                        if self._held_day != day:
+                            self._held, self._held_day = Decimal(0), day
+                        self._held += reserved
 
     async def _check_kill_switch(self) -> None:
         try:
@@ -239,7 +259,8 @@ class GuardedLLM:
             if await self._read_only_today(day):
                 raise SpendCapExceeded
             spent = await self._ledger.spent_between(start, end)
-            if spent + self._inflight + estimate > cap:
+            held = self._held if self._held_day == day else Decimal(0)
+            if spent + self._inflight + held + estimate > cap:
                 await self._trip_cap(day, spent, cap)
                 raise SpendCapExceeded
             self._inflight += estimate
@@ -360,11 +381,29 @@ class GuardedLLM:
     ) -> None:
         await self._audit_safely(req, model, started, "blocked", reason)
 
-    async def _audit_error(self, req: ChatRequest, model: str, started: datetime) -> None:
-        await self._audit_safely(req, model, started, "error", None)
+    async def _audit_error(
+        self,
+        req: ChatRequest,
+        model: str,
+        started: datetime,
+        usage: Usage | None,
+        reserved: Decimal,
+    ) -> None:
+        if usage is not None and (usage.tokens_in or usage.tokens_out):
+            cost = self._pricing.cost_inr(model, usage.tokens_in, usage.tokens_out)
+            await self._audit_safely(req, model, started, "error", None, usage, cost)
+        else:
+            await self._audit_safely(req, model, started, "error", None, None, reserved)
 
     async def _audit_safely(
-        self, req: ChatRequest, model: str, started: datetime, status: str, reason: str | None
+        self,
+        req: ChatRequest,
+        model: str,
+        started: datetime,
+        status: str,
+        reason: str | None,
+        usage: Usage | None = None,
+        cost: Decimal = Decimal(0),
     ) -> None:
         now = self._clock()
         record = AuditRecord(
@@ -374,6 +413,9 @@ class GuardedLLM:
             status=status,
             created_at=now,
             blocked_reason=reason,
+            tokens_in=usage.tokens_in if usage else 0,
+            tokens_out=usage.tokens_out if usage else 0,
+            cost_inr=cost,
             latency_ms=_ms(now - started),
             turn_id=req.turn_id,
         )

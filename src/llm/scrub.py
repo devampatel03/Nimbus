@@ -21,12 +21,13 @@ import re
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 _ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b‌‍⁠﻿­"))
 
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY")),
-    ("telegram_token", re.compile(r"(?<![A-Za-z0-9])(?:bot)?\d{8,10}:[A-Za-z0-9_-]{35,}")),
+    ("telegram_token", re.compile(r"(?<![A-Za-z0-9])(?i:bot)?\d{8,12}:[A-Za-z0-9_-]{35,}")),
     ("slack_token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}")),
     ("google_token", re.compile(r"\bya29\.[A-Za-z0-9_-]{20,}|\b1//[A-Za-z0-9_-]{20,}")),
     ("google_api_key", re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")),
@@ -89,6 +90,9 @@ class Scrubber:
     def check(self, text: str) -> None:
         """Raise `ScrubBlocked` if `text` holds a secret or canary."""
         variants = {text, unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH)}
+        variants |= {
+            unicodedata.normalize("NFKC", unquote(v)).translate(_ZERO_WIDTH) for v in variants
+        }
         found: list[str] = []
         for variant in variants:
             for category, pattern in _SECRET_PATTERNS:

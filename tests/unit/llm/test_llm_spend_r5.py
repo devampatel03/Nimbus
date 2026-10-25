@@ -178,3 +178,76 @@ async def test_reservation_held_until_audit_row_committed() -> None:
     gate.set()
     await t1
     assert sum(r.cost_inr for r in env.audit.records if r.status == "ok") <= Decimal("1.50")
+
+
+async def test_malformed_responses_after_transport_are_billed_until_cap_trips() -> None:
+    from src.llm.types import LLMResponseError
+    from tests.fakes.llm import completion_response
+
+    bad = {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "not json"}}
+    transport = RecordingTransport(
+        lambda r: completion_response(
+            None, tool_calls=[bad], prompt_tokens=10, completion_tokens=100
+        )
+    )
+    env = build_env(
+        transport=transport,
+        daily_spend_cap_inr="1.50",
+        price_table={
+            "*": ModelPrice(in_per_mtok_inr=Decimal("0.001"), out_per_mtok_inr=Decimal(10000))
+        },
+    )
+    outcomes: list[str] = []
+    for _ in range(10):
+        try:
+            await env.llm.chat(req())
+        except LLMResponseError:
+            outcomes.append("resp_err")
+        except SpendCapExceeded:
+            outcomes.append("cap")
+    assert "cap" in outcomes
+    assert len(transport.calls) <= 3  # 1.00 INR billed per errored call, cap 1.50
+    errored = [r for r in env.audit.records if r.status == "error"]
+    assert errored and all(r.cost_inr > 0 for r in errored)
+    assert all(r.tokens_out == 100 for r in errored)
+
+
+async def test_pre_transport_blocks_are_not_billed() -> None:
+    transport = RecordingTransport()
+    env = build_env(transport=transport, price_table=PRICE)
+    await env.flags.set("llm_kill_switch", {"engaged": True}, updated_by="t")
+    with pytest.raises(Exception):  # noqa: B017
+        await env.llm.chat(req())
+    assert transport.calls == []
+    assert all(r.cost_inr == 0 for r in env.audit.records)
+
+
+async def test_audit_write_failure_keeps_reservation_so_cap_still_trips() -> None:
+    from src.llm.types import LLMAuditError
+
+    prov = FakeLLM(default="x")
+    env = build_env(
+        provider=prov,
+        daily_spend_cap_inr="1.50",
+        price_table={
+            "*": ModelPrice(in_per_mtok_inr=Decimal("0.001"), out_per_mtok_inr=Decimal(10000))
+        },
+    )
+    real = env.audit.write
+
+    async def write(rec):  # type: ignore[no-untyped-def]
+        if rec.status == "ok":
+            raise OSError("disk full")
+        return await real(rec)
+
+    env.audit.write = write  # type: ignore[method-assign]
+    outcomes: list[str] = []
+    for _ in range(10):
+        try:
+            await env.llm.chat(req())
+        except LLMAuditError:
+            outcomes.append("audit_err")
+        except SpendCapExceeded:
+            outcomes.append("cap")
+    assert "cap" in outcomes
+    assert outcomes.count("audit_err") <= 3

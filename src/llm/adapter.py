@@ -228,6 +228,15 @@ class OpenAICompatProvider:
 
     @staticmethod
     def _parse(raw: Any) -> ProviderResponse:
+        usage = Usage()
+        try:
+            if raw.usage is not None:
+                usage = Usage(
+                    tokens_in=int(raw.usage.prompt_tokens or 0),
+                    tokens_out=int(raw.usage.completion_tokens or 0),
+                )
+        except Exception:  # noqa: BLE001 - unusable usage block => estimate billing
+            usage = Usage()
         try:
             choice = raw.choices[0]
             message = choice.message
@@ -236,18 +245,12 @@ class OpenAICompatProvider:
                 try:
                     args = json.loads(tc.function.arguments or "{}")
                 except ValueError:
-                    raise LLMResponseError("bad_tool_arguments") from None
+                    raise LLMResponseError("bad_tool_arguments", usage=usage) from None
                 if not isinstance(args, dict):
-                    raise LLMResponseError("bad_tool_arguments")
+                    raise LLMResponseError("bad_tool_arguments", usage=usage)
                 calls.append(ToolCallRequest(id=tc.id, name=tc.function.name, arguments=args))
-            usage = Usage()
-            if raw.usage is not None:
-                usage = Usage(
-                    tokens_in=int(raw.usage.prompt_tokens or 0),
-                    tokens_out=int(raw.usage.completion_tokens or 0),
-                )
             return ProviderResponse(text=message.content, tool_calls=tuple(calls), usage=usage)
         except LLMResponseError:
             raise
         except Exception:  # noqa: BLE001 - malformed provider payload
-            raise LLMResponseError("malformed_response") from None
+            raise LLMResponseError("malformed_response", usage=usage) from None

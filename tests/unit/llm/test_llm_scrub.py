@@ -61,6 +61,14 @@ def test_names_emails_places_are_not_blocked() -> None:
     assert r.text == text and r.redactions == []
 
 
+def test_telegram_token_11_digit_id_and_percent_encoded_colon_blocked() -> None:
+    secret = "x" * 35 + "_ab"
+    for text in (f"12345678901:AAH{secret}", f"123456789%3AAAH{secret}"):
+        with pytest.raises(ScrubBlocked) as ei:
+            Scrubber().check(text)
+        assert "telegram_token" in ei.value.categories
+
+
 def _tg_token() -> str:
     # Runtime-built so no secret-shaped literal sits in the source.
     return "".join(["123456789", ":", "AAH", "x" * 32, "_ab"])
@@ -71,6 +79,9 @@ def _tg_token() -> str:
     [
         "https://api.telegram.org/bot{t}/sendMessage",
         "bot{t}",
+        "Bot{t}",
+        "BOT{t}",
+        "https://api.telegram.org/BOT{t}/getMe",
         "{t}",
         "token={t}",
         '("{t}")',
