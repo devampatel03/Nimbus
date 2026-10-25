@@ -52,17 +52,12 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      # TODO(P1.3b): remove the qdrant service container when the code moves to pgvector.
-      qdrant:
-        image: qdrant/qdrant:latest
-        ports: ["6333:6333"]
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: "5432"
       POSTGRES_USER: nimbus
       POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
       POSTGRES_DB: nimbus
-      QDRANT_HOST: localhost
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3

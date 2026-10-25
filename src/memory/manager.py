@@ -2,7 +2,7 @@
 # Private, unpublished, proprietary. Do not distribute.
 
 """Unified memory manager (docs/TECHNICAL_ARCHITECTURE.md section 6, MEM-1):
-episodic (Qdrant) and semantic (Postgres graph) tiers
+episodic (pgvector `memory_chunk`) and semantic (Postgres graph) tiers
 behind one interface.
 
 Scope notes (T1.6/T1.7):
@@ -17,16 +17,16 @@ Scope notes (T1.6/T1.7):
   `query` run `Embedder.embed()` via `asyncio.to_thread` -- a real CPU model's
   forward pass is slow enough (seconds per call under load) that calling it
   synchronously inside these async methods blocks the event loop for the
-  entire batch; this was diagnosed against a reproducible Qdrant 404 during
-  the LoCoMo harness run (a collection created minutes earlier was gone by
-  upsert time -- the blocked loop starved the underlying HTTP connection's
-  keepalive), see MEMORY.md AD-21.
+  entire batch.
+- P1.3b: the episodic tier is the pgvector `MemoryStore` (`src/memory/store.py`,
+  table `memory_chunk`); Qdrant is gone. Retrieval = cosine similarity (store)
+  + recency + importance rerank (`retriever.score`).
 - Episodic candidates carry no entity links yet (that requires
   `src/memory/extractor.py`'s `EntityExtractor` output, not built out),
   so `graph_proximity` is always 0.0 for episodic results; only semantic
   (graph) results score on entity proximity. Flag for review once entity
   linking on episodic chunks exists.
-- No per-user filter at the Qdrant query layer: Nimbus is a single-user,
+- No per-user filter at the episodic query layer: Nimbus is a single-user,
   self-hosted deployment (PRD section 1), so one instance holds one user's
   data and collection-wide search is correct, not an isolation gap.
 """
@@ -40,7 +40,6 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
-from qdrant_client import AsyncQdrantClient, models
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -50,8 +49,8 @@ from src.memory.embedder import DEFAULT_EMBED_DIM, Qwen3Embedder
 from src.memory.graph import GraphRepository
 from src.memory.retriever import DEFAULT_WEIGHTS, RetrievalWeights, ScoringTerms, score, set_overlap
 from src.memory.schemas.graph import GraphEdge, GraphNode
+from src.memory.store import ChunkHit, EpisodicChunk, MemoryStore, PgVectorMemoryStore
 
-EPISODIC_COLLECTION = "episodic_memory"
 EMBED_DIM = DEFAULT_EMBED_DIM
 
 
@@ -72,16 +71,6 @@ class DeterministicStubEmbedder:
         return [v / norm for v in raw]
 
 
-class EpisodicChunk(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    text: str
-    speaker_id: uuid.UUID | None = None
-    occurred_at: datetime
-    importance: float = 0.5
-    confidence: float = 1.0
-
-
 class SemanticFact(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -100,52 +89,28 @@ class MemoryManager:
         self,
         *,
         pg_session: AsyncSession,
-        qdrant: AsyncQdrantClient,
+        store: MemoryStore | None = None,
         embedder: Embedder | None = None,
         weights: RetrievalWeights = DEFAULT_WEIGHTS,
     ) -> None:
         self._session = pg_session
-        self._qdrant = qdrant
         self._embedder = embedder or Qwen3Embedder()
+        model_id = getattr(self._embedder, "model_id", type(self._embedder).__name__)
+        self._store: MemoryStore = store or PgVectorMemoryStore(
+            pg_session, model_id=str(model_id), dim=EMBED_DIM
+        )
         self._graph_repo = GraphRepository(pg_session)
         self._weights = weights
 
-    # -- episodic (Qdrant) --------------------------------------------
+    # -- episodic (pgvector) ------------------------------------------
 
     async def write_episodic(
         self, session_id: uuid.UUID, chunks: Sequence[EpisodicChunk]
     ) -> list[uuid.UUID]:
-        await self._ensure_episodic_collection()
-        points: list[models.PointStruct] = []
-        ids: list[uuid.UUID] = []
-        for chunk in chunks:
-            point_id = uuid.uuid4()
-            vector = await asyncio.to_thread(self._embedder.embed, chunk.text)
-            payload = {
-                "text": chunk.text,
-                "session_id": str(session_id),  # INV-5: provenance
-                "speaker_id": str(chunk.speaker_id) if chunk.speaker_id else None,
-                "occurred_at": chunk.occurred_at.isoformat(),
-                "importance": chunk.importance,
-                "confidence": chunk.confidence,
-            }
-            points.append(models.PointStruct(id=str(point_id), vector=vector, payload=payload))
-            ids.append(point_id)
-        # Re-check/recreate right before the upsert, not just at the top of this
-        # method: with a real (slow, CPU-bound) embedder, the per-chunk loop above
-        # can run for minutes. Empirically reproduced on this dev machine (see
-        # MEMORY.md AD-21) that the collection can report as gone by the time the
-        # loop finishes, causing upsert to 404 even though it was just created.
-        await self._ensure_episodic_collection()
-        await self._qdrant.upsert(collection_name=EPISODIC_COLLECTION, points=points, wait=True)
-        return ids
-
-    async def _ensure_episodic_collection(self) -> None:
-        if not await self._qdrant.collection_exists(EPISODIC_COLLECTION):
-            await self._qdrant.create_collection(
-                collection_name=EPISODIC_COLLECTION,
-                vectors_config=models.VectorParams(size=EMBED_DIM, distance=models.Distance.COSINE),
-            )
+        items = [
+            (chunk, await asyncio.to_thread(self._embedder.embed, chunk.text)) for chunk in chunks
+        ]
+        return await self._store.write_chunks(session_id, items)
 
     # -- semantic (Postgres graph) --------------------------------------
 
@@ -204,43 +169,35 @@ class MemoryManager:
     async def _query_episodic(
         self, query_vec: list[float], context: MemoryQuery, now: datetime
     ) -> list[MemoryResult]:
-        if not await self._qdrant.collection_exists(EPISODIC_COLLECTION):
-            return []
-        response = await self._qdrant.query_points(
-            collection_name=EPISODIC_COLLECTION,
-            query=query_vec,
-            limit=max(context.top_k * 3, context.top_k),
-        )
+        hits = await self._store.search(query_vec, limit=max(context.top_k * 3, context.top_k))
         present_speakers = frozenset(str(s) for s in context.present_speakers)
-        results = []
-        for point in response.points:
-            payload = point.payload or {}
-            occurred_at = datetime.fromisoformat(payload["occurred_at"])
-            age_days = max((now - occurred_at).total_seconds() / 86400, 0.0)
-            speaker_id = payload.get("speaker_id")
-            terms = ScoringTerms(
-                cosine_sim=point.score,
-                graph_proximity=0.0,
-                age_days=age_days,
-                importance=payload.get("importance", 0.5),
-                speaker_relevance=set_overlap(
-                    frozenset({speaker_id}) if speaker_id else frozenset(), present_speakers
-                ),
-                verified_bonus=0.0,
-            )
-            results.append(
-                MemoryResult(
-                    memory_id=uuid.UUID(str(point.id)),
-                    content=payload["text"],
-                    score=score(terms, self._weights),
-                    source_session=uuid.UUID(payload["session_id"]),
-                    provenance=f"episodic_qdrant_point:{point.id}",
-                    valid_from=occurred_at,
-                    valid_to=None,
-                    confidence=payload.get("confidence", 1.0),
-                )
-            )
-        return results
+        return [self._episodic_result(hit, present_speakers, now) for hit in hits]
+
+    def _episodic_result(
+        self, hit: ChunkHit, present_speakers: frozenset[str], now: datetime
+    ) -> MemoryResult:
+        age_days = max((now - hit.occurred_at).total_seconds() / 86400, 0.0)
+        speaker = str(hit.speaker_id) if hit.speaker_id else None
+        terms = ScoringTerms(
+            cosine_sim=hit.similarity,
+            graph_proximity=0.0,
+            age_days=age_days,
+            importance=hit.importance,
+            speaker_relevance=set_overlap(
+                frozenset({speaker}) if speaker else frozenset(), present_speakers
+            ),
+            verified_bonus=0.0,
+        )
+        return MemoryResult(
+            memory_id=hit.chunk_id,
+            content=hit.content,
+            score=score(terms, self._weights),
+            source_session=hit.session_id,
+            provenance=f"memory_chunk:{hit.chunk_id}:event:{hit.source_event_id}",
+            valid_from=hit.occurred_at,
+            valid_to=None,
+            confidence=hit.confidence,
+        )
 
     async def _query_semantic(self, context: MemoryQuery, now: datetime) -> list[MemoryResult]:
         if not context.active_entities:

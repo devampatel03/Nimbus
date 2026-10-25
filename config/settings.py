@@ -21,10 +21,6 @@ class Settings(BaseSettings):
     postgres_password: str = Field(default="nimbus")
     postgres_db: str = "nimbus"
 
-    # Qdrant (episodic vectors)
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
-
     # Local LLM (vLLM, OpenAI-compatible, this session). NOT cloud egress --
     # `llm_base_url` defaults to loopback and `src/llm/client.py` never
     # routes through the scrubber (INV-1 unaffected). Dev default model is

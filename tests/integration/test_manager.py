@@ -2,7 +2,7 @@
 # Private, unpublished, proprietary. Do not distribute.
 
 """MEM-1: integration test writing and retrieving across the working
-episodic (Qdrant) and semantic (Postgres graph) tiers through
+episodic (pgvector) and semantic (Postgres graph) tiers through
 `MemoryManager`, per AGENT_OPERATING_MANUAL.md 3.3's "measure with real
 dependencies" rule.
 """
@@ -11,7 +11,6 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.contracts.memory_query import MemoryQuery
@@ -37,13 +36,10 @@ async def _make_session_and_node(db_session: AsyncSession) -> tuple[uuid.UUID, u
 
 
 @pytest.mark.asyncio
-async def test_write_and_query_episodic_roundtrip(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient
-) -> None:
+async def test_write_and_query_episodic_roundtrip(db_session: AsyncSession) -> None:
     session_id, _ = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
         embedder=DeterministicStubEmbedder(),
     )
 
@@ -64,13 +60,10 @@ async def test_write_and_query_episodic_roundtrip(
 
 
 @pytest.mark.asyncio
-async def test_write_semantic_inserts_then_supersedes(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient
-) -> None:
+async def test_write_semantic_inserts_then_supersedes(db_session: AsyncSession) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
         embedder=DeterministicStubEmbedder(),
     )
     now = datetime.now(UTC)
@@ -115,13 +108,10 @@ async def test_write_semantic_inserts_then_supersedes(
 
 
 @pytest.mark.asyncio
-async def test_write_semantic_is_idempotent_for_an_unchanged_fact(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient
-) -> None:
+async def test_write_semantic_is_idempotent_for_an_unchanged_fact(db_session: AsyncSession) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
         embedder=DeterministicStubEmbedder(),
     )
     now = datetime.now(UTC)
@@ -143,12 +133,11 @@ async def test_write_semantic_is_idempotent_for_an_unchanged_fact(
 
 @pytest.mark.asyncio
 async def test_query_semantic_returns_graph_fact_for_active_entity(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient
+    db_session: AsyncSession,
 ) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
         embedder=DeterministicStubEmbedder(),
     )
     now = datetime.now(UTC)
