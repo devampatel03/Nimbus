@@ -18,10 +18,10 @@ string a caller must parse itself. `llm_client` is injectable (defaults to
 `VLLMClient()`, same default-factory pattern as `Embedder`/`LLMClient`
 elsewhere), so tests can supply a fake without hitting a real server.
 
-INV-1 note (unchanged from the stub): `_call_model` must never itself
-perform cloud egress. If a future extractor ever needs a cloud model
-instead of the local one, that call MUST go through
-`src/security/scrubber.py:execute_external`, not a direct call here.
+INV-1 note: `_call_model` must never itself perform network egress. Any
+model call MUST go through `src.llm` (scrub/audit/kill switch/spend cap,
+R4/R5), which in turn uses the `src.net` transport -- never a direct
+transport import here (enforced by the INV-1 transport-import scan).
 """
 
 from abc import ABC, abstractmethod

@@ -20,11 +20,8 @@ a non-empty response, and a tool-triggering turn surfaces its result in
 that same turn's response without corrupting later turns.
 """
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
-from src.contracts.tool_intent import ToolResult
 from src.llm.client import ChatMessage
 from src.orchestrator.graph import GraphDependencies, build_graph
 from src.orchestrator.state import AgentState
@@ -129,23 +126,17 @@ async def test_tool_triggering_turn_surfaces_result_without_breaking_next_turn()
 
 
 @pytest.mark.asyncio
-async def test_calendar_tool_call_routes_through_scrubber_not_a_second_egress_point() -> None:
+async def test_removed_calendar_tool_is_never_planned_or_executed() -> None:
+    """P1.4c (M9): the scrubber-backed calendar intent builder is deleted. A
+    model that still proposes `calendar.create` has the proposal dropped at
+    `think` (unknown tool), so no tool call or tool result exists."""
     graph = build_graph(_deps())
     config = {"configurable": {"session_id": "calendar-session"}}
 
-    stub_result = ToolResult(
-        tool="calendar",
-        action="create",
-        status="success",
-        result={"event_id": "evt-1"},
-        entity_refs={},
-    )
-    with patch(
-        "src.tools.integrations.calendar.execute_external", new=AsyncMock(return_value=stub_result)
-    ) as mock_execute:
-        state = AgentState(message="schedule a meeting tomorrow", conversation_history=[])
-        result = await graph.ainvoke(state, config=config)
+    state = AgentState(message="schedule a meeting tomorrow", conversation_history=[])
+    result = await graph.ainvoke(state, config=config)
 
-    mock_execute.assert_awaited_once()
-    assert result["tool_results"][0].status == "success"
-    assert "calendar.create" in result["response"]
+    assert result["tool_calls"] == []
+    assert result["tool_results"] == []
+    assert "calendar" not in _deps().tool_registry.names()
+    assert result["response"]
