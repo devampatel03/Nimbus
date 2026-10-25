@@ -3,8 +3,9 @@
 
 """INV-1 / R4 import lint: no module outside `src/llm` imports an LLM SDK.
 
-Scoped to the target rule (TARGET_DESIGN section 3 part 1). The transport
-scan (httpx only under src/net) belongs to the P1.4c INV-1 rewrite.
+Scoped to the target rule (TARGET_DESIGN section 3 part 1), over src/ and
+config/. The protected INV-1 test (tests/eval/invariants) runs the same rule
+with the hardened scanner; this is the fast unit-level companion.
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[3] / "src"
+REPO = Path(__file__).resolve().parents[3]
+SRC = REPO / "src"
+CONFIG = REPO / "config"
 LLM_SDKS = (
     "openai",
     "anthropic",
@@ -29,6 +32,9 @@ LLM_SDKS = (
 # Explicit allow-list of known violators: path (relative to src/) -> removing task.
 # Empty today; add an entry with a TODO naming the task rather than weakening the rule.
 ALLOWED_VIOLATORS: dict[str, str] = {}
+
+
+_DYNAMIC = ("__import__", "import_module")
 
 
 def _is_sdk(module: str) -> bool:
@@ -50,8 +56,10 @@ def violations(root: Path, *, skip: tuple[str, ...] = ("llm",)) -> list[str]:
                 mods = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
             elif (
                 isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "__import__"
+                and (
+                    (isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC)
+                    or (isinstance(node.func, ast.Attribute) and node.func.attr in _DYNAMIC)
+                )
                 and node.args
                 and isinstance(node.args[0], ast.Constant)
                 and isinstance(node.args[0].value, str)
@@ -68,6 +76,11 @@ def test_no_llm_sdk_import_outside_src_llm() -> None:
     assert bad == [], f"LLM SDK imported outside src/llm: {bad}"
 
 
+def test_no_llm_sdk_import_in_config() -> None:
+    """TARGET_DESIGN section 3 part 1 covers config/ as well as src/."""
+    assert violations(CONFIG, skip=()) == []
+
+
 def test_allow_list_has_no_stale_entries() -> None:
     current = set(violations(SRC))
     assert set(ALLOWED_VIOLATORS) <= current
@@ -80,11 +93,18 @@ def test_lint_actually_detects_violations(tmp_path: Path) -> None:
     (pkg / "b.py").write_text("from google import genai\n")
     (pkg / "c.py").write_text("from anthropic.types import X\n")
     (pkg / "d.py").write_text("x = __import__('litellm')\n")
+    (pkg / "e.py").write_text("from importlib import import_module\nimport_module('openai')\n")
     (pkg / "ok.py").write_text("import httpx\nimport google.auth\n")
     (tmp_path / "llm").mkdir()
     (tmp_path / "llm" / "adapter.py").write_text("import openai\n")
 
-    assert violations(tmp_path) == ["other/a.py", "other/b.py", "other/c.py", "other/d.py"]
+    assert violations(tmp_path) == [
+        "other/a.py",
+        "other/b.py",
+        "other/c.py",
+        "other/d.py",
+        "other/e.py",
+    ]
 
 
 def test_openai_is_imported_only_by_the_adapter() -> None:
