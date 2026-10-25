@@ -200,7 +200,7 @@ async def test_audit_failure_withholds_result() -> None:
     async def bad(record: object) -> None:
         raise RuntimeError("db down")
 
-    env.emb._audit.write = bad  # type: ignore[method-assign]
+    env.audit.write = bad  # type: ignore[method-assign]
     with pytest.raises(LLMAuditError):
         await env.emb.aembed("x")
 
@@ -232,7 +232,7 @@ class StubProvider:
 
     async def embed_batch(self, texts: Sequence[str], *, dim: int) -> EmbeddingBatch:
         self.texts.append(texts)
-        return EmbeddingBatch([[0.0] * dim for _ in texts], Usage(tokens_in=3))
+        return EmbeddingBatch([[1.0] * dim for _ in texts], Usage(tokens_in=3))
 
 
 async def test_works_with_any_embedding_provider_and_custom_scrubber() -> None:
@@ -247,7 +247,7 @@ async def test_works_with_any_embedding_provider_and_custom_scrubber() -> None:
         scrubber=Scrubber(canaries=["CANARY-STRING-1"]),
         dim=2,
     )
-    assert await e.aembed("fine") == [0.0, 0.0]
+    assert await e.aembed("fine") == [1.0, 1.0]
     with pytest.raises(LLMRefused):
         await e.aembed("has CANARY-STRING-1 inside")
     assert len(p.texts) == 1

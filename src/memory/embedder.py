@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import sys
 import threading
@@ -41,7 +42,12 @@ _OFFLINE_ENV = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 
 
 class EmbeddingError(Exception):
-    """Base class. Messages are fixed codes (no input text, INV-7)."""
+    """Base class. Messages are fixed codes (no input text, INV-7).
+
+    `usage` may be attached by the API path (provider-reported tokens) so the
+    shared billing accountant bills the real cost of a rejected response."""
+
+    usage: Any = None
 
 
 class EmbedderOfflineError(EmbeddingError):
@@ -50,6 +56,10 @@ class EmbedderOfflineError(EmbeddingError):
 
 class EmbeddingDimensionError(EmbeddingError):
     """A vector's width differs from the embedder's declared dimension."""
+
+
+class EmbeddingValueError(EmbeddingError):
+    """A vector contains NaN/Inf or has zero norm (unusable for cosine search)."""
 
 
 class EmbeddingMigrationRequired(EmbeddingError):
@@ -78,11 +88,17 @@ def check_index_compat(embedder: BatchEmbedder, *, stored_model_id: str, stored_
 
 
 def validate_vectors(vectors: Sequence[Sequence[float]], dim: int, expected: int) -> None:
+    """Reject wrong count/width (`EmbeddingDimensionError`) and NaN/Inf or
+    zero-norm vectors (`EmbeddingValueError`): they poison cosine ranking."""
     if len(vectors) != expected:
         raise EmbeddingDimensionError(f"expected {expected} vectors, got {len(vectors)}")
     for v in vectors:
         if len(v) != dim:
             raise EmbeddingDimensionError(f"expected {dim} dims, got {len(v)}")
+        if not all(math.isfinite(x) for x in v):
+            raise EmbeddingValueError("vector contains NaN or Inf")
+        if not any(x != 0.0 for x in v):
+            raise EmbeddingValueError("vector has zero norm")
 
 
 def hf_offline_active() -> bool:
