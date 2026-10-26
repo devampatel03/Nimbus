@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 # able to trip the daily cap and pause the model for the day).
 MAX_TOOL_OUTPUT_CHARS = 4000
 TRUNCATION_MARKER = "\n[truncated]"
+MAX_TOOL_ERROR_CHARS = 200
 CALL_CAP_MESSAGE = "Denied: too many tool calls in this turn."
 
 
@@ -103,6 +104,11 @@ class DispatchResult:
     rule_id: str = ""
 
 
+def safe_name(name: str) -> str:
+    """Model-controlled; keep log lines single-line ASCII."""
+    return name[:64].encode("unicode_escape").decode("ascii")
+
+
 class Dispatcher:
     def __init__(self, tools: Mapping[str, LoopTool], policy: Policy) -> None:
         self._tools = dict(tools)
@@ -114,7 +120,7 @@ class Dispatcher:
         result = await self._decide_and_run(name, args, exposed)
         log.info(
             "dispatch decision tool=%s verdict=%s rule_id=%s",
-            name[:64].encode("ascii", "backslashreplace").decode(),
+            safe_name(name),
             "deny" if result.status == "denied" else "allow",
             result.rule_id,
         )
@@ -128,7 +134,7 @@ class Dispatcher:
         try:
             decision = self._policy.decide(call)
         except Exception:  # noqa: BLE001 - fail closed
-            log.warning("policy error tool=%s", name)
+            log.warning("policy error tool=%s", safe_name(name))
             return DispatchResult(name, "denied", "Denied: policy error.", rule_id="deny.error")
         if decision.verdict != "allow" or tool is None:
             # require_approval is not executable until P3.2; treated as deny.
@@ -140,12 +146,17 @@ class Dispatcher:
             )
         try:
             out = await tool.run(args)
+            text = "" if out.text is None else str(out.text)
+            untrusted = bool(out.untrusted)
         except ToolError as e:
-            return DispatchResult(name, "error", f"Tool error: {e}", rule_id=decision.rule_id)
+            # Error text may echo external content: capped and treated as DATA.
+            msg = str(e)[:MAX_TOOL_ERROR_CHARS]
+            return DispatchResult(
+                name, "error", f"Tool error: {msg}", untrusted=True, rule_id=decision.rule_id
+            )
         except Exception:  # noqa: BLE001 - fail closed
-            log.warning("tool failure tool=%s", name)
+            log.warning("tool failure tool=%s", safe_name(name))
             return DispatchResult(name, "error", "Tool error: failed.", rule_id=decision.rule_id)
-        text = out.text
         if len(text) > MAX_TOOL_OUTPUT_CHARS:
             text = text[:MAX_TOOL_OUTPUT_CHARS] + TRUNCATION_MARKER
-        return DispatchResult(name, "ok", text, untrusted=out.untrusted, rule_id=decision.rule_id)
+        return DispatchResult(name, "ok", text, untrusted=untrusted, rule_id=decision.rule_id)

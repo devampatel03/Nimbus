@@ -35,6 +35,7 @@ from src.orchestrator.dispatch import (
     DispatchResult,
     LoopTool,
     Policy,
+    safe_name,
 )
 from src.orchestrator.exposure import ExposableTool, names, select_tools
 from src.personality.agent_character import AgentStance
@@ -47,6 +48,7 @@ BUDGET_MESSAGE = (
     "I hit my limit for this request before finishing. Ask again or break it into a smaller step."
 )
 UNAVAILABLE_MESSAGE = "I can't reach my language model right now. Please try again shortly."
+OUTPUT_BUDGET_MESSAGE = "[tool output omitted: per-turn output budget reached]"
 EMPTY_MESSAGE = "I have nothing to add."
 
 
@@ -57,6 +59,7 @@ class LoopConfig:
     max_tools: int = 12
     max_output_tokens: int = 800
     max_tool_calls_per_turn: int = 8
+    max_tool_output_chars_per_turn: int = 16000
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,7 @@ class Orchestrator:
         events: list[DispatchResult] = []
         used = 0
         attempted = 0
+        out_chars = 0
 
         def done(text: str, status: str) -> TurnResult:
             return TurnResult(text, status, tuple(events), used, tuple(messages))
@@ -161,6 +165,10 @@ class Orchestrator:
             for call in res.tool_calls:
                 attempted += 1
                 if attempted > self._cfg.max_tool_calls_per_turn:
+                    log.info(
+                        "dispatch decision tool=%s verdict=deny rule_id=deny.call_cap",
+                        safe_name(call.name),
+                    )
                     events.append(
                         DispatchResult(
                             call.name, "denied", CALL_CAP_MESSAGE, rule_id="deny.call_cap"
@@ -170,7 +178,14 @@ class Orchestrator:
                         ChatMessage(role="tool", content=CALL_CAP_MESSAGE, tool_call_id=call.id)
                     )
                     continue
-                messages.append(await self._run_call(call, exposed_names, events))
+                msg = await self._run_call(call, exposed_names, events)
+                remaining_chars = self._cfg.max_tool_output_chars_per_turn - out_chars
+                if len(msg.content or "") > remaining_chars:
+                    msg = ChatMessage(
+                        role="tool", content=OUTPUT_BUDGET_MESSAGE, tool_call_id=call.id
+                    )
+                out_chars += len(msg.content or "")
+                messages.append(msg)
         return done(BUDGET_MESSAGE, "budget_exceeded")
 
     async def _run_call(

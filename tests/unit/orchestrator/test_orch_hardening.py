@@ -236,3 +236,89 @@ async def test_compromised_model_cannot_write() -> None:
     o, _ = mk(CompromisedFakeLLM(), [writer])
     r = await o.run_turn("send_email {}")
     assert writer.calls == [] and r.tool_events[0].status == "denied"
+
+
+# Round 2
+async def test_fdfa_expansion_cannot_trip_spend_cap() -> None:
+    tool = T("read_mail", Risk.READ, "ﷺ" * 10_000, untrusted=True)
+    fake = FakeLLM([calls("read_mail"), "summary"])
+    o, env = mk(fake, [tool])
+    r = await o.run_turn("read_mail")
+    assert r.text == "summary"
+    tm = next(m for m in fake.requests[1].messages if m.role == "tool").content or ""
+    assert len(tm) <= MAX_TOOL_OUTPUT_CHARS + 800
+    assert await env.flags.get(SPEND_MODE_KEY) is None
+
+
+async def test_total_tool_output_budget_per_turn() -> None:
+    tool = T("list_tasks", Risk.READ, "x" * 3000, untrusted=False)
+    fake = FakeLLM([calls(*(["list_tasks"] * 8)), "ok"])
+    o, _ = mk(fake, [tool], config=LoopConfig(max_tool_output_chars_per_turn=7000))
+    await o.run_turn("list_tasks")
+    total = sum(len(m.content or "") for m in fake.requests[1].messages if m.role == "tool")
+    assert total <= 7000 + 8 * 100
+
+
+async def test_tool_error_text_is_capped_and_wrapped_as_data() -> None:
+    from src.orchestrator.dispatch import ToolError
+
+    class Bad(T):
+        async def run(self, args: Mapping[str, Any]) -> ToolOutput:
+            raise ToolError("E" * 5000)
+
+    fake = FakeLLM([calls("bad"), "ok"])
+    o, _ = mk(fake, [Bad("bad", Risk.READ)])
+    await o.run_turn("bad")
+    tm = next(m for m in fake.requests[1].messages if m.role == "tool").content or ""
+    assert tm.startswith("<<<DATA") and len(tm) < 1200
+
+
+async def test_none_outputs_do_not_raise() -> None:
+    class NoneTool(T):
+        async def run(self, args: Mapping[str, Any]) -> ToolOutput:
+            return ToolOutput(None)  # type: ignore[arg-type]
+
+    class NoneRecall:
+        async def recall(self, query: str, *, limit: int) -> list[Any]:
+            from src.orchestrator.context import RecalledMemory
+
+            return [RecalledMemory(None)]  # type: ignore[arg-type]
+
+    fake = FakeLLM([calls("n"), "ok"])
+    env = build_env(provider=fake)
+    o = Orchestrator(
+        env.llm,
+        [NoneTool("n", Risk.READ)],
+        DenyAllWritesPolicy(),
+        character_card=CARD,
+        recall=NoneRecall(),
+    )
+    r = await o.run_turn("n")
+    assert r.status == "ok" and r.text == "ok"
+
+
+async def test_log_lines_sanitise_model_controlled_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Boom:
+        def decide(self, call: ProposedCall) -> Any:
+            raise RuntimeError("x")
+
+    d = Dispatcher({}, Boom())  # type: ignore[arg-type]
+    with caplog.at_level(logging.DEBUG):
+        name = "evil\nFAKE LOG \u202e"
+        await d.dispatch(name, {}, exposed=frozenset({name}))
+    assert caplog.records
+    assert all(
+        "\n" not in r.getMessage() and "\u202e" not in r.getMessage() for r in caplog.records
+    )
+
+
+async def test_call_cap_denial_logged_once_each(caplog: pytest.LogCaptureFixture) -> None:
+    tool = T("list_tasks", Risk.READ)
+    fake = FakeLLM([calls(*(["list_tasks"] * 4)), "ok"])
+    o, _ = mk(fake, [tool], config=LoopConfig(max_tool_calls_per_turn=2))
+    with caplog.at_level(logging.INFO):
+        await o.run_turn("list_tasks")
+    capped = [r for r in caplog.records if "deny.call_cap" in r.getMessage()]
+    assert len(capped) == 2
