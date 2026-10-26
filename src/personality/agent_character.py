@@ -22,12 +22,14 @@ not a replacement of tested interfaces", same resolution as
 """
 
 import hashlib
+import logging
 import os
 import re
+import unicodedata
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,19 +48,26 @@ CHARACTER_CARD_PATH = Path(__file__).resolve().parents[2] / "personality" / "cha
 CHARACTER_CARD_PIN_PATH = CHARACTER_CARD_PATH.with_suffix(".sha256")
 
 CARD_HUMAN_MARKER = "human-authored: true"
-_PLACEHOLDER_TOKENS = ("PLACEHOLDER", "TODO(owner)")
+_PLACEHOLDER_TOKENS = ("placeholder", "todo(owner)")  # matched on folded text
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_PIN_LINE_RE = re.compile(r"(sha256|approver|date): ?(.*)")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 CARD_DEV_MODE_ENV = "NIMBUS_CARD_DEV_MODE"
+
+_gate_log = logging.getLogger("nimbus.personality.card")
 
 
 class CardNotApprovedError(RuntimeError):
     """The character card is not a human-approved, pinned card (R9, ADR-0015)."""
 
 
+def _sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
 def card_sha256(path: Path = CHARACTER_CARD_PATH) -> str:
     """sha256 of the card with CRLF normalised to LF (checkout-independent)."""
-    data = path.read_bytes().replace(b"\r\n", b"\n")
-    return hashlib.sha256(data).hexdigest()
+    return _sha256_of(path.read_bytes())
 
 
 @dataclass(frozen=True)
@@ -75,42 +84,65 @@ class CardStatus:
         return not self.problems
 
 
+def _fold(text: str) -> str:
+    """NFKC + casefold with format/control chars removed, so zero-width-split
+    or fullwidth variants of the placeholder tokens are still detected."""
+    kept = "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf"))
+    return unicodedata.normalize("NFKC", kept).casefold()
+
+
 def _read_pin(pin_path: Path) -> tuple[str | None, list[str]]:
-    """Return (sha256, problems). Pin format: `sha256:`, `approver:`, `date:` lines."""
+    """Return (sha256, problems). Strict `sha256:`/`approver:`/`date:` lines,
+    lowercase keys and hex, no duplicates, no junk, ISO date not in the future."""
     if not pin_path.exists():
         return None, [f"approval pin missing at {pin_path.name}"]
+    try:
+        raw = pin_path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return None, ["approval pin is not valid UTF-8"]
     fields: dict[str, str] = {}
-    for line in pin_path.read_text(encoding="utf-8").splitlines():
-        key, sep, value = line.partition(":")
-        if sep:
-            fields[key.strip().lower()] = value.strip()
     problems: list[str] = []
-    digest = fields.get("sha256", "").lower()
+    for line in raw.replace("\r\n", "\n").split("\n"):
+        if not line.strip():
+            continue
+        m = _PIN_LINE_RE.fullmatch(line.rstrip())
+        if m is None:
+            problems.append("approval pin has a junk or malformed line")
+            continue
+        if m.group(1) in fields:
+            problems.append(f"approval pin has duplicate key {m.group(1)}")
+        fields[m.group(1)] = m.group(2).strip()
+    digest = fields.get("sha256", "")
     if not _SHA256_RE.fullmatch(digest):
-        problems.append("approval pin has no valid sha256 line")
+        problems.append("approval pin has no valid lowercase sha256 line")
     if not fields.get("approver"):
         problems.append("approval pin has no approver")
+    d = fields.get("date", "")
     try:
-        date.fromisoformat(fields.get("date", ""))
+        if not _ISO_DATE_RE.fullmatch(d) or date.fromisoformat(d) > datetime.now(UTC).date():
+            raise ValueError
     except ValueError:
-        problems.append("approval pin has no valid ISO date")
+        problems.append("approval pin has no valid non-future ISO date")
     return (digest if _SHA256_RE.fullmatch(digest) else None), problems
 
 
-def inspect_character_card(
-    path: Path = CHARACTER_CARD_PATH, pin_path: Path = CHARACTER_CARD_PIN_PATH
-) -> CardStatus:
-    """Read-only audit of the card against R9. Never raises for a bad card."""
-    if not path.exists():
-        return CardStatus(False, False, False, pin_path.exists(), False, ("card file missing",))
-    text = path.read_text(encoding="utf-8")
-    first = text.splitlines()[0] if text.strip() else ""
-    has_marker = first == CARD_HUMAN_MARKER
-    is_placeholder = any(tok in text for tok in _PLACEHOLDER_TOKENS)
-    pinned, pin_problems = _read_pin(pin_path)
-    hash_matches = pinned is not None and pinned == card_sha256(path)
-
+def _evaluate(data: bytes, pin_path: Path) -> CardStatus:
+    """Audit an already-read card buffer. Never raises for a bad card."""
+    actual = _sha256_of(data)
     problems: list[str] = []
+    text = ""
+    try:
+        text = data.replace(b"\r\n", b"\n").decode("utf-8")
+    except UnicodeDecodeError:
+        problems.append("card is not valid UTF-8")
+    if any(c not in "\n\t" and unicodedata.category(c) in ("Cc", "Cf") for c in text):
+        problems.append("card contains control/format characters")
+    has_marker = text.split("\n", 1)[0] == CARD_HUMAN_MARKER
+    folded = _fold(text)
+    is_placeholder = any(tok in folded for tok in _PLACEHOLDER_TOKENS)
+    pinned, pin_problems = _read_pin(pin_path)
+    hash_matches = pinned is not None and pinned == actual
+
     if not has_marker:
         problems.append(f"line 1 is not the `{CARD_HUMAN_MARKER}` marker")
     if is_placeholder:
@@ -123,23 +155,52 @@ def inspect_character_card(
     )
 
 
+_MISSING = CardStatus(False, False, False, False, False, ("card file missing",))
+
+
+def inspect_character_card(
+    path: Path = CHARACTER_CARD_PATH, pin_path: Path = CHARACTER_CARD_PIN_PATH
+) -> CardStatus:
+    """Read-only audit of the card against R9. Never raises for a bad card."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return _MISSING
+    return _evaluate(data, pin_path)
+
+
+def _load_checked(path: Path, pin_path: Path) -> str:
+    """Read the card ONCE; gate, decode and return the same buffer (no TOCTOU)."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        data = b""
+        status = _MISSING
+    else:
+        status = _evaluate(data, pin_path)
+    if not status.production_ready:
+        _gate_log.error("character card gate FAILED: %s", "; ".join(status.problems))
+        raise CardNotApprovedError(
+            "character card is not production-ready (R9, ADR-0015, HUMAN_TODO H1): "
+            + "; ".join(status.problems)
+        )
+    _gate_log.info("character card gate passed (sha256=%s)", _sha256_of(data)[:12])
+    return data.decode("utf-8")
+
+
 def require_production_ready(
     path: Path = CHARACTER_CARD_PATH, pin_path: Path = CHARACTER_CARD_PIN_PATH
 ) -> None:
     """Fail closed unless the card has the marker, is not a placeholder and
     matches the human-approved sha256 pin. For the app entrypoint / PRR / cutover.
     """
-    status = inspect_character_card(path, pin_path)
-    if not status.production_ready:
-        raise CardNotApprovedError(
-            "character card is not production-ready (R9, ADR-0015, HUMAN_TODO H1): "
-            + "; ".join(status.problems)
-        )
+    _load_checked(path, pin_path)
 
 
 def card_dev_mode_from_env() -> bool:
     """Operator-only switch: exactly `NIMBUS_CARD_DEV_MODE=1` in the process
-    environment. Nothing in the prompt/tool layers reads or sets it (tested).
+    environment. An AST-scan test keeps the rest of `src/` from referencing it;
+    that does not stop a process that can already set its own environment.
     """
     return os.environ.get(CARD_DEV_MODE_ENV) == "1"
 
@@ -155,9 +216,9 @@ def load_approved_character_card(
     other value (strings, ints) is treated as production.
     """
     if dev_mode is True:
-        return load_character_card(path)
-    require_production_ready(path, pin_path)
-    return load_character_card(path)
+        _gate_log.warning("character card gate BYPASSED (dev mode)")
+        return path.read_bytes().decode("utf-8")
+    return _load_checked(path, pin_path)
 
 
 _GOAL_NEGATION_MARKERS = (
@@ -375,3 +436,12 @@ async def check_friction_llm(
         FrictionConflict(kind=c.kind, description=c.description, reference=c.reference)
         for c in judgment.conflicts
     ]
+
+
+if __name__ == "__main__":  # python -m src.personality.agent_character --hash
+    import sys
+
+    if sys.argv[1:] == ["--hash"]:
+        print(card_sha256())
+    else:
+        sys.exit("usage: python -m src.personality.agent_character --hash")
