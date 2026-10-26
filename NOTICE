@@ -75,7 +75,6 @@ fastapi                 MIT License
 uvicorn                 BSD 3-Clause License
 sqlalchemy              MIT License
 asyncpg                 Apache License, Version 2.0
-langgraph               MIT License
 pydantic                MIT License
 pydantic-settings       MIT License
 cryptography            Apache-2.0 OR BSD-3-Clause (confirmed via installed package metadata)
