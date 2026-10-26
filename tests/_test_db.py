@@ -12,7 +12,7 @@ import re
 
 PREFIX = "nimbus_test_"
 STALE_AFTER_SECONDS = 6 * 3600
-_NAME_RE = re.compile(r"nimbus_test_(\d{10})_(\d+)_([0-9a-f]{8})")
+_NAME_RE = re.compile(r"nimbus_test_([0-9]{10})_([0-9]{1,10})_([0-9a-f]{8})", re.ASCII)
 
 
 def is_valid_name(name: str) -> bool:
