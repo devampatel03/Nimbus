@@ -14,14 +14,12 @@ Bearer token attached by client code, not a cookie, so credentialed CORS
 was never needed, and it would otherwise conflict with the wildcard
 `allow_origins` dev default (browsers reject `*` + credentials).
 
-`app.state.graph`/`app.state.graph_deps` are built synchronously in
-`create_app`, not inside `lifespan`: building the graph does no I/O
-(`GraphDependencies()`'s `ToolRegistry`/`Approver` are in-memory), so
-there is no reason to defer it, and doing it eagerly means the app is
-fully usable under test clients that never trigger ASGI lifespan events
-(e.g. plain `httpx.ASGITransport`), not just under a real server.
-`lifespan` is reserved for what actually needs a running loop tied to
-the app's lifetime: closing the module-level DB clients at shutdown.
+`app.state.orchestrator` / `app.state.tool_registry` are set synchronously in
+`create_app` (no I/O), so the app is usable under test clients that never run
+lifespan events. The default module-level `app` has NO orchestrator (chat
+answers 503): building one needs the guarded `src.llm` module, an approved
+character card and a policy, which the P2.1b entrypoint wires. This whole
+package is deleted by P2.1b; it is kept minimal until then.
 """
 
 import logging
@@ -38,7 +36,8 @@ from src.api.routes import chat, memory, tasks
 from src.db import postgres
 from src.memory.embedder import BatchEmbedder, EmbeddingMigrationRequired, Qwen3Embedder
 from src.memory.manager import MemoryManager
-from src.orchestrator.graph import GraphDependencies, build_graph
+from src.orchestrator.loop import Orchestrator
+from src.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -65,12 +64,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await postgres.engine.dispose()
 
 
-def create_app(deps: GraphDependencies | None = None) -> FastAPI:
+def create_app(
+    orchestrator: Orchestrator | None = None, registry: ToolRegistry | None = None
+) -> FastAPI:
     app = FastAPI(title="Nimbus", lifespan=lifespan)
-
-    deps = deps or GraphDependencies()
-    app.state.graph_deps = deps
-    app.state.graph = build_graph(deps)
+    app.state.orchestrator = orchestrator
+    app.state.tool_registry = registry or ToolRegistry()
 
     # Order matters -- see module docstring.
     app.add_middleware(JWTAuthMiddleware)

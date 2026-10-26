@@ -12,13 +12,11 @@ without a live server.
 from starlette.testclient import TestClient
 
 from config.settings import settings
-from src.api.main import create_app
-from src.orchestrator.graph import GraphDependencies
-from tests.conftest import FakeLLMClient
+from tests.fakes.api import make_app
 
 
 def _app():
-    return create_app(deps=GraphDependencies(llm_client=FakeLLMClient()))
+    return make_app()
 
 
 def _login(client: TestClient) -> str:
@@ -29,22 +27,22 @@ def _login(client: TestClient) -> str:
 
 
 def test_streaming_conversation_multiple_turns_over_one_connection() -> None:
-    client = TestClient(_app())
+    client = TestClient(make_app(["first answer", "second answer"]))
     token = _login(client)
 
     with client.websocket_connect(f"/chat/ws?token={token}") as websocket:
         websocket.send_json({"message": "hello"})
         first = websocket.receive_json()
         assert first["type"] == "response"
-        assert first["response"]
+        assert first["response"] == "first answer"
         session_id = first["session_id"]
 
-        websocket.send_json({"message": "remind me to call the bank"})
+        websocket.send_json({"message": "and again"})
         second = websocket.receive_json()
 
     assert second["session_id"] == session_id
-    assert second["tool_results"][0]["status"] == "success"
-    assert second["tool_results"][0]["tool"] == "tasks"
+    assert second["response"] == "second answer"
+    assert second["tool_events"] == []
 
 
 def test_websocket_accepts_a_token_via_authorization_header_too() -> None:

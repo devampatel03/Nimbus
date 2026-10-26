@@ -11,16 +11,14 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from config.settings import settings
-from src.api.main import create_app
-from src.orchestrator.graph import GraphDependencies
-from tests.conftest import FakeLLMClient
+from tests.fakes.api import make_app
 
 _TEST_PASSWORD = "unit-test-password"  # pragma: allowlist secret -- synthetic, test-only
 _WRONG_PASSWORD = "unit-test-wrong-password"  # pragma: allowlist secret -- synthetic, test-only
 
 
 def _app():
-    return create_app(deps=GraphDependencies(llm_client=FakeLLMClient()))
+    return make_app()
 
 
 @pytest.mark.asyncio

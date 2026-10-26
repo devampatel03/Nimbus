@@ -253,9 +253,9 @@ def test_dev_mode_only_from_operator_env(monkeypatch):
 _SRC = Path(__file__).resolve().parents[2] / "src"
 _OWN = Path("personality") / "agent_character.py"
 _SCAN_ALLOWLIST: frozenset[str] = frozenset()  # future entrypoint, currently none
-# load_character_card is the UNGATED reader. Outside src/personality it is banned except
-# this known leftover, which P2.1b MUST replace with load_approved_character_card.
-_UNGATED_LOADER_ALLOWLIST = frozenset({"orchestrator/context_builder.py"})
+# load_character_card is the UNGATED reader. Outside src/personality it is banned with no
+# exceptions (the last user, orchestrator/context_builder.py, was deleted in P2.5b).
+_UNGATED_LOADER_ALLOWLIST: frozenset[str] = frozenset()
 _FORBIDDEN_NAMES = {"CARD_DEV_MODE_ENV", "card_dev_mode_from_env"}
 _ENV_MUTATORS = {"update", "setdefault", "pop", "popitem", "clear"}
 
@@ -373,7 +373,7 @@ def test_offline_env_keys_never_name_nimbus_or_card():
     assert not any("NIMBUS" in k or "CARD" in k for k in embedder._OFFLINE_ENV)
 
 
-def test_ungated_loader_allowlist_is_exactly_the_known_leftover():
+def test_no_ungated_card_loader_outside_personality():
     users = [
         py.relative_to(_SRC).as_posix()
         for py in _SRC.rglob("*.py")
@@ -381,7 +381,9 @@ def test_ungated_loader_allowlist_is_exactly_the_known_leftover():
         and _scan_dev_mode_misuse(py.read_text(encoding="utf-8"), outside_personality=True)
         == ["ungated load_character_card"]
     ]
-    assert set(users) == _UNGATED_LOADER_ALLOWLIST, "P2.1b: remove the entry once it is gated"
+    assert (
+        set(users) == _UNGATED_LOADER_ALLOWLIST
+    ), "no ungated load_character_card user may exist outside src/personality"
 
 
 def test_exempt_embedder_pattern_and_variants():

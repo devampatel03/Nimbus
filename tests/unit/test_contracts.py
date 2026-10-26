@@ -23,8 +23,6 @@ from src.contracts import (
     MemoryQuery,
     MemoryResult,
     ProactiveCandidate,
-    ToolIntent,
-    ToolResult,
     Transcript,
     UserProfileSlice,
 )
@@ -82,21 +80,6 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "generated_at": "datetime",
         "version": "int",
     },
-    ToolIntent: {
-        "tool": "str",
-        "action": "str",
-        "params": "dict[str, str | int | float | bool | None]",
-        "entity_refs": "dict[str, str]",
-        "risk_class": "RiskClass",
-    },
-    ToolResult: {
-        "tool": "str",
-        "action": "str",
-        "status": "str",
-        "result": "dict[str, str | int | float | bool | None]",
-        "entity_refs": "dict[str, str]",
-        "error_message": "str | None",
-    },
     ProactiveCandidate: {
         "candidate_id": "UUID",
         "scanner": "str",
@@ -115,8 +98,6 @@ FIXTURE_FILES: dict[type[BaseModel], str] = {
     MemoryQuery: "memory_query.json",
     MemoryResult: "memory_result.json",
     UserProfileSlice: "user_profile_slice.json",
-    ToolIntent: "tool_intent.json",
-    ToolResult: "tool_result.json",
     ProactiveCandidate: "proactive_candidate.json",
 }
 
@@ -168,9 +149,9 @@ def test_retired_contracts_are_gone() -> None:
 
     from src import contracts
 
-    for name in ("SessionBundle", "DiarizedTranscript", "Utterance"):
+    for name in ("SessionBundle", "DiarizedTranscript", "Utterance", "ToolIntent", "ToolResult"):
         assert not hasattr(contracts, name)
-    for mod in ("session_bundle", "diarized_transcript"):
+    for mod in ("session_bundle", "diarized_transcript", "tool_intent"):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(f"src.contracts.{mod}")
 

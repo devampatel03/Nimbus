@@ -16,10 +16,10 @@ repos:
             "pydantic-settings>=2.4",
             "fastapi>=0.115",
             "sqlalchemy[asyncio]>=2.0",
-            "langgraph>=0.2",
             "pyjwt>=2.8",
             "cryptography>=43",
             "openai>=3,<4",
+            "httpx",
           ]
         args: [--strict]
         files: ^src/

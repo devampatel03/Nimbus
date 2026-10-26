@@ -1,68 +1,51 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Internal reminder store (T4.2 item 5, this session). Like `tasks.py`,
-reminders never leave the device -- no third-party API, no cloud
-reasoning needed to create/update/delete/list them -- so `run()` never
-calls the scrubber and adds no egress point (INV-1 stays satisfied
-trivially: there is nothing here to scan for).
+"""Internal reminder store, as `LoopTool`s (Tool protocol v2, P2.5b). Like
+`tasks.py`, reminders never leave the device: no third-party API, no network,
+so this module imports no transport (INV-1). One tool per action, each with a
+code-declared risk; outputs are JSON text, untrusted by default.
 
-Time-triggered via APScheduler's `AsyncIOScheduler` ("basic for now" per
-this session's instruction): each reminder schedules a `date`-trigger job
-that flips `fired: True` when `remind_at` elapses. The scheduler is
-lazily created and started on first use inside `run()` (not in
-`__init__`), mirroring the lazy-init pattern already used for
-`Qwen3Embedder`/`VLLMClient` elsewhere in this codebase -- `ToolRegistry`
-constructs every tool synchronously (`src/tools/registry.py`), which is
-not guaranteed to run inside an active asyncio event loop, and
-`AsyncIOScheduler.start()` needs one.
+Time-triggered via APScheduler's `AsyncIOScheduler`: each reminder schedules a
+`date`-trigger job that flips `fired: True` when `remind_at` elapses. The
+scheduler is created and started lazily on first use inside a tool call, not in
+`__init__`: `ToolRegistry` constructs groups synchronously, with no guaranteed
+running event loop, and `AsyncIOScheduler.start()` needs one.
 
-No notification delivery channel exists yet (push/SMS/etc. is a separate,
-unbuilt concern) -- `fired` is the only observable signal today, polled
-via `get_reminder`/`list_reminders` (same REST-read pattern as
-`TasksTool.list_tasks`/`get_task` -- see that module's docstring for why
-these are plain methods rather than `run()` actions).
+No notification channel exists yet; `fired` is the only observable signal,
+read via `get_reminder`/`list_reminders`. Durable, IST-resolved scheduling with
+catch-up replaces APScheduler in P3.3.
 """
 
+from __future__ import annotations
+
+import json
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
-from typing import ClassVar
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from src.contracts.tool_intent import Primitive, RiskClass, ToolResult
-from src.tools.base import BaseTool
+from src.orchestrator.dispatch import LoopTool, Risk, ToolError, ToolOutput
+from src.tools.base import FunctionTool, ToolGroup, object_schema
 
-_ACTION_RISK: dict[str, RiskClass] = {
-    "create": RiskClass.WRITE_REVERSIBLE,
-    "update": RiskClass.WRITE_REVERSIBLE,
-    "delete": RiskClass.WRITE_REVERSIBLE,
-    "list": RiskClass.READ,
-    "get": RiskClass.READ,
-}
+Reminder = dict[str, str | bool]
 
 
-class RemindersTool(BaseTool):
+def _parse(remind_at: str) -> datetime:
+    try:
+        return datetime.fromisoformat(remind_at)
+    except ValueError:
+        raise ToolError("remind_at must be an ISO-8601 datetime") from None
+
+
+class RemindersTool(ToolGroup):
     name = "reminders"
-    description = "Create, read, update and delete time-triggered reminders."
-    risk_class = RiskClass.WRITE_REVERSIBLE
-    schema: ClassVar[dict[str, dict[str, type]]] = {
-        "create": {"title": str, "remind_at": str},
-        "update": {"reminder_id": str, "title": str, "remind_at": str},
-        "delete": {"reminder_id": str},
-        "list": {},
-        "get": {"reminder_id": str},
-    }
 
     def __init__(self) -> None:
-        self._reminders: dict[str, dict[str, Primitive]] = {}
+        self._reminders: dict[str, Reminder] = {}
         self._scheduler: AsyncIOScheduler | None = None
-
-    def risk_class_for(self, action: str) -> RiskClass:
-        try:
-            return _ACTION_RISK[action]
-        except KeyError:
-            raise ValueError(f"{self.name}: unknown action {action!r}") from None
 
     def _ensure_scheduler(self) -> AsyncIOScheduler:
         if self._scheduler is None:
@@ -75,78 +58,87 @@ class RemindersTool(BaseTool):
         if reminder is not None:
             reminder["fired"] = True
 
-    def _schedule(self, reminder_id: str, remind_at: str) -> None:
+    def _schedule(self, reminder_id: str, run_date: datetime) -> None:
         self._ensure_scheduler().add_job(
             self._fire,
             "date",
-            run_date=datetime.fromisoformat(remind_at),
+            run_date=run_date,
             args=[reminder_id],
             id=reminder_id,
             replace_existing=True,
         )
 
-    def list_reminders(self) -> list[dict[str, Primitive]]:
+    def list_reminders(self) -> list[Reminder]:
         return [dict(r) for r in self._reminders.values()]
 
-    def get_reminder(self, reminder_id: str) -> dict[str, Primitive] | None:
+    def get_reminder(self, reminder_id: str) -> Reminder | None:
         reminder = self._reminders.get(reminder_id)
         return dict(reminder) if reminder is not None else None
 
-    def _not_found(self, action: str) -> ToolResult:
-        return ToolResult(
-            tool=self.name,
-            action=action,
-            status="error",
-            result={},
-            entity_refs={},
-            error_message="reminder not found",
+    def _require(self, args: Mapping[str, Any]) -> Reminder:
+        reminder = self._reminders.get(args["reminder_id"])
+        if reminder is None:
+            raise ToolError("reminder not found")
+        return reminder
+
+    async def _create(self, args: Mapping[str, Any]) -> ToolOutput:
+        run_date = _parse(args["remind_at"])
+        reminder_id = str(uuid.uuid4())
+        self._reminders[reminder_id] = {
+            "reminder_id": reminder_id,
+            "title": args["title"],
+            "remind_at": args["remind_at"],
+            "fired": False,
+        }
+        self._schedule(reminder_id, run_date)
+        return ToolOutput(json.dumps({"reminder_id": reminder_id}))
+
+    async def _update(self, args: Mapping[str, Any]) -> ToolOutput:
+        reminder = self._require(args)
+        run_date = _parse(args["remind_at"])
+        reminder["title"] = args["title"]
+        reminder["remind_at"] = args["remind_at"]
+        reminder["fired"] = False
+        self._schedule(str(reminder["reminder_id"]), run_date)
+        return ToolOutput(json.dumps({"reminder_id": reminder["reminder_id"]}))
+
+    async def _delete(self, args: Mapping[str, Any]) -> ToolOutput:
+        reminder = self._require(args)
+        reminder_id = str(reminder["reminder_id"])
+        del self._reminders[reminder_id]
+        if self._scheduler is not None and self._scheduler.get_job(reminder_id):
+            self._scheduler.remove_job(reminder_id)
+        return ToolOutput(json.dumps({"reminder_id": reminder_id}))
+
+    async def _get(self, args: Mapping[str, Any]) -> ToolOutput:
+        return ToolOutput(json.dumps(self._require(args)))
+
+    async def _list(self, args: Mapping[str, Any]) -> ToolOutput:
+        return ToolOutput(
+            json.dumps({"count": len(self._reminders), "reminders": self.list_reminders()})
         )
 
-    async def run(
-        self, action: str, params: dict[str, Primitive], *, session_id: str
-    ) -> ToolResult:
-        self.validate_params(action, params)
-        if action == "create":
-            reminder_id = str(uuid.uuid4())
-            remind_at = params["remind_at"]
-            assert isinstance(remind_at, str)
-            self._reminders[reminder_id] = {
-                "reminder_id": reminder_id,
-                "title": params["title"],
-                "remind_at": remind_at,
-                "fired": False,
-            }
-            self._schedule(reminder_id, remind_at)
-            result: dict[str, Primitive] = {"reminder_id": reminder_id}
-        elif action == "update":
-            reminder_id_param = params["reminder_id"]
-            if not isinstance(reminder_id_param, str) or reminder_id_param not in self._reminders:
-                return self._not_found(action)
-            remind_at = params["remind_at"]
-            assert isinstance(remind_at, str)
-            self._reminders[reminder_id_param]["title"] = params["title"]
-            self._reminders[reminder_id_param]["remind_at"] = remind_at
-            self._reminders[reminder_id_param]["fired"] = False
-            self._schedule(reminder_id_param, remind_at)
-            result = {"reminder_id": reminder_id_param}
-        elif action == "delete":
-            reminder_id_param = params["reminder_id"]
-            if not isinstance(reminder_id_param, str) or reminder_id_param not in self._reminders:
-                return self._not_found(action)
-            del self._reminders[reminder_id_param]
-            if self._scheduler is not None and self._scheduler.get_job(reminder_id_param):
-                self._scheduler.remove_job(reminder_id_param)
-            result = {"reminder_id": reminder_id_param}
-        elif action == "get":
-            reminder_id_param = params["reminder_id"]
-            if not isinstance(reminder_id_param, str) or reminder_id_param not in self._reminders:
-                return self._not_found(action)
-            result = dict(self._reminders[reminder_id_param])
-        elif action == "list":
-            result = {"count": len(self._reminders)}
-        else:
-            raise ValueError(f"{self.name}: unknown action {action!r}")
-
-        return ToolResult(
-            tool=self.name, action=action, status="success", result=result, entity_refs={}
-        )
+    def tools(self) -> list[LoopTool]:
+        w, r = Risk.WRITE_INTERNAL, Risk.READ
+        rid = {"reminder_id": "string"}
+        return [
+            FunctionTool(
+                "reminders_create",
+                "Create a reminder that fires at an ISO-8601 time.",
+                w,
+                object_schema({"title": "string", "remind_at": "string"}),
+                self._create,
+            ),
+            FunctionTool(
+                "reminders_update",
+                "Change the title and time of a reminder.",
+                w,
+                object_schema({**rid, "title": "string", "remind_at": "string"}),
+                self._update,
+            ),
+            FunctionTool(
+                "reminders_delete", "Delete a reminder.", w, object_schema(rid), self._delete
+            ),
+            FunctionTool("reminders_get", "Read one reminder.", r, object_schema(rid), self._get),
+            FunctionTool("reminders_list", "List all reminders.", r, object_schema({}), self._list),
+        ]

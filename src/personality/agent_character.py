@@ -17,8 +17,7 @@ behavior would silently break that already-passing, real-measurement
 harness. `check_friction_llm` below is the new LLM-based conflict
 detector this session's task asks for, added alongside it (not wired into
 `friction.py`, which stays on the original heuristic) -- "an addition,
-not a replacement of tested interfaces", same resolution as
-`src/orchestrator/approver.py`'s `review`/`review_async` split.
+not a replacement of tested interfaces".
 """
 
 import hashlib

@@ -8,12 +8,12 @@ from httpx import ASGITransport, AsyncClient
 
 from config.settings import settings
 from src.api.main import create_app
-from src.orchestrator.graph import GraphDependencies
-from tests.conftest import FakeLLMClient
+from src.llm.types import ProviderResponse, ToolCallRequest, Usage
+from tests.fakes.api import make_app
 
 
 def _app():
-    return create_app(deps=GraphDependencies(llm_client=FakeLLMClient()))
+    return make_app()
 
 
 async def _login(client: AsyncClient) -> dict[str, str]:
@@ -24,38 +24,64 @@ async def _login(client: AsyncClient) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_send_message_get_response() -> None:
-    transport = ASGITransport(app=_app())
+    transport = ASGITransport(app=make_app(["Hello there."]))
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         headers = await _login(client)
         response = await client.post("/chat", json={"message": "hello there"}, headers=headers)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["response"]
+    assert body["response"] == "Hello there."
+    assert body["status"] == "ok"
     assert "session_id" in body
-    assert body["tool_calls"] == []
-    assert body["tool_results"] == []
+    assert body["tool_events"] == []
 
 
 @pytest.mark.asyncio
-async def test_chat_and_rest_tasks_share_the_same_internal_task_store() -> None:
-    """`act` executes tools via the same `TasksTool` instance the REST
-    `tasks` router reads from (see AD-14, `src/api/routes/tasks.py`
-    module docstring) -- a task created through chat must be visible via
-    GET /tasks, not stuck in a second, disconnected store.
-    """
-    transport = ASGITransport(app=_app())
+async def test_chat_without_an_orchestrator_is_503() -> None:
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = await _login(client)
+        response = await client.post("/chat", json={"message": "hi"}, headers=headers)
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_write_tool_call_from_chat_is_denied_by_policy_and_store_stays_empty() -> None:
+    """The model proposes `tasks_create`; the interim DenyAllWritesPolicy denies
+    it (INV-5), so nothing lands in the shared task store."""
+    call = ProviderResponse(
+        text=None,
+        tool_calls=(ToolCallRequest(id="c1", name="tasks_create", arguments={"title": "x"}),),
+        usage=Usage(tokens_in=10, tokens_out=5),
+    )
+    transport = ASGITransport(app=make_app([call, "I can't do that yet."]))
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         headers = await _login(client)
         chat_response = await client.post(
-            "/chat", json={"message": "remind me to call the bank"}, headers=headers
+            "/chat", json={"message": "add a task called x: tasks create"}, headers=headers
         )
         assert chat_response.status_code == 200
-        assert chat_response.json()["tool_results"][0]["status"] == "success"
-
+        events = chat_response.json()["tool_events"]
+        assert events == [
+            {"tool": "tasks_create", "status": "denied", "rule_id": "deny.write_interim"}
+        ]
         tasks_response = await client.get("/tasks", headers=headers)
 
     assert tasks_response.status_code == 200
-    tasks = tasks_response.json()
-    assert len(tasks) == 1
-    assert tasks[0]["title"] == "remind me to call the bank"
+    assert tasks_response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_rest_tasks_roundtrip_uses_loop_tools() -> None:
+    transport = ASGITransport(app=make_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = await _login(client)
+        created = await client.post("/tasks", json={"title": "call the bank"}, headers=headers)
+        assert created.status_code == 201
+        task_id = created.json()["task_id"]
+        done = await client.post(f"/tasks/{task_id}/complete", headers=headers)
+        assert done.json()["done"] is True
+        missing = await client.put("/tasks/nope", json={"title": "y"}, headers=headers)
+        assert missing.status_code == 404
+        assert (await client.delete(f"/tasks/{task_id}", headers=headers)).status_code == 204
