@@ -2,6 +2,13 @@
   "user_id": "11111111-2222-3333-4444-555555555555",
   "query_text": "what did Rohit say about the funding timeline",
   "top_k": 5,
-  "active_entities": ["<person_44>"],
-  "present_speakers": ["11111111-2222-3333-4444-555555555555"]
+  "active_entities": [
+    "<person_44>"
+  ],
+  "present_speakers": [
+    "11111111-2222-3333-4444-555555555555"
+  ],
+  "as_of": "2026-09-01T00:00:00+05:30",
+  "known_at": "2026-09-02T00:00:00+05:30",
+  "include_unpromoted": false
 }

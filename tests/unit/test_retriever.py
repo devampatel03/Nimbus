@@ -91,3 +91,18 @@ def test_set_overlap_disjoint_is_zero() -> None:
 def test_set_overlap_empty_either_side_is_zero() -> None:
     assert set_overlap(frozenset(), frozenset({"a"})) == 0.0
     assert set_overlap(frozenset({"a"}), frozenset()) == 0.0
+
+
+def test_age_days_is_measured_from_the_reference_and_floored() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from src.memory.retriever import age_days, recency_term
+
+    ref = datetime(2026, 3, 1, tzinfo=UTC)
+    assert age_days(ref - timedelta(days=10), ref) == pytest.approx(10.0)
+    assert age_days(ref + timedelta(days=3), ref) == 0.0  # newer than reference: not boosted
+    # an as_of query ranks as it would have then: same row, earlier reference => fresher
+    then = ref - timedelta(days=30)
+    assert recency_term(age_days(then, then + timedelta(days=1))) > recency_term(
+        age_days(then, ref)
+    )

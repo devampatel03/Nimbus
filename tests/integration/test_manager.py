@@ -15,13 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.contracts.memory_query import MemoryQuery
 from src.memory.manager import (
+    ChunkIn,
     DeterministicStubEmbedder,
-    EpisodicChunk,
     MemoryManager,
     SemanticFact,
 )
 from src.memory.schemas.graph import GraphNode
 from src.memory.schemas.session import Session
+from tests._memory_helpers import make_event
 
 
 async def _make_session_and_node(db_session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -37,16 +38,15 @@ async def _make_session_and_node(db_session: AsyncSession) -> tuple[uuid.UUID, u
 
 @pytest.mark.asyncio
 async def test_write_and_query_episodic_roundtrip(db_session: AsyncSession) -> None:
-    session_id, _ = await _make_session_and_node(db_session)
+    _session_id, _ = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
         embedder=DeterministicStubEmbedder(),
     )
 
     chunk_text = "The client wants the launch moved to next Tuesday."
-    ids = await manager.write_episodic(
-        session_id, [EpisodicChunk(text=chunk_text, occurred_at=datetime.now(UTC))]
-    )
+    event_id = await manager.record_event(make_event("telegram:5"))
+    ids = await manager.write_episodic(event_id, [ChunkIn(text=chunk_text)])
     assert len(ids) == 1
 
     results = await manager.query(
@@ -54,7 +54,8 @@ async def test_write_and_query_episodic_roundtrip(db_session: AsyncSession) -> N
     )
     assert any(r.content == chunk_text for r in results)
     top = next(r for r in results if r.content == chunk_text)
-    assert top.source_session == session_id
+    assert top.source_session == event_id  # no session meta: the event is the session
+    assert (top.lane, top.untrusted) == ("trusted", False)
     assert top.provenance  # INV-5: non-null
     assert top.confidence == 1.0
 
