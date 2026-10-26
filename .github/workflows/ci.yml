@@ -69,6 +69,26 @@ jobs:
   redteam:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Adversarial tests under tests/adversarial/memory exercise real Postgres (R8 promote binding).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: nimbus
+          POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
+          POSTGRES_DB: nimbus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nimbus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: nimbus
+      POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
+      POSTGRES_DB: nimbus
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
