@@ -14,9 +14,7 @@ repos:
           [
             "pydantic>=2.8",
             "pydantic-settings>=2.4",
-            "fastapi>=0.115",
             "sqlalchemy[asyncio]>=2.0",
-            "pyjwt>=2.8",
             "cryptography>=43",
             "openai>=3,<4",
             "httpx",
