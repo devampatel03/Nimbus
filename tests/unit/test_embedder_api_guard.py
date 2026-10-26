@@ -8,6 +8,8 @@ and pin that `ApiEmbedder` uses the SAME `CallAccountant` as `GuardedLLM`."""
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
 import math
 from decimal import Decimal
@@ -46,6 +48,7 @@ from tests.fakes.llm import (
 from tests.unit.test_embedder_api import embedding_response
 
 DIM = 4
+TEST_TIMEOUT_S = 30
 # 1000 INR / Mtok on input: a 1000-char text estimates 500 tokens = 0.5 INR.
 PRICE = {"*": ModelPrice(in_per_mtok_inr=Decimal(1000), out_per_mtok_inr=Decimal(1000))}
 TEXT = "x" * 1000
@@ -140,26 +143,33 @@ async def test_cancel_during_ok_audit_write_holds_reservation() -> None:
     t = good()
     env = Env(t, daily_spend_cap_inr="0.6")
     gate = asyncio.Event()
+    entered = asyncio.Event()
     real = env.audit.write
 
     async def slow(rec: Any) -> Any:
         if rec.status == "ok":
+            entered.set()
             await gate.wait()
         return await real(rec)
 
     env.audit.write = slow  # type: ignore[method-assign]
     task = asyncio.create_task(env.emb.aembed(TEXT))
-    for _ in range(30):
-        await asyncio.sleep(0)
+    # Deterministic sync (not a yield count): the first send lazily builds the
+    # SDK client and runs thread-offloaded setup, which takes a variable number
+    # of loop turns on a cold process.
+    await asyncio.wait_for(entered.wait(), timeout=10)
     assert len(t.calls) == 1  # parked inside the ok-row write
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await asyncio.wait_for(task, timeout=10)
     # The send happened and was never confirmed in the ledger: still counted.
     with pytest.raises(SpendCapExceeded):
         await env.emb.aembed(TEXT)
     gate.set()
-    await asyncio.sleep(0.01)
+    for _ in range(200):
+        if any(r.status == "ok" for r in env.audit.records):
+            break
+        await asyncio.sleep(0.01)
     assert [r.status for r in env.audit.records].count("ok") == 1  # shielded write finished
 
 
@@ -329,3 +339,18 @@ async def test_guard_bug_in_preflight_fails_closed() -> None:
     with pytest.raises(LLMRefused) as ei:
         await env.emb.aembed(TEXT)
     assert ei.value.reason == "guard_error" and t.calls == []
+
+
+def _bounded(fn: Any) -> Any:
+    """Hard per-test timeout: a regression must fail, never hang CI."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return await asyncio.wait_for(fn(*args, **kwargs), timeout=TEST_TIMEOUT_S)
+
+    return wrapper
+
+
+for _name, _obj in list(globals().items()):
+    if _name.startswith("test_") and inspect.iscoroutinefunction(_obj):
+        globals()[_name] = _bounded(_obj)
