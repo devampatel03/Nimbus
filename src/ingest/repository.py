@@ -20,7 +20,19 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from sqlalchemy import Integer, Text, cast, func, select
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    Float,
+    Integer,
+    Text,
+    case,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -79,26 +91,38 @@ class PgEventSink:
             )
             return found
 
-    async def bump_attempts(self, event_id: uuid.UUID) -> int:
+    async def bump_attempts(
+        self, event_id: uuid.UUID, *, now: datetime, backoff_s: tuple[float, ...]
+    ) -> int | None:
         key = f"{_ATTEMPTS_PREFIX}{event_id}"
+        stamp = now.isoformat()
         async with _fixed_errors(), self._sf() as s, s.begin():
-            ins = pg_insert(SystemFlag).values(key=key, value={"n": 1}, updated_by="ingest")
+            ins = pg_insert(SystemFlag).values(
+                key=key, value={"n": 1, "at": stamp}, updated_by="ingest"
+            )
             stmt = ins.on_conflict_do_update(
                 index_elements=[SystemFlag.key],
                 set_={
-                    "value": func.jsonb_build_object(
-                        "n", cast(SystemFlag.value["n"].astext, Integer) + 1
-                    ),
+                    "value": func.jsonb_build_object("n", _n_expr() + 1, "at", stamp),
                     "updated_at": func.now(),
                 },
+                # Atomic claim: only when the backoff since the last attempt elapsed.
+                where=_due_expr(now, backoff_s),
             ).returning(SystemFlag.value["n"].astext)
-            return int((await s.execute(stmt)).scalar_one())
+            got = (await s.execute(stmt)).scalar_one_or_none()
+            return None if got is None else int(got)
+
+    async def clear_attempts(self, event_id: uuid.UUID) -> None:
+        async with _fixed_errors(), self._sf() as s, s.begin():
+            await s.execute(
+                delete(SystemFlag).where(SystemFlag.key == f"{_ATTEMPTS_PREFIX}{event_id}")
+            )
 
     async def pending_follow_ons(
-        self, limit: int, *, older_than: datetime
+        self, limit: int, *, older_than: datetime, now: datetime, backoff_s: tuple[float, ...]
     ) -> list[PendingFollowOn]:
         child = EventRow.__table__.alias("child")
-        attempts = func.coalesce(cast(SystemFlag.value["n"].astext, Integer), 0)
+        attempts = func.coalesce(_n_expr(), 0)
         async with _fixed_errors(), self._sf() as s:
             q = (
                 select(EventRow, attempts.label("attempts"))
@@ -115,6 +139,7 @@ class PgEventSink:
                     ~select(child.c.id)
                     .where(child.c.source_key == EventRow.source_key + ":transcript")
                     .exists(),
+                    or_(SystemFlag.key.is_(None), _due_expr(now, backoff_s)),
                 )
                 .order_by(attempts, EventRow.occurred_at)
                 .limit(limit)
@@ -131,3 +156,15 @@ class PgEventSink:
                 )
                 for r, n in (await s.execute(q)).all()
             ]
+
+
+def _n_expr() -> ColumnElement[int]:
+    return cast(SystemFlag.value["n"].astext, Integer)
+
+
+def _due_expr(now: datetime, backoff_s: tuple[float, ...]) -> ColumnElement[bool]:
+    """Backoff elapsed since the last recorded attempt (columns of `system_flag`)."""
+    gaps = {i + 1: g for i, g in enumerate(backoff_s)}
+    gap = case(gaps, value=_n_expr(), else_=backoff_s[-1])
+    last = cast(SystemFlag.value["at"].astext, DateTime(timezone=True))
+    return last + func.make_interval(0, 0, 0, 0, 0, 0, cast(gap, Float)) <= now

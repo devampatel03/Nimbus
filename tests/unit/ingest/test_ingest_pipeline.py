@@ -93,6 +93,7 @@ async def test_voice_event_stored_and_acked_before_any_network_io() -> None:
     assert calls == [
         "record:telegram:5",  # event durable first
         "ack:5",  # then gateway ack
+        "bump:1",  # attempt persisted before the paid call
         "fetch:uniq5",  # only now the network
         "transcribe",
         "record:telegram:5:transcript",
