@@ -168,3 +168,28 @@ def test_retired_contracts_are_gone() -> None:
     for mod in ("session_bundle", "diarized_transcript"):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(f"src.contracts.{mod}")
+
+
+# MED-4: golden fixtures for the Event variants (lane/tombstone semantics).
+EVENT_VARIANTS = [
+    ("event_voice.json", "trusted", False),
+    ("event_recorder.json", "untrusted", False),
+    ("event_transcript_tombstone.json", "untrusted", True),
+]
+
+
+@pytest.mark.parametrize(("fname", "lane", "tombstone"), EVENT_VARIANTS)
+def test_event_variant_fixtures(fname: str, lane: str, tombstone: bool) -> None:
+    data = json.loads((FIXTURES_DIR / fname).read_text())
+    ev = Event.model_validate(data)
+    assert Event.model_validate(json.loads(ev.model_dump_json())) == ev
+    assert ev.lane == lane
+    assert (ev.body is None and "rejected" in ev.meta) == tombstone
+
+
+def test_all_event_kinds_have_a_fixture() -> None:
+    kinds = {
+        Event.model_validate(json.loads((FIXTURES_DIR / f).read_text())).kind
+        for f in ("event.json", *(v[0] for v in EVENT_VARIANTS))
+    }
+    assert {"text", "voice", "recorder"} <= {k.value for k in kinds}

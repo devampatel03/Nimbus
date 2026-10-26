@@ -1,0 +1,11 @@
+{
+  "source_key": "telegram:100233",
+  "kind": "recorder",
+  "source": "telegram",
+  "lane": "untrusted",
+  "confidence": 1.0,
+  "body": "from the Thursday sync",
+  "meta": {"update_id": 100233, "file_id": "BQACAgQAAxkBAAJ", "size": 9120, "mime_type": "text/plain", "file_name": "Recording 2026-10-26.txt", "untrusted_reason": "third_party_speech"},
+  "file_unique_id": "AgADvQIAAk9bqVB",
+  "occurred_at": "2026-10-26T09:17:00Z"
+}

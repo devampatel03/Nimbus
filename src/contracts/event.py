@@ -13,6 +13,7 @@ speech) carries `lane="untrusted"`. The contract itself refuses to build a
 trusted Event of a kind that is untrusted by construction.
 """
 
+import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -27,6 +28,8 @@ class EventKind(StrEnum):
     RECORDER = "recorder"  # the .txt document as received
     RECORDER_TRANSCRIPT = "recorder_transcript"  # parsed, sanitised transcript text
 
+
+MAX_META_BYTES = 8 * 1024
 
 # Third-party speech by construction: never trusted, whoever forwarded it.
 ALWAYS_UNTRUSTED = frozenset({EventKind.RECORDER, EventKind.RECORDER_TRANSCRIPT})
@@ -44,6 +47,13 @@ class Event(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     file_unique_id: str | None = None
     occurred_at: datetime
+
+    @model_validator(mode="after")
+    def _meta_is_small(self) -> "Event":
+        size = len(json.dumps(self.meta, default=str).encode("utf-8", "replace"))
+        if size > MAX_META_BYTES:
+            raise ValueError("event meta too large")
+        return self
 
     @model_validator(mode="after")
     def _untrusted_kinds_stay_untrusted(self) -> "Event":

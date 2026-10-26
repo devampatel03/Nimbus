@@ -24,7 +24,7 @@ spend cap).
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Generic, TypeVar
+from typing import Annotated, Any, Generic, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,45 +33,55 @@ from src.contracts.transcript import Transcript
 from src.llm.protocols import LLMClient
 from src.llm.types import ChatMessage, ChatRequest, Lane, LLMResponseError, Purpose
 
-
-class ExtractedEntity(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    entity_type: str
-    canonical_name: str
-    source_segment_index: int
-    confidence: float
+_STR = 200
+_TEXT = 1000
+_MAX_ITEMS = 200
+_Idx = Annotated[int, Field(ge=0, le=1_000_000)]
+_Conf = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
-class ExtractedRelation(BaseModel):
-    model_config = ConfigDict(frozen=True)
+class _Item(BaseModel):
+    """Model output is untrusted data: bounded strings, bounded numbers, no extras."""
 
-    subject_name: str
-    predicate: str
-    object_name: str | None = None
-    object_literal: str | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ExtractedEntity(_Item):
+    entity_type: str = Field(max_length=64)
+    canonical_name: str = Field(max_length=_STR)
+    source_segment_index: _Idx
+    confidence: _Conf
+
+
+class ExtractedRelation(_Item):
+    subject_name: str = Field(max_length=_STR)
+    predicate: str = Field(max_length=_STR)
+    object_name: str | None = Field(default=None, max_length=_STR)
+    object_literal: str | None = Field(default=None, max_length=_TEXT)
     valid_from: datetime
-    source_segment_index: int
-    confidence: float
+    source_segment_index: _Idx
+    confidence: _Conf
 
 
-class ExtractedCommitment(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    description: str
-    owner_label: str | None = None  # speaker_label, resolved to person_id later
+class ExtractedCommitment(_Item):
+    description: str = Field(max_length=_TEXT)
+    owner_label: str | None = Field(default=None, max_length=64)  # speaker_label
     due_at: datetime | None = None
-    source_segment_index: int
-    confidence: float
+    source_segment_index: _Idx
+    confidence: _Conf
 
 
-class ExtractedDecision(BaseModel):
-    model_config = ConfigDict(frozen=True)
+class ExtractedDecision(_Item):
+    decision_text: str = Field(max_length=_TEXT)
+    reasoning: str = Field(max_length=_TEXT)
+    source_segment_index: _Idx
+    confidence: _Conf
 
-    decision_text: str
-    reasoning: str
-    source_segment_index: int
-    confidence: float
+
+def _in_range(items: list[Any], transcript: "Transcript") -> list[Any]:
+    """Drop items citing a segment that does not exist (hallucinated provenance)."""
+    n = len(transcript.segments)
+    return [i for i in items if i.source_segment_index < n]
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -144,7 +154,7 @@ _ENTITY_SYSTEM_PROMPT = (
 
 class _EntityBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    entities: list[ExtractedEntity] = Field(default_factory=list)
+    entities: list[ExtractedEntity] = Field(default_factory=list, max_length=_MAX_ITEMS)
 
 
 class EntityExtractor(ExtractionWorker[ExtractedEntity]):
@@ -153,7 +163,7 @@ class EntityExtractor(ExtractionWorker[ExtractedEntity]):
     ) -> list[ExtractedEntity]:
         del source_event_id  # resolving names to graph_node ids is the caller's job
         batch = await self._call_model(transcript, _ENTITY_SYSTEM_PROMPT, schema=_EntityBatch)
-        return list(batch.entities)
+        return _in_range(list(batch.entities), transcript)
 
 
 _RELATION_SYSTEM_PROMPT = (
@@ -170,7 +180,7 @@ _RELATION_SYSTEM_PROMPT = (
 
 class _RelationBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    relations: list[ExtractedRelation] = Field(default_factory=list)
+    relations: list[ExtractedRelation] = Field(default_factory=list, max_length=_MAX_ITEMS)
 
 
 class RelationExtractor(ExtractionWorker[ExtractedRelation]):
@@ -183,7 +193,7 @@ class RelationExtractor(ExtractionWorker[ExtractedRelation]):
             _RELATION_SYSTEM_PROMPT.format(created_at=transcript.created_at.isoformat()),
             schema=_RelationBatch,
         )
-        return list(batch.relations)
+        return _in_range(list(batch.relations), transcript)
 
 
 _COMMITMENT_SYSTEM_PROMPT = (
@@ -198,7 +208,7 @@ _COMMITMENT_SYSTEM_PROMPT = (
 
 class _CommitmentBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    commitments: list[ExtractedCommitment] = Field(default_factory=list)
+    commitments: list[ExtractedCommitment] = Field(default_factory=list, max_length=_MAX_ITEMS)
 
 
 class CommitmentExtractor(ExtractionWorker[ExtractedCommitment]):
@@ -209,7 +219,7 @@ class CommitmentExtractor(ExtractionWorker[ExtractedCommitment]):
         batch = await self._call_model(
             transcript, _COMMITMENT_SYSTEM_PROMPT, schema=_CommitmentBatch
         )
-        return list(batch.commitments)
+        return _in_range(list(batch.commitments), transcript)
 
 
 _DECISION_SYSTEM_PROMPT = (
@@ -223,7 +233,7 @@ _DECISION_SYSTEM_PROMPT = (
 
 class _DecisionBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    decisions: list[ExtractedDecision] = Field(default_factory=list)
+    decisions: list[ExtractedDecision] = Field(default_factory=list, max_length=_MAX_ITEMS)
 
 
 class DecisionExtractor(ExtractionWorker[ExtractedDecision]):
@@ -232,4 +242,4 @@ class DecisionExtractor(ExtractionWorker[ExtractedDecision]):
     ) -> list[ExtractedDecision]:
         del source_event_id
         batch = await self._call_model(transcript, _DECISION_SYSTEM_PROMPT, schema=_DecisionBatch)
-        return list(batch.decisions)
+        return _in_range(list(batch.decisions), transcript)

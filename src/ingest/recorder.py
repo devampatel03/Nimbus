@@ -19,7 +19,9 @@ from datetime import datetime
 from src.contracts.transcript import Segment, Transcript
 from src.ingest.sanitize import clean_label, clean_text
 
-_HEADER = re.compile(r"^(?P<who>[^\n:]{1,40}?)?\s*\(?(?P<ts>\d{1,2}:\d{2}(?::\d{2})?)\)?$")
+_HEADER = re.compile(
+    r"^(?P<who>[A-Za-z0-9][A-Za-z0-9 ._'-]{0,39}?)?\s*\(?(?P<ts>\d{1,2}:\d{2}(?::\d{2})?)\)?$"
+)
 _MAX_SEGMENT_CHARS = 8000
 
 

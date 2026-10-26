@@ -1,0 +1,11 @@
+{
+  "source_key": "telegram:100233:transcript",
+  "kind": "recorder_transcript",
+  "source": "telegram",
+  "lane": "untrusted",
+  "confidence": 0.0,
+  "body": null,
+  "meta": {"parent_source_key": "telegram:100233", "parent_event_id": "5e6f7a8b-1c2d-4e3f-9a0b-1c2d3e4f5a6b", "rejected": "retries_exhausted"},
+  "file_unique_id": "AgADvQIAAk9bqVB",
+  "occurred_at": "2026-10-26T09:30:00Z"
+}

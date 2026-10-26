@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.contracts.event import Event, EventKind
@@ -25,14 +25,28 @@ from src.ingest.protocols import PendingFollowOn, TranscriptionResult
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 
 
-def clock() -> datetime:
-    return NOW
+class Clock:
+    """Mutable test clock (module-level `CLK`; tests reset it via fixture)."""
+
+    def __init__(self) -> None:
+        self.now = NOW
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now = self.now + timedelta(seconds=seconds)
+
+
+CLK = Clock()
+clock = CLK
 
 
 class FakeSink:
     def __init__(self, calls: list[str] | None = None) -> None:
         self.calls = calls if calls is not None else []
         self.rows: dict[str, tuple[uuid.UUID, Event]] = {}
+        self.attempts: dict[uuid.UUID, int] = {}
         self.fail_next = False
 
     async def record(self, event: Event) -> tuple[uuid.UUID, bool]:
@@ -50,14 +64,33 @@ class FakeSink:
         row = self.rows.get(source_key)
         return row[0] if row else None
 
-    async def pending_follow_ons(self, limit: int) -> list[PendingFollowOn]:
+    async def bump_attempts(self, event_id: uuid.UUID) -> int:
+        self.attempts[event_id] = self.attempts.get(event_id, 0) + 1
+        return self.attempts[event_id]
+
+    async def pending_follow_ons(
+        self, limit: int, *, older_than: datetime
+    ) -> list[PendingFollowOn]:
         out = []
         for key, (eid, ev) in self.rows.items():
-            if (
-                ev.kind in (EventKind.VOICE, EventKind.RECORDER)
-                and f"{key}:transcript" not in self.rows
-            ):
-                out.append(PendingFollowOn(eid, ev.kind, ev.lane, dict(ev.meta), ev.file_unique_id))
+            if ev.kind not in (EventKind.VOICE, EventKind.RECORDER):
+                continue
+            if f"{key}:transcript" in self.rows or ev.occurred_at > older_than:
+                continue
+            if not isinstance(ev.meta.get("file_id"), str) or ev.file_unique_id is None:
+                continue
+            out.append(
+                PendingFollowOn(
+                    eid,
+                    ev.kind,
+                    ev.lane,
+                    dict(ev.meta),
+                    ev.file_unique_id,
+                    ev.occurred_at,
+                    self.attempts.get(eid, 0),
+                )
+            )
+        out.sort(key=lambda p: (p.attempts, p.occurred_at))
         return out[:limit]
 
 

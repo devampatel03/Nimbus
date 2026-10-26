@@ -1,0 +1,11 @@
+{
+  "source_key": "telegram:100232",
+  "kind": "voice",
+  "source": "telegram",
+  "lane": "trusted",
+  "confidence": 1.0,
+  "body": null,
+  "meta": {"update_id": 100232, "message_id": 5513, "file_id": "AwACAgQAAxkBAAI", "size": 48213, "mime_type": "audio/ogg"},
+  "file_unique_id": "AgADuQIAAk9bqVA",
+  "occurred_at": "2026-10-26T09:16:00Z"
+}

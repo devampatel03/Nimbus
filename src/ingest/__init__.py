@@ -17,6 +17,7 @@ from src.ingest.protocols import (
     Transcriber,
     TranscriptionFailed,
     TranscriptionResult,
+    UnavailableTranscriber,
 )
 from src.ingest.repository import PgEventSink
 
@@ -32,5 +33,6 @@ __all__ = [
     "Transcriber",
     "TranscriptionFailed",
     "TranscriptionResult",
+    "UnavailableTranscriber",
     "transcript_from_event",
 ]

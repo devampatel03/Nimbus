@@ -80,3 +80,15 @@ def decode_text_document(data: bytes) -> str | None:
         if ctrl / len(sample) > 0.02:
             return None
     return text
+
+
+_MIME_RE = re.compile(r"[a-z0-9][a-z0-9.+-]{0,62}/[a-z0-9][a-z0-9.+-]{0,62}")
+
+
+def clean_mime(value: str | None) -> str | None:
+    """A well-formed lower-case `type/subtype`, else None (never a raw string)."""
+    if value is None or len(value) > 200:
+        return None
+    s, _ = clean_text(value, max_chars=200)
+    s = s.strip().lower()
+    return s if _MIME_RE.fullmatch(s) else None

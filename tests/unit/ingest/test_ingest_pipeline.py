@@ -13,6 +13,7 @@ from src.gateway.types import InboundUpdate, UpdateKind
 from src.ingest import Ingestor, IngestSettings, Outcome, transcript_from_event
 from src.ingest.protocols import TranscriptionFailed
 from tests.unit.ingest.fakes import (
+    CLK,
     NOW,
     FakeGateway,
     FakeSink,
@@ -166,8 +167,9 @@ async def test_transient_failures_are_retryable_and_notify_without_content() -> 
     asr.error = TranscriptionFailed("asr_down")
     await ing.run()
     assert "telegram:5:transcript" not in sink.rows
-    assert gw.sent == ["I could not process that message just now. Please resend it."]
+    assert len(gw.sent) == 1 and "retry automatically" in gw.sent[0]
     asr.error = None
+    CLK.advance(601)
     results = await ing.recover_pending()
     assert [r.outcome for r in results] == [Outcome.STORED]
     assert "telegram:5:transcript" in sink.rows

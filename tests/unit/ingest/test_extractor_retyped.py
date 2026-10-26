@@ -105,3 +105,34 @@ def test_extractor_imports_no_sdk_or_transport() -> None:
         elif isinstance(n, ast.ImportFrom) and n.module:
             mods.add(n.module.split(".")[0])
     assert not mods & {"openai", "anthropic", "httpx", "requests", "aiohttp", "google"}
+
+
+# -- output validation (MED-3) -------------------------------------------------
+
+
+def test_extracted_models_bound_fields() -> None:
+    from pydantic import ValidationError
+
+    base = {"entity_type": "p", "canonical_name": "n", "source_segment_index": 0, "confidence": 0.5}
+    ExtractedEntity(**base)
+    for bad in (
+        {"confidence": 1.5},
+        {"confidence": -0.1},
+        {"source_segment_index": -1},
+        {"canonical_name": "x" * 10_000},
+        {"extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            ExtractedEntity(**{**base, **bad})
+    with pytest.raises(ValidationError):
+        m._EntityBatch(entities=[ExtractedEntity(**base)] * 10_000)
+
+
+async def test_out_of_range_segment_index_items_are_dropped() -> None:
+    ok = ExtractedEntity(entity_type="p", canonical_name="a", source_segment_index=1, confidence=1)
+    bad = ExtractedEntity(entity_type="p", canonical_name="b", source_segment_index=2, confidence=1)
+    llm = FakeGuarded(m._EntityBatch(entities=[ok, bad]))  # transcript has 2 segments
+    out = await EntityExtractor(llm).extract(
+        transcript(untrusted=False), source_event_id=uuid.uuid4()
+    )
+    assert out == [ok]
