@@ -79,7 +79,8 @@ from sqlalchemy.pool import NullPool
 from config.settings import settings
 from src.contracts.event import Event, EventKind
 from src.contracts.memory_query import MemoryQuery
-from src.memory.manager import ChunkIn, Embedder, MemoryManager
+from src.memory.embedder import BatchEmbedder
+from src.memory.manager import ChunkIn, MemoryManager
 from src.memory.schemas import Base
 
 DATASET_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
@@ -206,7 +207,7 @@ async def _run_sample(manager: MemoryManager, sample: dict, top_k: int) -> dict[
 
 
 async def run(
-    max_samples: int | None = None, top_k: int = 5, embedder: Embedder | None = None
+    max_samples: int | None = None, top_k: int = 5, embedder: BatchEmbedder | None = None
 ) -> dict[str, object]:
     dataset = load_dataset()
     if max_samples is not None:

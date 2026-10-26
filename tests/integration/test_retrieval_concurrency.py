@@ -88,3 +88,48 @@ async def test_concurrent_writes_to_distinct_events_and_search(
     assert hits[0].content == "doc 3 a"
     async with scratch_engine.connect() as conn:
         assert (await conn.execute(text("SELECT count(*) FROM memory_chunk"))).scalar_one() == 24
+
+
+async def test_concurrent_double_promote_promotes_once(scratch_engine: AsyncEngine) -> None:
+    import hashlib
+    import json
+
+    from src.memory.store import ApprovalRequiredError
+
+    async with Session(scratch_engine) as s, s.begin():
+        st = store_for(s)
+        ev = await st.record_event(
+            make_event("telegram:555", lane="untrusted", kind="recorder_transcript")  # type: ignore[arg-type]
+        )
+        [cid] = await st.add_chunks(ev, [ChunkIn(text="maybe")])
+        aid = uuid.uuid4()
+        await s.execute(
+            text(
+                "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
+                "status, expires_at, created_at, consumed_at) VALUES (:i, 'memory', 'promote', "
+                "CAST(:p AS jsonb), :h, :n, 'consumed', now() + interval '1 hour', "
+                "now() - interval '1 minute', now())"
+            ),
+            {
+                "i": aid,
+                "p": json.dumps({"item_id": str(cid)}),
+                "h": hashlib.sha256(b"q").hexdigest(),
+                "n": b"n" * 16,
+            },
+        )
+
+    async def attempt() -> bool:
+        async with Session(scratch_engine) as s, s.begin():
+            try:
+                await store_for(s).promote(cid, approval_id=aid)
+            except ApprovalRequiredError:
+                return False
+            return True
+
+    results = await asyncio.gather(*(attempt() for _ in range(6)))
+    assert results.count(True) == 1
+    async with scratch_engine.connect() as conn:
+        row = (
+            await conn.execute(text("SELECT promoted, promoted_approval_id FROM memory_chunk"))
+        ).one()
+    assert (row.promoted, row.promoted_approval_id) == (True, aid)

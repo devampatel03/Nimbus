@@ -24,6 +24,7 @@ fully usable under test clients that never trigger ASGI lifespan events
 the app's lifetime: closing the module-level DB clients at shutdown.
 """
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -35,11 +36,31 @@ from src.api import auth, health
 from src.api.middleware.auth import JWTAuthMiddleware
 from src.api.routes import chat, memory, tasks
 from src.db import postgres
+from src.memory.embedder import BatchEmbedder, EmbeddingMigrationRequired, Qwen3Embedder
+from src.memory.manager import MemoryManager
 from src.orchestrator.graph import GraphDependencies, build_graph
+
+log = logging.getLogger(__name__)
+
+
+async def verify_memory_index(embedder: BatchEmbedder | None = None) -> None:
+    """P2.3/P2.4: refuse to start against an index built by another embedding
+    model/dim (migration + re-embed job required). Only that condition is fatal;
+    an unreachable database is reported by /health, not by crashing startup.
+    Interim wiring: the P2.1b entrypoint replaces this lifespan."""
+    try:
+        async with postgres.get_session() as session:
+            manager = MemoryManager(pg_session=session, embedder=embedder or Qwen3Embedder())
+            await manager.verify_index()
+    except EmbeddingMigrationRequired:
+        raise
+    except Exception:  # noqa: BLE001 - startup check is best-effort beyond the guard
+        log.warning("memory index check skipped (database unavailable)")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await verify_memory_index(getattr(app.state, "memory_embedder", None))
     yield
     await postgres.engine.dispose()
 

@@ -34,7 +34,7 @@ class MemoryQuery(BaseModel):
 
     user_id: UUID
     query_text: str
-    top_k: int = 10
+    top_k: int = Field(default=10, ge=1, le=200)
     active_entities: list[str] = Field(default_factory=list)
     present_speakers: list[UUID] = Field(default_factory=list)
     as_of: datetime | None = None

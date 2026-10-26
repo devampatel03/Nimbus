@@ -44,6 +44,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.contracts.event import Event as EventContract
@@ -75,13 +76,18 @@ class ChunkNotFoundError(StoreError):
 
 
 class ApprovalRequiredError(StoreError):
-    """Promotion without a consumed user approval (R8)."""
+    """Promotion refused (R8): no consumed, unexpired, unused `memory`/`promote`
+    approval bound to this exact item, or the item is not promotable."""
+
+
+class EventConflictError(StoreError):
+    """`source_key` replayed with a different lane or kind (lane laundering)."""
 
 
 class ChunkIn(BaseModel):
     """One chunk to store. Lane is NOT a field: it is the event's (R8)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str = Field(min_length=1)
     chunk_index: int | None = Field(default=None, ge=0)  # None = position in the call
@@ -166,15 +172,22 @@ WHERE id = :i AND invalidated_at IS NULL
 RETURNING id
 """
 
+# R8: ONE atomic statement. The approval must be a consumed (in time),
+# `memory`/`promote` action whose payload names exactly this item; the chunk must
+# be live and still unpromoted. Single use: the partial UNIQUE index on
+# promoted_approval_id (migration c4e8a1d92b37) backs this at the database.
 _PROMOTE_SQL = """
-UPDATE memory_chunk SET promoted = true, promoted_approval_id = :a
-WHERE id = :i AND promoted = false
-RETURNING id
+UPDATE memory_chunk c SET promoted = true, promoted_approval_id = :a
+WHERE c.id = :i AND c.promoted = false AND c.invalidated_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM pending_action p
+    WHERE p.id = :a AND p.status = 'consumed' AND p.consumed_at IS NOT NULL
+      AND p.consumed_at <= p.expires_at
+      AND p.tool = 'memory' AND p.action = 'promote'
+      AND p.payload ->> 'item_id' = CAST(:i AS text)
+  )
+RETURNING c.id
 """
-
-_APPROVAL_CONSUMED_SQL = (
-    "SELECT 1 FROM pending_action WHERE id = :a AND status = 'consumed' AND consumed_at IS NOT NULL"
-)
 
 _GET_SCAN = "SELECT current_setting('hnsw.iterative_scan', true)"
 _SET_SCAN = "SELECT set_config('hnsw.iterative_scan', :v, true)"
@@ -204,7 +217,9 @@ class PgVectorMemoryStore:
     # -- events ----------------------------------------------------------
 
     async def record_event(self, event: EventContract) -> uuid.UUID:
-        """Idempotent on `source_key`; returns the existing id on replay."""
+        """Idempotent on `source_key`; returns the existing id on replay. A replay
+        whose lane or kind differs from the stored event raises
+        `EventConflictError`: it must never inherit the other lane (R8)."""
         stmt = (
             pg_insert(EventRow)
             .values(
@@ -224,11 +239,17 @@ class PgVectorMemoryStore:
         new_id = (await self._session.execute(stmt)).scalar_one_or_none()
         if new_id is not None:
             return new_id
-        existing = await self._session.scalar(
-            select(EventRow.id).where(EventRow.source_key == event.source_key)
-        )
-        assert existing is not None  # conflict implies the row exists
-        return existing
+        row = (
+            await self._session.execute(
+                select(EventRow.id, EventRow.lane, EventRow.kind).where(
+                    EventRow.source_key == event.source_key
+                )
+            )
+        ).one()  # conflict implies the row exists
+        if row.lane != event.lane or row.kind != event.kind.value:
+            raise EventConflictError("event_source_key_conflict")
+        row_id: uuid.UUID = row.id
+        return row_id
 
     # -- writes ----------------------------------------------------------
 
@@ -312,12 +333,14 @@ class PgVectorMemoryStore:
         # Filters (promoted / as_of / known_at) run after the HNSW scan, which
         # would under-return; iterative scan keeps going until `n` rows survive.
         # The setting is transaction-scoped, so restore the prior value.
+        # The savepoint keeps a failing search from poisoning the caller's
+        # transaction and from masking the original error with a restore failure
+        # (a rolled-back savepoint also reverts the setting).
         prior = (await self._session.execute(text(_GET_SCAN))).scalar_one_or_none() or "off"
-        await self._session.execute(text(_SET_SCAN), {"v": "relaxed_order"})
-        try:
+        async with self._session.begin_nested():
+            await self._session.execute(text(_SET_SCAN), {"v": "relaxed_order"})
             rows = (await self._session.execute(text(_SEARCH_SQL), params)).all()
-        finally:
-            await self._session.execute(text(_SET_SCAN), {"v": prior})
+        await self._session.execute(text(_SET_SCAN), {"v": prior})
 
         reference = q.as_of or datetime.now(UTC)
         present = frozenset(str(s) for s in q.present_speakers)
@@ -381,15 +404,22 @@ class PgVectorMemoryStore:
             raise ChunkNotFoundError("chunk_not_found")
 
     async def promote(self, item_id: uuid.UUID, *, approval_id: uuid.UUID) -> None:
-        """R8: only with a consumed user approval; never from model output."""
-        ok = (await self._session.execute(text(_APPROVAL_CONSUMED_SQL), {"a": approval_id})).first()
-        if ok is None:
-            raise ApprovalRequiredError("consumed_approval_required")
-        done = (
-            await self._session.execute(text(_PROMOTE_SQL), {"i": item_id, "a": approval_id})
-        ).first()
-        if done is None and not await self._exists(item_id):
-            raise ChunkNotFoundError("chunk_not_found")
+        """R8: needs a consumed, unexpired `memory`/`promote` approval whose payload
+        names exactly `item_id`, used at most once; never from model output.
+        Refuses invalidated and already-promoted chunks."""
+        try:
+            async with self._session.begin_nested():
+                done = (
+                    await self._session.execute(
+                        text(_PROMOTE_SQL), {"i": item_id, "a": approval_id}
+                    )
+                ).first()
+        except IntegrityError:  # approval already stamped on another row
+            raise ApprovalRequiredError("approval_already_used") from None
+        if done is None:
+            if not await self._exists(item_id):
+                raise ChunkNotFoundError("chunk_not_found")
+            raise ApprovalRequiredError("promotion_refused")
 
     async def _exists(self, chunk_id: uuid.UUID) -> bool:
         found = await self._session.scalar(select(MemoryChunk.id).where(MemoryChunk.id == chunk_id))

@@ -55,6 +55,13 @@ class GraphEdge(Base):
             postgresql_where="valid_to IS NULL AND invalidated_at IS NULL",
         ),
         Index("idx_edge_temporal", "subject_id", "valid_from", "valid_to"),
+        # R8: one approval promotes at most one edge (single-use).
+        Index(
+            "uq_graph_edge_promoted_approval",
+            "promoted_approval_id",
+            unique=True,
+            postgresql_where=text("promoted_approval_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

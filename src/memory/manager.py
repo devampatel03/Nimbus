@@ -31,10 +31,10 @@ import math
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -113,6 +113,10 @@ class SemanticFact(BaseModel):
 
 
 class MemoryManager:
+    # (model_id, dim) pairs already verified against the stored index in this
+    # process, so the lazy per-request guard does not re-run SELECT DISTINCT.
+    _verified: ClassVar[set[tuple[str, int]]] = set()
+
     def __init__(
         self,
         *,
@@ -141,10 +145,13 @@ class MemoryManager:
             for model_id, dim in sorted(await stored()):
                 check_index_compat(self._embedder, stored_model_id=model_id, stored_dim=dim)
         self._index_checked = True
+        self._verified.add((self._embedder.model_id, self._embedder.dim))
 
     async def _ensure_index_checked(self) -> None:
-        if not self._index_checked:
+        key = (self._embedder.model_id, self._embedder.dim)
+        if not self._index_checked and key not in self._verified:
             await self.verify_index()
+        self._index_checked = True
 
     # -- episodic (pgvector) ------------------------------------------
 
@@ -251,37 +258,53 @@ class MemoryManager:
 
         subject_node = aliased(GraphNode)
         object_node = aliased(GraphNode)
+        succ = aliased(GraphEdge)
+        ka = context.known_at
+        # Record time: what was known at `known_at`. An edge's valid_to only counts
+        # if its successor had been recorded by then (back-dated corrections must
+        # not retroactively close the old fact). No known_at = current knowledge.
+        valid_to: ColumnElement[datetime | None]
+        if ka is None:
+            valid_to = GraphEdge.valid_to.expression
+        else:
+            valid_to = case(
+                (succ.id.is_(None), GraphEdge.valid_to),
+                (succ.ingested_at <= ka, GraphEdge.valid_to),
+                else_=None,
+            )
         stmt = (
-            select(GraphEdge, subject_node.canonical_name, object_node.canonical_name)
+            select(
+                GraphEdge,
+                subject_node.canonical_name,
+                object_node.canonical_name,
+                valid_to.label("known_valid_to"),
+            )
             .join(subject_node, GraphEdge.subject_id == subject_node.id)
             .outerjoin(object_node, GraphEdge.object_id == object_node.id)
+            .outerjoin(succ, succ.id == GraphEdge.superseded_by)
             .where(GraphEdge.subject_id.in_(node_ids))
         )
         if not context.include_unpromoted:
             stmt = stmt.where(GraphEdge.promoted.is_(True))  # R8
-        # Valid time: as_of, else known_at, else "now" (= currently valid).
-        valid_at = context.as_of or context.known_at
-        if valid_at is None:
-            stmt = stmt.where(GraphEdge.valid_to.is_(None))
-        else:
-            stmt = stmt.where(
-                GraphEdge.valid_from <= valid_at,
-                (GraphEdge.valid_to.is_(None)) | (GraphEdge.valid_to > valid_at),
-            )
-        # Record time: known_at, else "not invalidated now".
-        if context.known_at is None:
+        if ka is None:
             stmt = stmt.where(GraphEdge.invalidated_at.is_(None))
         else:
             stmt = stmt.where(
-                GraphEdge.ingested_at <= context.known_at,
-                (GraphEdge.invalidated_at.is_(None))
-                | (GraphEdge.invalidated_at > context.known_at),
+                GraphEdge.ingested_at <= ka,
+                (GraphEdge.invalidated_at.is_(None)) | (GraphEdge.invalidated_at > ka),
             )
+        # Valid-time instant: as_of, else known_at (what was true when we asked),
+        # else now. valid_from inclusive, valid_to exclusive.
+        instant = context.as_of or ka or now
+        stmt = stmt.where(
+            GraphEdge.valid_from <= instant,
+            valid_to.is_(None) | (valid_to > instant),
+        )
         rows = (await self._session.execute(stmt)).all()
         reference = context.as_of or now
         present_speakers = frozenset(str(s) for s in context.present_speakers)
         results = []
-        for edge, subject_name, object_name in rows:
+        for edge, subject_name, object_name, known_valid_to in rows:
             object_repr = edge.object_literal or object_name or ""
             content = f"{subject_name} {edge.predicate} {object_repr}".strip()
             speaker_ids = (
@@ -304,7 +327,7 @@ class MemoryManager:
                     source_session=edge.source_session,
                     provenance=f"graph_edge:{edge.id}",
                     valid_from=edge.valid_from,
-                    valid_to=edge.valid_to,
+                    valid_to=known_valid_to,
                     confidence=edge.confidence,
                     lane="untrusted" if untrusted else "trusted",
                     untrusted=untrusted,

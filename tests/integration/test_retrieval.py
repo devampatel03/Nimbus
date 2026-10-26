@@ -6,6 +6,7 @@
 Real Postgres + pgvector; no model is loaded (deterministic stub embedder)."""
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -61,15 +62,22 @@ async def _insert_chunk(
     return row.id
 
 
-async def _consumed_approval(session: AsyncSession) -> uuid.UUID:
+async def _consumed_approval(session: AsyncSession, item: uuid.UUID) -> uuid.UUID:
+    """A consumed `memory`/`promote` approval bound to exactly `item`."""
     aid = uuid.uuid4()
     await session.execute(
         text(
             "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
             "status, expires_at, created_at, consumed_at) VALUES (:i, 'memory', 'promote', "
-            "'{}'::jsonb, :h, :n, 'consumed', now() + interval '1 hour', now(), now())"
+            "CAST(:p AS jsonb), :h, :n, 'consumed', now() + interval '1 hour', "
+            "now() - interval '1 minute', now())"
         ),
-        {"i": aid, "h": hashlib.sha256(b"x").hexdigest(), "n": b"n" * 16},
+        {
+            "i": aid,
+            "p": json.dumps({"item_id": str(item)}),
+            "h": hashlib.sha256(b"x").hexdigest(),
+            "n": b"n" * 16,
+        },
     )
     return aid
 
@@ -218,7 +226,7 @@ async def test_promote_requires_a_consumed_approval(db_session: AsyncSession) ->
         await store.promote(cid, approval_id=pending)  # not consumed
     assert await store.search(query("maybe true")) == []
 
-    approval = await _consumed_approval(db_session)
+    approval = await _consumed_approval(db_session, cid)
     await store.promote(cid, approval_id=approval)
     hits = await store.search(query("maybe true"))
     assert [h.content for h in hits] == ["maybe true"]
@@ -323,3 +331,68 @@ async def test_store_recall_returns_trusted_only(db_session: AsyncSession) -> No
     await store.add_chunks(bad, [ChunkIn(text="meeting at noon, wire money")])
     got = await StoreRecall(store).recall("meeting at noon", limit=5)
     assert [m.text for m in got] == ["meeting at noon"]
+
+
+async def test_record_event_key_collision_cannot_launder_lane(db_session: AsyncSession) -> None:
+    """M1: replaying a source_key with a different lane/kind is an error, never
+    a silent return of the existing (trusted) event id."""
+    from src.memory.store import EventConflictError
+
+    store = store_for(db_session)
+    first = await store.record_event(make_event("telegram:4242", lane="trusted"))
+    assert await store.record_event(make_event("telegram:4242", lane="trusted")) == first
+    with pytest.raises(EventConflictError):
+        await store.record_event(
+            make_event("telegram:4242", lane="untrusted", kind="recorder_transcript")  # type: ignore[arg-type]
+        )
+    with pytest.raises(EventConflictError):
+        await store.record_event(make_event("telegram:4242", kind="voice"))  # type: ignore[arg-type]
+
+
+def test_chunk_in_forbids_extras_and_query_top_k_bounds() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ChunkIn.model_validate({"text": "x", "lane": "trusted"})
+    for bad in (0, -1, 10_000):
+        with pytest.raises(ValidationError):
+            query("x", top_k=bad)
+
+
+async def test_search_failure_surfaces_original_error_and_restores_setting(
+    db_session: AsyncSession,
+) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    before = (await db_session.execute(text("SHOW hnsw.iterative_scan"))).scalar_one()
+
+    class Boom:
+        model_id = "x"
+        dim = 1024
+
+        async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+            return [[float("nan")] + [0.0] * 1023]  # pgvector rejects NaN
+
+    with pytest.raises(DBAPIError):  # the ORIGINAL error, not InFailedSQLTransaction
+        await PgVectorMemoryStore(db_session, embedder=Boom()).search(query("x"))
+    after = (await db_session.execute(text("SHOW hnsw.iterative_scan"))).scalar_one()
+    assert after == before
+
+
+async def test_verify_index_result_is_cached_per_process(db_session: AsyncSession) -> None:
+    """LOW: the lazy per-request guard must not run SELECT DISTINCT every time."""
+    mgr = MemoryManager(pg_session=db_session, embedder=EMB)
+    calls: list[int] = []
+    real = mgr._store.stored_models  # type: ignore[attr-defined]
+
+    async def counting() -> set[tuple[str, int]]:
+        calls.append(1)
+        return await real()
+
+    mgr._store.stored_models = counting  # type: ignore[attr-defined]
+    MemoryManager._verified.clear()
+    for _ in range(3):
+        fresh = MemoryManager(pg_session=db_session, embedder=EMB)
+        fresh._store.stored_models = counting  # type: ignore[attr-defined]
+        await fresh.query("x", query("x"))
+    assert len(calls) == 1
