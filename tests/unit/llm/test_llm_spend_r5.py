@@ -411,3 +411,37 @@ async def test_gateway_timeout_statuses_are_billed_and_not_retried(status: int) 
         await env.llm.chat(req())
     assert len(t.calls) == 1
     assert env.audit.records[0].cost_inr > 0
+
+
+async def test_ok_row_write_is_shielded_from_cancellation() -> None:
+    """LOW-1: cancelling the caller while the ok row is being written must not
+    abort the write (the row is the billing record); the reservation stays held
+    until it commits, so a follow-up call is refused rather than overspending."""
+    from tests.fakes.llm import completion_response
+
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    t = RecordingTransport(
+        lambda r: completion_response("ok", prompt_tokens=10, completion_tokens=100)
+    )
+    env = build_env(transport=t, daily_spend_cap_inr="1.50", price_table=_BILLED)
+    real = env.audit.write
+
+    async def w(rec):  # type: ignore[no-untyped-def]
+        if rec.status == "ok":
+            entered.set()
+            await gate.wait()
+        return await real(rec)
+
+    env.audit.write = w  # type: ignore[method-assign]
+    task = asyncio.create_task(env.llm.chat(req()))
+    await asyncio.wait_for(entered.wait(), timeout=10)  # parked inside the ok-row write
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=10)
+    gate.set()
+    for _ in range(200):  # the shielded write finishes in the background
+        if any(r.status == "ok" for r in env.audit.records):
+            break
+        await asyncio.sleep(0.01)
+    assert [r.status for r in env.audit.records].count("ok") == 1
