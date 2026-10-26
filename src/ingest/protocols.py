@@ -85,13 +85,21 @@ class EventSink(Protocol):
 
     async def get_id(self, source_key: str) -> uuid.UUID | None: ...
 
-    async def bump_attempts(self, event_id: uuid.UUID) -> int:
-        """Persist and return the follow-on attempt count for a parent event."""
+    async def bump_attempts(
+        self, event_id: uuid.UUID, *, now: datetime, backoff_s: tuple[float, ...]
+    ) -> int | None:
+        """Atomically claim the next follow-on attempt for a parent: persist and
+        return the new count, or None if the next attempt is not yet due (backoff
+        not elapsed, or another instance claimed it). Called BEFORE the paid call."""
+        ...
+
+    async def clear_attempts(self, event_id: uuid.UUID) -> None:
+        """Drop the counter once the follow-on is stored or tombstoned."""
         ...
 
     async def pending_follow_ons(
-        self, limit: int, *, older_than: datetime
+        self, limit: int, *, older_than: datetime, now: datetime, backoff_s: tuple[float, ...]
     ) -> list[PendingFollowOn]:
         """Recoverable parents (file_id present, no transcript/tombstone event,
-        `occurred_at <= older_than`), fewest attempts first, oldest first."""
+        `occurred_at <= older_than`, backoff elapsed), fewest attempts first, oldest first."""
         ...

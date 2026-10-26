@@ -16,7 +16,9 @@ from tests.unit.ingest.fakes import (
     voice_update,
 )
 
-CFG = IngestSettings(max_attempts=3, min_recover_age_s=600, max_recover_age_s=86_400)
+CFG = IngestSettings(
+    max_attempts=3, min_recover_age_s=600, max_recover_age_s=86_400, backoff_s=(0.0,)
+)
 MIN = 601
 
 

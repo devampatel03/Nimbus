@@ -47,6 +47,7 @@ class FakeSink:
         self.calls = calls if calls is not None else []
         self.rows: dict[str, tuple[uuid.UUID, Event]] = {}
         self.attempts: dict[uuid.UUID, int] = {}
+        self.last_attempt: dict[uuid.UUID, datetime] = {}
         self.fail_next = False
 
     async def record(self, event: Event) -> tuple[uuid.UUID, bool]:
@@ -64,12 +65,29 @@ class FakeSink:
         row = self.rows.get(source_key)
         return row[0] if row else None
 
-    async def bump_attempts(self, event_id: uuid.UUID) -> int:
+    def _due(self, eid: uuid.UUID, now: datetime, backoff_s: tuple[float, ...]) -> bool:
+        n = self.attempts.get(eid, 0)
+        if n == 0:
+            return True
+        gap = backoff_s[min(n, len(backoff_s)) - 1]
+        return self.last_attempt[eid] + timedelta(seconds=gap) <= now
+
+    async def bump_attempts(
+        self, event_id: uuid.UUID, *, now: datetime, backoff_s: tuple[float, ...]
+    ) -> int | None:
+        if not self._due(event_id, now, backoff_s):
+            return None
         self.attempts[event_id] = self.attempts.get(event_id, 0) + 1
+        self.last_attempt[event_id] = now
+        self.calls.append(f"bump:{self.attempts[event_id]}")
         return self.attempts[event_id]
 
+    async def clear_attempts(self, event_id: uuid.UUID) -> None:
+        self.attempts.pop(event_id, None)
+        self.last_attempt.pop(event_id, None)
+
     async def pending_follow_ons(
-        self, limit: int, *, older_than: datetime
+        self, limit: int, *, older_than: datetime, now: datetime, backoff_s: tuple[float, ...]
     ) -> list[PendingFollowOn]:
         out = []
         for key, (eid, ev) in self.rows.items():
@@ -78,6 +96,8 @@ class FakeSink:
             if f"{key}:transcript" in self.rows or ev.occurred_at > older_than:
                 continue
             if not isinstance(ev.meta.get("file_id"), str) or ev.file_unique_id is None:
+                continue
+            if not self._due(eid, now, backoff_s):
                 continue
             out.append(
                 PendingFollowOn(

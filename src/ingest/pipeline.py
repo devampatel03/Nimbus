@@ -63,6 +63,10 @@ _NOTICE_FAILED = (
     "resend it only if I report a failure again."
 )
 _NOTICE_EXHAUSTED = "I could not process that message after several tries. Please resend it."
+_NOTICE_NO_ASR = (
+    "Voice transcription is not available yet, so I saved your voice note "
+    "but could not transcribe it."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +76,10 @@ class IngestSettings:
     max_voice_bytes: int = 5 * 1024 * 1024
     max_document_bytes: int = 512 * 1024
     max_segments: int = 2_000
-    max_attempts: int = 3  # follow-on tries (first + recoveries) before a tombstone
+    max_attempts: int = 4  # paid follow-on calls (first + recoveries) before a tombstone
+    # Minimum gap before attempt 2, 3, 4...: rides out short provider outages
+    # while staying inside max_recover_age_s.
+    backoff_s: tuple[float, ...] = (600.0, 3600.0, 21_600.0)
     min_recover_age_s: float = 600.0  # do not race run(): parent must be this old
     max_recover_age_s: float = 86_400.0  # older unfinished parents are tombstoned
 
@@ -82,6 +89,7 @@ class Outcome(enum.Enum):
     DUPLICATE = "duplicate"
     REJECTED = "rejected"  # content refused (type, size, encoding); permanent
     FAILED = "failed"  # transient (download/transcription); retryable via recover
+    SKIPPED = "skipped"  # not due yet (backoff) or claimed by another instance
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +104,7 @@ class FollowOnResult:
     outcome: Outcome
     reason: str | None = None
     event_id: uuid.UUID | None = None
+    attempt: int = 0
 
 
 def transcript_key(source_key: str) -> str:
@@ -261,13 +270,13 @@ class Ingestor:
                 occurred_at=self._clock(),
             )
             eid, _ = await self._sink.record(tomb)
+            await self._sink.clear_attempts(parent_event_id)
             return FollowOnResult(Outcome.REJECTED, reason, eid)
 
         async def failed(reason: str) -> FollowOnResult:
-            n = await self._sink.bump_attempts(parent_event_id)
-            if n >= self._cfg.max_attempts:
+            if attempt >= self._cfg.max_attempts:
                 return await reject("retries_exhausted")
-            return FollowOnResult(Outcome.FAILED, reason)
+            return FollowOnResult(Outcome.FAILED, reason, attempt=attempt)
 
         if expired:
             return await reject("retries_exhausted")
@@ -278,6 +287,16 @@ class Ingestor:
         if is_voice and file.mime_type and mime not in _VOICE_MIMES:
             return await reject("bad_mime")
 
+        # Count the attempt BEFORE any paid/network call so a crash mid-call
+        # still consumes budget; None => backoff not elapsed or claimed elsewhere.
+        claimed = await self._sink.bump_attempts(
+            parent_event_id, now=self._clock(), backoff_s=self._cfg.backoff_s
+        )
+        if claimed is None:
+            return FollowOnResult(Outcome.SKIPPED, "not_due")
+        attempt = claimed
+        if attempt > self._cfg.max_attempts:
+            return await reject("retries_exhausted")
         try:
             data = await self._gw.fetch_file(file, max_bytes=cap)
         except FileTooLarge:
@@ -333,6 +352,7 @@ class Ingestor:
             occurred_at=now,
         )
         event_id, created = await self._sink.record(event)
+        await self._sink.clear_attempts(parent_event_id)
         return FollowOnResult(Outcome.STORED if created else Outcome.DUPLICATE, event_id=event_id)
 
     async def recover_pending(self, limit: int = 20) -> list[FollowOnResult]:
@@ -348,7 +368,9 @@ class Ingestor:
         now = self._clock()
         older_than = now - timedelta(seconds=self._cfg.min_recover_age_s)
         out: list[FollowOnResult] = []
-        for p in await self._sink.pending_follow_ons(limit, older_than=older_than):
+        for p in await self._sink.pending_follow_ons(
+            limit, older_than=older_than, now=now, backoff_s=self._cfg.backoff_s
+        ):
             fid, uid = p.meta.get("file_id"), p.meta.get("update_id")
             if p.id in self._inflight:
                 continue
@@ -369,18 +391,24 @@ class Ingestor:
                 file=ref,
                 parent_event_id=p.id,
                 untrusted=p.lane == "untrusted",
-                expired=age > self._cfg.max_recover_age_s or p.attempts >= self._cfg.max_attempts,
+                expired=age > self._cfg.max_recover_age_s,
             )
             out.append(res)
-            if res.outcome is Outcome.REJECTED:
+            if res.outcome in (Outcome.REJECTED, Outcome.FAILED):
                 await self._notify(res)
         return out
 
     async def _notify(self, fr: FollowOnResult) -> None:
+        if fr.outcome is Outcome.SKIPPED:
+            return
         if fr.outcome is Outcome.FAILED:
+            if fr.attempt != 1:  # tell the user once, on the first failure only
+                return
             text = _NOTICE_FAILED
         elif fr.reason == "retries_exhausted":
             text = _NOTICE_EXHAUSTED
+        elif fr.reason == "asr_unavailable":
+            text = _NOTICE_NO_ASR
         else:
             text = _NOTICE_REJECTED
         log.info("ingest follow-on %s reason=%s", fr.outcome.value, fr.reason)
