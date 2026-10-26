@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -442,3 +443,81 @@ async def test_conflict_409_logged_as_distinct_reason(caplog: pytest.LogCaptureF
     with caplog.at_level(logging.WARNING, logger="nimbus.gateway"):
         await take(gw, 1)
     assert any("reason=conflict" in r.getMessage() for r in caplog.records)
+
+
+# ---- M1 (P2.1b): minimum age before poison + fixed user notice ----
+
+NOTICE = "I couldn't process a message you sent at 10:00, please resend"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = datetime(2026, 10, 27, 4, 30, tzinfo=UTC)  # 10:00 IST
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def _close_once_sent(fake: FakeTelegram, gw: TelegramGateway) -> None:
+    def hook() -> None:
+        if fake.sent:
+            asyncio.get_running_loop().create_task(gw.aclose())
+
+    fake.poll_hook = hook
+
+
+async def test_poison_waits_for_minimum_age_then_sends_fixed_notice() -> None:
+    clock = _Clock()
+    fake = FakeTelegram()
+    fake.push(message(1, "TOPSECRET body"))
+    store = MemStore(max_deliveries=3, poison_min_age_s=600, clock=clock)
+    gw, _ = build(fake, store)
+    _close_once_sent(fake, gw)
+    n = 0
+    async for u in gw.inbound():  # never ack
+        n += 1
+        if n == 10:  # far past the delivery budget, but the update is 0 min old
+            assert store.rows[1] is False and fake.sent == []
+            clock.now += timedelta(minutes=11)
+        assert n < 100, "hot loop"
+    assert store.rows[1] is True
+    assert [m["text"] for m in fake.sent] == [NOTICE]
+    assert "TOPSECRET" not in str(fake.sent)
+    assert store.notices == {}  # cleared after a successful send
+
+
+async def test_young_update_is_never_poisoned_however_many_redeliveries() -> None:
+    fake = FakeTelegram()
+    fake.push(message(1, "legit"))
+    store = MemStore(max_deliveries=2, poison_min_age_s=600, clock=_Clock())
+    gw, _ = build(fake, store)
+    n = 0
+    async for _ in gw.inbound():
+        n += 1
+        if n == 30:
+            await gw.aclose()
+    assert store.rows[1] is False and fake.sent == []
+
+
+async def test_failed_notice_is_retried_not_lost() -> None:
+    fake = FakeTelegram()
+    fake.push(message(1, "x"))
+    store = MemStore(max_deliveries=1, poison_min_age_s=0, clock=_Clock())
+    gw, _ = build(fake, store)
+    polls = 0
+
+    def hook() -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 2:  # the next request is the notice send: make it fail once
+            fake.scripted.append(httpx.Response(500, json={"ok": False}))
+        if fake.sent:
+            asyncio.get_running_loop().create_task(gw.aclose())
+
+    fake.poll_hook = hook
+    n = 0
+    async for _ in gw.inbound():
+        n += 1
+        assert n < 100, "hot loop"
+    assert [m["text"] for m in fake.sent] == [NOTICE]
+    assert store.notices == {}

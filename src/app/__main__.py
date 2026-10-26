@@ -1,0 +1,18 @@
+# Copyright (c) Nimbus. All rights reserved.
+# Private, unpublished, proprietary. Do not distribute.
+
+"""`python -m src.app` runs the bot; `python -m src.app healthcheck` probes it.
+
+Exit codes: 0 ok / clean stop, 1 unhealthy (healthcheck), 2 configuration or
+startup refused (bad settings, unapproved character card), 3 embedding migration
+required, 4 a loop failed fatally (for example a revoked bot token).
+"""
+
+from __future__ import annotations
+
+import sys
+
+from src.app.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

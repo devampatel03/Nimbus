@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.llm.adapter import OpenAICompatProvider
+from src.llm.embeddings_api import API_EMBED_MODEL, ApiEmbedder, OpenAICompatEmbeddingProvider
 from src.llm.guard import GuardedLLM
 from src.llm.protocols import AlertHook, AuditWriter, Clock, FlagStore, Provider, SpendLedger
 from src.llm.settings import LLMSettings
@@ -50,3 +51,27 @@ def build_guarded_llm(
         alert=alert,
         clock=clock,
     )
+
+
+def build_api_embedder(
+    llm: GuardedLLM,
+    settings: LLMSettings | None = None,
+    *,
+    model: str = API_EMBED_MODEL,
+    provider: OpenAICompatEmbeddingProvider | None = None,
+    transport: Any = None,
+    dim: int | None = None,
+) -> ApiEmbedder:
+    """The API embedder, sharing `llm`'s `CallAccountant` (R5): spend by chat and
+    by embeddings is counted against the same in-flight/held totals."""
+    resolved = settings if settings is not None else LLMSettings()
+    emb_provider = (
+        provider
+        if provider is not None
+        else OpenAICompatEmbeddingProvider(
+            OpenAICompatProvider(resolved, transport=transport), model=model
+        )
+    )
+    if dim is None:
+        return ApiEmbedder(emb_provider, accountant=llm.accountant, settings=resolved)
+    return ApiEmbedder(emb_provider, accountant=llm.accountant, settings=resolved, dim=dim)

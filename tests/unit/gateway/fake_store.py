@@ -7,13 +7,25 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from src.gateway.store import Seen
 
 
 class MemStore:
-    def __init__(self, max_deliveries: int = 5) -> None:
+    def __init__(
+        self,
+        max_deliveries: int = 5,
+        *,
+        poison_min_age_s: float = 0.0,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.max_deliveries = max_deliveries
+        self.poison_min_age_s = poison_min_age_s
+        self.clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
+        self.received: dict[int, datetime] = {}
+        self.notices: dict[int, datetime] = {}
         self.deliveries: dict[int, int] = {}
         self.offset: int | None = None
         self.rows: dict[int, bool] = {}  # update_id -> processed
@@ -26,12 +38,15 @@ class MemStore:
             if self.rows[update_id]:
                 return Seen.DONE
             self.deliveries[update_id] = self.deliveries.get(update_id, 1) + 1
-            if self.deliveries[update_id] > self.max_deliveries:
+            age = (self.clock() - self.received[update_id]).total_seconds()
+            if self.deliveries[update_id] > self.max_deliveries and age >= self.poison_min_age_s:
                 self.rows[update_id] = True
+                self.notices[update_id] = self.received[update_id]
                 self._advance()
                 return Seen.POISON
             return Seen.REDELIVERY
         self.rows[update_id] = False
+        self.received[update_id] = self.clock()
         self.deliveries[update_id] = 1
         return Seen.NEW
 
@@ -47,3 +62,9 @@ class MemStore:
     async def record_dropped(self, update_id: int, from_user_id: int | None, kind: str) -> None:
         self.rows.setdefault(update_id, True)
         self._advance()
+
+    async def pending_poison_notices(self) -> list[tuple[int, datetime]]:
+        return sorted(self.notices.items())
+
+    async def clear_poison_notice(self, update_id: int) -> None:
+        self.notices.pop(update_id, None)

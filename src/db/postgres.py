@@ -16,7 +16,10 @@ from sqlalchemy.ext.asyncio import (
 
 from config.settings import settings
 
-engine: AsyncEngine = create_async_engine(settings.postgres_dsn, pool_pre_ping=True)
+# hide_parameters: SQL errors/logs never carry bound values (user text, tokens; INV-7).
+engine: AsyncEngine = create_async_engine(
+    settings.postgres_dsn, pool_pre_ping=True, hide_parameters=True
+)
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 

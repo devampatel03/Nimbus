@@ -1,0 +1,65 @@
+# Copyright (c) Nimbus. All rights reserved.
+# Private, unpublished, proprietary. Do not distribute.
+
+"""App settings (env prefix `APP_`, docs/pivot/SETTINGS_PATTERN.md).
+
+`env` defaults to `production`: the safe value is the default, so a missing
+variable can never relax a gate. Only the character-card dev bypass is tied to
+it (production refuses dev mode, see `src.app.card`).
+"""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def default_heartbeat_path() -> Path:
+    return Path(tempfile.gettempdir()) / "nimbus-heartbeat.json"
+
+
+class AppSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="APP_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
+
+    env: Literal["development", "production"] = "production"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+    # Heartbeat file, written by every loop, read by `healthcheck`.
+    heartbeat_path: Path = Field(default_factory=default_heartbeat_path)
+    heartbeat_stale_s: float = Field(default=180.0, gt=0, le=3600)
+
+    # Supervision: capped exponential backoff between restarts of a crashed loop.
+    backoff_initial_s: float = Field(default=1.0, gt=0, le=60)
+    backoff_max_s: float = Field(default=60.0, gt=0, le=600)
+    backoff_reset_after_s: float = Field(default=300.0, gt=0)
+    shutdown_grace_s: float = Field(default=10.0, gt=0, le=120)
+
+    # Worker / scheduler cadence.
+    recover_interval_s: float = Field(default=60.0, gt=0, le=3600)
+    recover_limit: int = Field(default=20, ge=1, le=200)
+    scheduler_tick_s: float = Field(default=30.0, gt=0, le=3600)
+
+    # Turn pipeline.
+    turn_queue_size: int = Field(default=8, ge=1, le=100)
+    history_messages: int = Field(default=20, ge=0, le=100)
+
+    # DB: no statement may run longer than this (a hung audit write must not
+    # block a loop forever, P1.4b follow-up).
+    db_statement_timeout_s: float = Field(default=30.0, gt=0, le=600)
+
+    embedder: Literal["local", "api"] = "local"
+
+    # In-process fakes for Telegram/LLM/embeddings: lets `python -m src.app` run
+    # with no token and no network. Refused unless env=development.
+    fake_backends: bool = False

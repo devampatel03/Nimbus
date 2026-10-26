@@ -10,8 +10,7 @@ JSON text and untrusted by default: a task title can originate from model or
 external content, so it re-enters the prompt only as a DATA block.
 
 Storage is a process-local dict. Durable, scheduled tasks arrive in P3.3.
-`list_tasks`/`get_task` are plain accessors on the group for in-process readers
-(the REST routes in `src/api`, until P2.1b removes them).
+`list_tasks`/`get_task` are plain accessors on the group for in-process readers.
 """
 
 from __future__ import annotations

@@ -84,9 +84,10 @@ class ApiEmbedder:
         self,
         provider: EmbeddingProvider,
         *,
-        flags: FlagStore,
-        audit: AuditWriter,
-        ledger: SpendLedger,
+        flags: FlagStore | None = None,
+        audit: AuditWriter | None = None,
+        ledger: SpendLedger | None = None,
+        accountant: CallAccountant | None = None,
         settings: LLMSettings | None = None,
         scrubber: Scrubber | None = None,
         pricing: PriceTable | None = None,
@@ -101,17 +102,28 @@ class ApiEmbedder:
             canaries=self._settings.canaries,
             secrets=() if key == DEFAULT_API_KEY else (key,),
         )
-        self._pricing = pricing or PriceTable(self._settings.price_table)
-        self._clock: Clock = clock or (lambda: datetime.now(UTC))
-        self._acct = CallAccountant(
-            flags=flags,
-            audit=audit,
-            ledger=ledger,
-            settings=self._settings,
-            pricing=self._pricing,
-            alert=alert,
-            clock=self._clock,
-        )
+        if accountant is not None:
+            # Shared with GuardedLLM (R5): one set of in-flight/held spend. Its
+            # pricing and clock win, so estimates and bills agree.
+            if flags is not None or audit is not None or ledger is not None:
+                raise ValueError("pass either an accountant or flags/audit/ledger, not both")
+            self._acct = accountant
+            self._pricing = accountant.pricing
+            self._clock: Clock = accountant.clock
+        else:
+            if flags is None or audit is None or ledger is None:
+                raise ValueError("flags, audit and ledger are required without an accountant")
+            self._pricing = pricing or PriceTable(self._settings.price_table)
+            self._clock = clock or (lambda: datetime.now(UTC))
+            self._acct = CallAccountant(
+                flags=flags,
+                audit=audit,
+                ledger=ledger,
+                settings=self._settings,
+                pricing=self._pricing,
+                alert=alert,
+                clock=self._clock,
+            )
         self.dim = dim
         self.model_id = f"api:{provider.model}"
         self._loop: asyncio.AbstractEventLoop | None = None

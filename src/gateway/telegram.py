@@ -21,6 +21,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import timedelta, timezone
 from typing import Any
 
 from src.gateway.api import TelegramApi
@@ -52,6 +53,8 @@ logger = logging.getLogger("nimbus.gateway")
 
 _MAX_BACKOFF_S = 30.0
 _CALLBACK_DATA_MAX_BYTES = 64
+# Fixed text: no message content, only the time the user sent it (M1).
+_POISON_NOTICE = "I couldn't process a message you sent at {hhmm}, please resend"
 
 
 class TelegramGateway:
@@ -80,6 +83,7 @@ class TelegramGateway:
             on_retry_after=lambda secs: self._limiter.penalize(self._chat, secs),
         )
         self._closed = False
+        self._notices_due = True  # retry unsent poison notices after a restart
 
     async def aclose(self) -> None:
         self._closed = True
@@ -90,6 +94,8 @@ class TelegramGateway:
         backoff = 1.0
         stall = 1.0
         while not self._closed:
+            if self._notices_due:
+                await self._flush_poison_notices()
             try:
                 offset = await self._store.get_offset()
                 raw_updates = await self._api.get_updates(offset)
@@ -150,8 +156,32 @@ class TelegramGateway:
             logger.error(
                 "poison update dropped after redelivery budget update_id=%d", parsed.update_id
             )
+            self._notices_due = True
+            await self._flush_poison_notices()
             return None, True
         return parsed.update, seen is Seen.NEW
+
+    async def _flush_poison_notices(self) -> None:
+        """Tell the user, once per poisoned update, that a message was dropped
+        (M1). The pending record is cleared only after the send succeeded, so a
+        failed send is retried on the next poll cycle and survives a restart."""
+        self._notices_due = False
+        try:
+            pending = await self._store.pending_poison_notices()
+        except Exception as exc:  # noqa: BLE001 - never break polling over a notice
+            logger.warning("poison notice lookup failed err=%s", type(exc).__name__)
+            self._notices_due = True
+            return
+        tz = timezone(timedelta(minutes=self._s.notice_utc_offset_minutes))
+        for update_id, received_at in pending:
+            hhmm = received_at.astimezone(tz).strftime("%H:%M")
+            try:
+                await self.send_text(_POISON_NOTICE.format(hhmm=hhmm))
+                await self._store.clear_poison_notice(update_id)
+            except Exception as exc:  # noqa: BLE001 - retried next cycle
+                logger.warning("poison notice failed err=%s", type(exc).__name__)
+                self._notices_due = True
+                return
 
     async def ack(self, update: InboundUpdate, *, event_id: uuid.UUID | None = None) -> None:
         await self._store.complete(update.update_id, event_id=event_id)

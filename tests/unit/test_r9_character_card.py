@@ -252,7 +252,9 @@ def test_dev_mode_only_from_operator_env(monkeypatch):
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
 _OWN = Path("personality") / "agent_character.py"
-_SCAN_ALLOWLIST: frozenset[str] = frozenset()  # future entrypoint, currently none
+# The app entrypoint is the ONE place outside src/personality that may use the operator dev
+# switch; src/app/card.py refuses it unless APP_ENV=development (tests/unit/app/test_card.py).
+_SCAN_ALLOWLIST: frozenset[str] = frozenset({"app/card.py"})
 # load_character_card is the UNGATED reader. Outside src/personality it is banned with no
 # exceptions (the last user, orchestrator/context_builder.py, was deleted in P2.5b).
 _UNGATED_LOADER_ALLOWLIST: frozenset[str] = frozenset()

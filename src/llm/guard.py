@@ -154,6 +154,10 @@ class CallAccountant:
         self._held_day = ""
         self._lock = asyncio.Lock()
 
+    @property
+    def pricing(self) -> PriceTable:
+        return self._pricing
+
     # -------------------------------------------------------------- state
 
     async def mode(self) -> LLMMode:
@@ -425,6 +429,13 @@ class GuardedLLM:
             alert=alert,
             clock=self._clock,
         )
+
+    @property
+    def accountant(self) -> CallAccountant:
+        """The ONE accountant. Anything else that spends on the same provider
+        (the API embedder) must be built with this so in-flight and held spend
+        is shared and the daily cap cannot be overshot once per accountant."""
+        return self._acct
 
     # ------------------------------------------------------------------ API
 
