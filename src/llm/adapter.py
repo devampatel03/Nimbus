@@ -23,7 +23,7 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import openai
@@ -173,6 +173,30 @@ class OpenAICompatProvider:
                 continue
             return self._parse(raw)
         raise LLMProviderError("retries_exhausted")  # pragma: no cover
+
+    async def embeddings(
+        self, model: str, texts: Sequence[str], *, dim: int
+    ) -> tuple[list[list[float]], Usage]:
+        """One `/embeddings` request (same egress-bound client, same sanitised
+        failures and egress-denial logging as `complete`). NO internal retry:
+        a retry is a second billed send and must go back through the guard (R5)."""
+        try:
+            raw = await self._sdk().embeddings.create(
+                model=model, input=list(texts), dimensions=dim, encoding_format="float"
+            )
+        except LLMProviderError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - classified below, never re-raised raw
+            self._classify(exc, 0, 1)  # always raises with a single attempt
+            raise LLMProviderError("unexpected") from None  # pragma: no cover
+        usage = Usage()
+        try:
+            if raw.usage is not None:
+                usage = Usage(tokens_in=int(raw.usage.prompt_tokens or 0))
+            data = sorted(raw.data, key=lambda d: d.index)
+            return [[float(x) for x in d.embedding] for d in data], usage
+        except Exception:  # noqa: BLE001 - malformed provider payload
+            raise LLMResponseError("malformed_response", usage=usage) from None
 
     # ------------------------------------------------------------- helpers
 
