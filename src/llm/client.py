@@ -4,8 +4,8 @@
 """Back-compat shim (P1.4b, TARGET_DESIGN M8). DEPRECATED.
 
 `LLMClient` / `VLLMClient` / `ChatMessage` here are the pre-pivot
-complete / stream / structured API, still imported by `src/orchestrator`,
-`src/memory/extractor.py`, the approver and `src/personality`. They are now a
+complete / stream / structured API, still imported by
+`src/memory/extractor.py` and `src/personality`. They are now a
 thin adapter over `GuardedLLM`, so every legacy call also passes the guard
 (kill switch, spend cap, scrub, audit) and egresses only via `src.net`.
 New code uses `src.llm.protocols.LLMClient` / `src.llm.types.ChatRequest`.

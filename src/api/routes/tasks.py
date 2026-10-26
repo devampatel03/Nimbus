@@ -3,26 +3,21 @@
 
 """CRUD for the internal task store (`src.tools.integrations.tasks.TasksTool`).
 
-Reuses the exact `TasksTool` instance the orchestrator's `act` node
-executes tool calls against (`request.app.state.graph_deps.tool_registry`,
-set once in `src.api.main.create_app`), so a task created via chat and a
-task created via this REST surface land in the same store -- there is
-only one "internal task store", not two.
-
-Uses a fixed `session_id` ("rest-api") for calls into `TasksTool.run`:
-`session_id` is a local routing/audit parameter (AD-12), not something
-tied to who is calling -- Nimbus has exactly one user, and `TasksTool`
-never routes through the scrubber's per-session entity-ref store anyway
-(see `tasks.py`'s module docstring).
+Reads and writes go straight to the `TasksTool` group held by
+`request.app.state.tool_registry`, the same instance whose `LoopTool`s the
+orchestrator is built from, so there is one task store. REST writes are an
+authenticated-owner surface, not model-proposed calls, so they do not pass
+through the loop's `Policy`. P2.1b deletes this package.
 """
+
+import json
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from src.contracts.tool_intent import Primitive
+from src.orchestrator.dispatch import ToolError
 from src.tools.integrations.tasks import TasksTool
-
-_REST_SESSION_ID = "rest-api"
 
 router = APIRouter()
 
@@ -41,12 +36,12 @@ class Task(BaseModel):
     done: bool
 
 
-def _to_task(raw: dict[str, Primitive]) -> Task:
+def _to_task(raw: dict[str, str | bool]) -> Task:
     return Task(task_id=str(raw["task_id"]), title=str(raw["title"]), done=bool(raw["done"]))
 
 
 def _get_tool(request: Request) -> TasksTool:
-    tool = request.app.state.graph_deps.tool_registry.get("tasks")
+    tool = request.app.state.tool_registry.get("tasks")
     if not isinstance(tool, TasksTool):
         raise TypeError("registry did not return a TasksTool for 'tasks'")
     return tool
@@ -57,14 +52,21 @@ async def list_tasks(request: Request) -> list[Task]:
     return [_to_task(t) for t in _get_tool(request).list_tasks()]
 
 
+async def _call(group: TasksTool, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    tool = next(t for t in group.tools() if t.spec.name == name)
+    try:
+        out = await tool.run(args)
+    except ToolError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
+    parsed: dict[str, Any] = json.loads(out.text)
+    return parsed
+
+
 @router.post("", response_model=Task, status_code=201)
 async def create_task(payload: TaskCreate, request: Request) -> Task:
-    tool = _get_tool(request)
-    result = await tool.run("create", {"title": payload.title}, session_id=_REST_SESSION_ID)
-    task_id = result.result["task_id"]
-    if not isinstance(task_id, str):
-        raise TypeError("create did not return a string task_id")
-    task = tool.get_task(task_id)
+    group = _get_tool(request)
+    created = await _call(group, "tasks_create", {"title": payload.title})
+    task = group.get_task(created["task_id"])
     if task is None:
         raise RuntimeError("task vanished immediately after create")
     return _to_task(task)
@@ -80,33 +82,25 @@ async def get_task(task_id: str, request: Request) -> Task:
 
 @router.put("/{task_id}", response_model=Task)
 async def update_task(task_id: str, payload: TaskUpdate, request: Request) -> Task:
-    tool = _get_tool(request)
-    result = await tool.run(
-        "update", {"task_id": task_id, "title": payload.title}, session_id=_REST_SESSION_ID
-    )
-    if result.status == "error":
-        raise HTTPException(status_code=404, detail=result.error_message)
-    task = tool.get_task(task_id)
-    if task is None:
-        raise RuntimeError("task vanished immediately after update")
-    return _to_task(task)
+    group = _get_tool(request)
+    await _call(group, "tasks_update", {"task_id": task_id, "title": payload.title})
+    return _to_task(_must_get(group, task_id))
 
 
 @router.post("/{task_id}/complete", response_model=Task)
 async def complete_task(task_id: str, request: Request) -> Task:
-    tool = _get_tool(request)
-    result = await tool.run("complete", {"task_id": task_id}, session_id=_REST_SESSION_ID)
-    if result.status == "error":
-        raise HTTPException(status_code=404, detail=result.error_message)
-    task = tool.get_task(task_id)
-    if task is None:
-        raise RuntimeError("task vanished immediately after complete")
-    return _to_task(task)
+    group = _get_tool(request)
+    await _call(group, "tasks_complete", {"task_id": task_id})
+    return _to_task(_must_get(group, task_id))
 
 
 @router.delete("/{task_id}", status_code=204)
 async def delete_task(task_id: str, request: Request) -> None:
-    tool = _get_tool(request)
-    result = await tool.run("delete", {"task_id": task_id}, session_id=_REST_SESSION_ID)
-    if result.status == "error":
-        raise HTTPException(status_code=404, detail=result.error_message)
+    await _call(_get_tool(request), "tasks_delete", {"task_id": task_id})
+
+
+def _must_get(group: TasksTool, task_id: str) -> dict[str, str | bool]:
+    task = group.get_task(task_id)
+    if task is None:
+        raise RuntimeError("task vanished immediately after write")
+    return task

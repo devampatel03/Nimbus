@@ -11,7 +11,6 @@ section 12 and tests/unit/test_contracts.py.
 from src.contracts.event import Event, EventKind
 from src.contracts.memory_query import MemoryQuery, MemoryResult
 from src.contracts.proactive_candidate import ProactiveCandidate
-from src.contracts.tool_intent import Primitive, RiskClass, ToolIntent, ToolResult
 from src.contracts.transcript import Segment, Transcript
 from src.contracts.user_profile_slice import (
     StanceSummary,
@@ -24,13 +23,9 @@ __all__ = [
     "EventKind",
     "MemoryQuery",
     "MemoryResult",
-    "Primitive",
     "ProactiveCandidate",
-    "RiskClass",
     "Segment",
     "StanceSummary",
-    "ToolIntent",
-    "ToolResult",
     "TraitSummary",
     "Transcript",
     "UserProfileSlice",

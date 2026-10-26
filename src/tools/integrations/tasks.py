@@ -1,120 +1,105 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Internal task store (T4.2 scope note: this tool is Nimbus-local, not a
-Google integration). Tasks never leave the device -- no third-party API,
-no cloud reasoning needed to create/update/complete/delete/list them --
-so `run()` never calls the scrubber and adds no egress point (INV-1 stays
-satisfied trivially: there is nothing here to scan for).
+"""Internal task store, as `LoopTool`s (Tool protocol v2, P2.5b).
 
-Storage is a process-local dict, not Postgres: a durable task store is a
-`src/memory` / P-MEMORY concern (out of scope for this tool-registry
-task); this is the minimal implementation needed to exercise the
-registry/risk-gating machinery with a genuinely local, non-cloud tool.
+Tasks are Nimbus-local: no third-party API, no network, nothing leaves the
+device. One tool per action so each carries its own code-declared risk
+(`tasks_list`/`tasks_get` are READ; the rest WRITE_INTERNAL). Outputs are
+JSON text and untrusted by default: a task title can originate from model or
+external content, so it re-enters the prompt only as a DATA block.
 
-`list_tasks`/`get_task` (plain methods, not `run()` actions) exist for
-`src/api/routes/tasks.py`'s REST reads: `ToolResult.result` is one of the
-six frozen `src/contracts/` shapes (`dict[str, Primitive]`, no nested
-lists/dicts -- SCR-2's closed-schema intent for the scrubber path), so a
-full task list or task record can't travel through `run()`'s return value
-at all. Direct, in-process method calls on the same `TasksTool` instance
-the orchestrator's `act` node already uses aren't constrained by that
-contract (it exists to bound what a `ToolIntent`/`ToolResult` can carry
-across the scrubber boundary, not every in-process call into a local
-tool), so the REST layer reads through these instead of `run()`.
+Storage is a process-local dict. Durable, scheduled tasks arrive in P3.3.
+`list_tasks`/`get_task` are plain accessors on the group for in-process readers
+(the REST routes in `src/api`, until P2.1b removes them).
 """
 
+from __future__ import annotations
+
+import json
 import uuid
-from typing import ClassVar
+from collections.abc import Mapping
+from typing import Any
 
-from src.contracts.tool_intent import Primitive, RiskClass, ToolResult
-from src.tools.base import BaseTool
+from src.orchestrator.dispatch import LoopTool, Risk, ToolError, ToolOutput
+from src.tools.base import FunctionTool, ToolGroup, object_schema
 
-_ACTION_RISK: dict[str, RiskClass] = {
-    "create": RiskClass.WRITE_REVERSIBLE,
-    "update": RiskClass.WRITE_REVERSIBLE,
-    "complete": RiskClass.WRITE_REVERSIBLE,
-    "delete": RiskClass.WRITE_REVERSIBLE,  # internal-only state, unlike calendar's DESTRUCTIVE delete
-    "list": RiskClass.READ,
-    "get": RiskClass.READ,
-}
+Task = dict[str, str | bool]
 
 
-class TasksTool(BaseTool):
+class TasksTool(ToolGroup):
     name = "tasks"
-    description = "Create, read, update, complete and delete items in the internal task store."
-    risk_class = RiskClass.WRITE_REVERSIBLE
-    schema: ClassVar[dict[str, dict[str, type]]] = {
-        "create": {"title": str},
-        "update": {"task_id": str, "title": str},
-        "complete": {"task_id": str},
-        "delete": {"task_id": str},
-        "list": {},
-        "get": {"task_id": str},
-    }
 
     def __init__(self) -> None:
-        self._tasks: dict[str, dict[str, Primitive]] = {}
+        self._tasks: dict[str, Task] = {}
 
-    def risk_class_for(self, action: str) -> RiskClass:
-        try:
-            return _ACTION_RISK[action]
-        except KeyError:
-            raise ValueError(f"{self.name}: unknown action {action!r}") from None
+    def list_tasks(self) -> list[Task]:
+        return [dict(t) for t in self._tasks.values()]
 
-    def list_tasks(self) -> list[dict[str, Primitive]]:
-        return [dict(task) for task in self._tasks.values()]
-
-    def get_task(self, task_id: str) -> dict[str, Primitive] | None:
+    def get_task(self, task_id: str) -> Task | None:
         task = self._tasks.get(task_id)
         return dict(task) if task is not None else None
 
-    def _not_found(self, action: str) -> ToolResult:
-        return ToolResult(
-            tool=self.name,
-            action=action,
-            status="error",
-            result={},
-            entity_refs={},
-            error_message="task not found",
-        )
+    def _require(self, args: Mapping[str, Any]) -> Task:
+        task = self._tasks.get(args["task_id"])
+        if task is None:
+            raise ToolError("task not found")
+        return task
 
-    async def run(
-        self, action: str, params: dict[str, Primitive], *, session_id: str
-    ) -> ToolResult:
-        self.validate_params(action, params)
-        if action == "create":
-            task_id = str(uuid.uuid4())
-            self._tasks[task_id] = {"task_id": task_id, "title": params["title"], "done": False}
-            result: dict[str, Primitive] = {"task_id": task_id}
-        elif action == "update":
-            task_id_param = params["task_id"]
-            if not isinstance(task_id_param, str) or task_id_param not in self._tasks:
-                return self._not_found(action)
-            self._tasks[task_id_param]["title"] = params["title"]
-            result = {"task_id": task_id_param}
-        elif action == "complete":
-            task_id_param = params["task_id"]
-            if not isinstance(task_id_param, str) or task_id_param not in self._tasks:
-                return self._not_found(action)
-            self._tasks[task_id_param]["done"] = True
-            result = {"task_id": task_id_param}
-        elif action == "delete":
-            task_id_param = params["task_id"]
-            if not isinstance(task_id_param, str) or task_id_param not in self._tasks:
-                return self._not_found(action)
-            del self._tasks[task_id_param]
-            result = {"task_id": task_id_param}
-        elif action == "get":
-            task_id_param = params["task_id"]
-            if not isinstance(task_id_param, str) or task_id_param not in self._tasks:
-                return self._not_found(action)
-            result = dict(self._tasks[task_id_param])
-        elif action == "list":
-            result = {"count": len(self._tasks)}
-        else:
-            raise ValueError(f"{self.name}: unknown action {action!r}")
+    async def _create(self, args: Mapping[str, Any]) -> ToolOutput:
+        task_id = str(uuid.uuid4())
+        self._tasks[task_id] = {"task_id": task_id, "title": args["title"], "done": False}
+        return ToolOutput(json.dumps({"task_id": task_id}))
 
-        return ToolResult(
-            tool=self.name, action=action, status="success", result=result, entity_refs={}
-        )
+    async def _update(self, args: Mapping[str, Any]) -> ToolOutput:
+        task = self._require(args)
+        task["title"] = args["title"]
+        return ToolOutput(json.dumps({"task_id": task["task_id"]}))
+
+    async def _complete(self, args: Mapping[str, Any]) -> ToolOutput:
+        task = self._require(args)
+        task["done"] = True
+        return ToolOutput(json.dumps({"task_id": task["task_id"]}))
+
+    async def _delete(self, args: Mapping[str, Any]) -> ToolOutput:
+        task = self._require(args)
+        del self._tasks[str(task["task_id"])]
+        return ToolOutput(json.dumps({"task_id": task["task_id"]}))
+
+    async def _get(self, args: Mapping[str, Any]) -> ToolOutput:
+        return ToolOutput(json.dumps(self._require(args)))
+
+    async def _list(self, args: Mapping[str, Any]) -> ToolOutput:
+        return ToolOutput(json.dumps({"count": len(self._tasks), "tasks": self.list_tasks()}))
+
+    def tools(self) -> list[LoopTool]:
+        w, r = Risk.WRITE_INTERNAL, Risk.READ
+        tid = {"task_id": "string"}
+        return [
+            FunctionTool(
+                "tasks_create",
+                "Create a task in the internal task list.",
+                w,
+                object_schema({"title": "string"}),
+                self._create,
+            ),
+            FunctionTool(
+                "tasks_update",
+                "Change the title of an existing task.",
+                w,
+                object_schema({**tid, "title": "string"}),
+                self._update,
+            ),
+            FunctionTool(
+                "tasks_complete", "Mark a task as done.", w, object_schema(tid), self._complete
+            ),
+            FunctionTool(
+                "tasks_delete",
+                "Delete a task from the internal list.",
+                w,
+                object_schema(tid),
+                self._delete,
+            ),
+            FunctionTool("tasks_get", "Read one task.", r, object_schema(tid), self._get),
+            FunctionTool("tasks_list", "List all tasks.", r, object_schema({}), self._list),
+        ]

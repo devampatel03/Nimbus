@@ -82,7 +82,10 @@ async def build_context(
         except Exception:  # noqa: BLE001 - fail closed
             log.warning("memory recall failed; continuing without memory")
             memories = []
-        blocks = [DataBlock(m.source, str(m.text or "")[:MAX_MEMORY_CHARS]) for m in memories]
+        blocks = [
+            DataBlock(m.source, str(m.text or "")[:MAX_MEMORY_CHARS])
+            for m in list(memories)[:memory_limit]
+        ]
     if nonce_factory is None:
         prompt = assemble_system_prompt(
             character_card=character_card, traits=traits, stances=stances, data_blocks=blocks
