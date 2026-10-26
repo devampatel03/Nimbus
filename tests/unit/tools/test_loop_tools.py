@@ -46,16 +46,25 @@ async def test_tasks_not_found_is_a_tool_error() -> None:
         await tools["tasks_get"].run({"task_id": "nope"})
 
 
-async def test_risk_is_declared_per_tool_by_code() -> None:
-    risks = {t.spec.name: t.risk for g in (TasksTool(), RemindersTool()) for t in g.tools()}
-    assert risks["tasks_list"] is Risk.READ
-    assert risks["tasks_get"] is Risk.READ
-    assert risks["reminders_list"] is Risk.READ
-    assert risks["reminders_get"] is Risk.READ
-    assert risks["tasks_create"] is Risk.WRITE_INTERNAL
-    assert risks["tasks_delete"] is Risk.WRITE_INTERNAL
-    assert risks["reminders_create"] is Risk.WRITE_INTERNAL
-    assert risks["reminders_delete"] is Risk.WRITE_INTERNAL
+EXPECTED_RISKS: dict[str, Risk] = {
+    "tasks_create": Risk.WRITE_INTERNAL,
+    "tasks_update": Risk.WRITE_INTERNAL,
+    "tasks_complete": Risk.WRITE_INTERNAL,
+    "tasks_delete": Risk.WRITE_INTERNAL,
+    "tasks_get": Risk.READ,
+    "tasks_list": Risk.READ,
+    "reminders_create": Risk.WRITE_INTERNAL,
+    "reminders_update": Risk.WRITE_INTERNAL,
+    "reminders_delete": Risk.WRITE_INTERNAL,
+    "reminders_get": Risk.READ,
+    "reminders_list": Risk.READ,
+}
+
+
+def test_risk_is_declared_per_tool_by_code() -> None:
+    """Exact map: an added, removed or mislabelled tool fails this test."""
+    actual = {t.spec.name: t.risk for t in ToolRegistry().loop_tools()}
+    assert actual == EXPECTED_RISKS
 
 
 async def test_output_is_untrusted_by_default() -> None:

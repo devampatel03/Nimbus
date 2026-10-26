@@ -4,12 +4,12 @@
 """Back-compat shim (P1.4b, TARGET_DESIGN M8). DEPRECATED.
 
 `LLMClient` / `VLLMClient` / `ChatMessage` here are the pre-pivot
-complete / stream / structured API, still imported by
-`src/memory/extractor.py` and `src/personality`. They are now a
-thin adapter over `GuardedLLM`, so every legacy call also passes the guard
+complete / stream / structured API. Its only remaining importer in `src/` is
+`src/personality/agent_character.py` (the friction check); the memory extractor
+uses `src.llm.protocols`. They are now a thin adapter over `GuardedLLM`, so every legacy call also passes the guard
 (kill switch, spend cap, scrub, audit) and egresses only via `src.net`.
 New code uses `src.llm.protocols.LLMClient` / `src.llm.types.ChatRequest`.
-P2.5b / P2.x remove the legacy callers; this file is deleted with them.
+Retiring that last caller deletes this file.
 
 Behavioural notes vs. the old client: the target is a cloud HTTPS provider
 (the loopback vLLM URL is refused by the egress allowlist); `stream()` yields

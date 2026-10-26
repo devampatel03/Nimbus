@@ -19,6 +19,7 @@ repos:
             "pyjwt>=2.8",
             "cryptography>=43",
             "openai>=3,<4",
+            "httpx",
           ]
         args: [--strict]
         files: ^src/
