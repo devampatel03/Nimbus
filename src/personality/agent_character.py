@@ -29,7 +29,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +53,9 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PIN_LINE_RE = re.compile(r"(sha256|approver|date): ?(.*)")
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 CARD_DEV_MODE_ENV = "NIMBUS_CARD_DEV_MODE"
+
+_PIN_DATE_TOLERANCE = timedelta(days=1)
+_ALLOWED_INVISIBLE = frozenset("\n\t\u200c\u200d")  # ZWNJ/ZWJ occur in normal prose
 
 _gate_log = logging.getLogger("nimbus.personality.card")
 
@@ -100,6 +103,8 @@ def _read_pin(pin_path: Path) -> tuple[str | None, list[str]]:
         raw = pin_path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         return None, ["approval pin is not valid UTF-8"]
+    except OSError as exc:
+        return None, [f"approval pin is unreadable ({type(exc).__name__})"]
     fields: dict[str, str] = {}
     problems: list[str] = []
     for line in raw.replace("\r\n", "\n").split("\n"):
@@ -119,10 +124,16 @@ def _read_pin(pin_path: Path) -> tuple[str | None, list[str]]:
         problems.append("approval pin has no approver")
     d = fields.get("date", "")
     try:
-        if not _ISO_DATE_RE.fullmatch(d) or date.fromisoformat(d) > datetime.now(UTC).date():
+        if (
+            not _ISO_DATE_RE.fullmatch(d)
+            or date.fromisoformat(d) > datetime.now(UTC).date() + _PIN_DATE_TOLERANCE
+        ):
             raise ValueError
     except ValueError:
-        problems.append("approval pin has no valid non-future ISO date")
+        problems.append(
+            "approval pin has no valid ISO date (YYYY-MM-DD, not later than tomorrow UTC; "
+            "one day of tolerance covers timezones ahead of UTC)"
+        )
     return (digest if _SHA256_RE.fullmatch(digest) else None), problems
 
 
@@ -135,8 +146,16 @@ def _evaluate(data: bytes, pin_path: Path) -> CardStatus:
         text = data.replace(b"\r\n", b"\n").decode("utf-8")
     except UnicodeDecodeError:
         problems.append("card is not valid UTF-8")
-    if any(c not in "\n\t" and unicodedata.category(c) in ("Cc", "Cf") for c in text):
-        problems.append("card contains control/format characters")
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        for c in line:
+            if c not in _ALLOWED_INVISIBLE and unicodedata.category(c) in ("Cc", "Cf"):
+                problems.append(
+                    f"card contains control/format character U+{ord(c):04X} at line {lineno}"
+                )
+                break
+        else:
+            continue
+        break
     has_marker = text.split("\n", 1)[0] == CARD_HUMAN_MARKER
     folded = _fold(text)
     is_placeholder = any(tok in folded for tok in _PLACEHOLDER_TOKENS)
@@ -146,7 +165,11 @@ def _evaluate(data: bytes, pin_path: Path) -> CardStatus:
     if not has_marker:
         problems.append(f"line 1 is not the `{CARD_HUMAN_MARKER}` marker")
     if is_placeholder:
-        problems.append("card is still a placeholder")
+        problems.append(
+            "card is still a placeholder: it contains the reserved token 'placeholder' or "
+            "'TODO(owner)' (also when hidden by case/width/invisible characters); "
+            "reword ordinary prose that uses that word"
+        )
     problems.extend(pin_problems)
     if pinned is not None and not hash_matches:
         problems.append("card sha256 differs from the human-approved pin")
@@ -158,6 +181,12 @@ def _evaluate(data: bytes, pin_path: Path) -> CardStatus:
 _MISSING = CardStatus(False, False, False, False, False, ("card file missing",))
 
 
+def _unreadable(exc: OSError) -> CardStatus:
+    return CardStatus(
+        False, False, False, False, False, (f"card is unreadable ({type(exc).__name__})",)
+    )
+
+
 def inspect_character_card(
     path: Path = CHARACTER_CARD_PATH, pin_path: Path = CHARACTER_CARD_PIN_PATH
 ) -> CardStatus:
@@ -166,6 +195,8 @@ def inspect_character_card(
         data = path.read_bytes()
     except FileNotFoundError:
         return _MISSING
+    except OSError as exc:
+        return _unreadable(exc)
     return _evaluate(data, pin_path)
 
 
@@ -176,6 +207,9 @@ def _load_checked(path: Path, pin_path: Path) -> str:
     except FileNotFoundError:
         data = b""
         status = _MISSING
+    except OSError as exc:
+        data = b""
+        status = _unreadable(exc)
     else:
         status = _evaluate(data, pin_path)
     if not status.production_ready:
@@ -185,7 +219,7 @@ def _load_checked(path: Path, pin_path: Path) -> str:
             + "; ".join(status.problems)
         )
     _gate_log.info("character card gate passed (sha256=%s)", _sha256_of(data)[:12])
-    return data.decode("utf-8")
+    return data.replace(b"\r\n", b"\n").decode("utf-8")
 
 
 def require_production_ready(
@@ -217,7 +251,7 @@ def load_approved_character_card(
     """
     if dev_mode is True:
         _gate_log.warning("character card gate BYPASSED (dev mode)")
-        return path.read_bytes().decode("utf-8")
+        return path.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
     return _load_checked(path, pin_path)
 
 

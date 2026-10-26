@@ -26,13 +26,15 @@ NORM=$(printf '%s' "$FILE_PATH" | tr 'A-Z' 'a-z' | tr '\\' '/' | sed -E \
 # resolve "/./" and "x/../" until stable
 while :; do
   NEXT=$(printf '%s' "$NORM" | sed -E -e 's#/\./#/#g' -e 's#^\./##' -e 's#/\.$##' \
-    -e 's#(^|/)[^/.][^/]*/\.\.(/|$)#\1#' -e 's#(^|/)\.[^/.][^/]*/\.\.(/|$)#\1#')
+    -e 's#(^|/)([^/]|[^/.][^/]|\.[^/.]|[^/]{3,})/\.\.(/|$)#\1#')
   [ "$NEXT" = "$NORM" ] && break
   NORM=$NEXT
 done
 NORM=$(printf '%s' "$NORM" | sed -E -e 's#[. ]+(/|$)#\1#g')
 
-if printf '%s' "$NORM" | grep -qE '(^|/)(personality|person~[0-9]+)/(character_card\.(md|sha256)|charac~[0-9]+)'; then
+# Second, deliberately broad net: any path naming both the personality dir and the
+# card/pin (covers odd segments like "..." that Windows resolves textually).
+if printf '%s' "$NORM" | grep -qE '(^|/)(personality|person~[0-9]+)/(character_card\.(md|sha256)|charac~[0-9]+)'   || printf '%s' "$NORM" | grep -qE '(personality|person~[0-9]+).*(character_card\.(md|sha256)|charac~[0-9]+)'; then
   echo "BLOCKED: $FILE_PATH is the human-authored character card / approval pin (R9, HUMAN_TODO H1). Ask the human to edit it directly." >&2
   exit 2
 fi
