@@ -19,7 +19,6 @@ repos:
             "langgraph>=0.2",
             "pyjwt>=2.8",
             "cryptography>=43",
-            "sentence-transformers>=3.0",
             "openai>=3,<4",
           ]
         args: [--strict]
