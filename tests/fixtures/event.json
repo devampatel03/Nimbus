@@ -1,0 +1,11 @@
+{
+  "source_key": "telegram:100231",
+  "kind": "text",
+  "source": "telegram",
+  "lane": "trusted",
+  "confidence": 1.0,
+  "body": "Remind me to call the dentist on Friday.",
+  "meta": {"message_id": 5512},
+  "file_unique_id": null,
+  "occurred_at": "2026-10-26T09:15:00Z"
+}
