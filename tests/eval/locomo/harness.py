@@ -66,6 +66,7 @@ import sys
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
+from itertools import groupby
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -76,8 +77,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.pool import NullPool
 
 from config.settings import settings
+from src.contracts.event import Event, EventKind
 from src.contracts.memory_query import MemoryQuery
-from src.memory.manager import Embedder, EpisodicChunk, MemoryManager
+from src.memory.embedder import BatchEmbedder
+from src.memory.manager import ChunkIn, MemoryManager
 from src.memory.schemas import Base
 
 DATASET_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
@@ -165,12 +168,23 @@ async def _drop_scratch(name: str, engine: AsyncEngine) -> None:
 
 
 async def _run_sample(manager: MemoryManager, sample: dict, top_k: int) -> dict[str, dict]:
-    session_id = uuid.uuid5(uuid.NAMESPACE_URL, sample["sample_id"])
-    chunks = [
-        EpisodicChunk(text=f"{speaker}: {text}", occurred_at=occurred_at)
-        for occurred_at, speaker, text in _iter_turns(sample["conversation"])
-    ]
-    await manager.write_episodic(session_id, chunks)
+    # P2.4: the store takes the caller's real event. One event per LoCoMo
+    # session (the provenance root, like a Recorder transcript); each turn is a
+    # chunk at its position, so the write is one embedding batch per session.
+    turns = _iter_turns(sample["conversation"])
+    for n, (occurred_at, group) in enumerate(groupby(turns, key=lambda t: t[0])):
+        event_id = await manager.record_event(
+            Event(
+                source_key=f"locomo:{sample['sample_id']}:{n}",
+                kind=EventKind.TEXT,
+                source="locomo",
+                lane="trusted",
+                occurred_at=occurred_at,
+            )
+        )
+        await manager.write_episodic(
+            event_id, [ChunkIn(text=f"{speaker}: {text}") for _, speaker, text in group]
+        )
 
     per_category: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
     for qa in sample["qa"]:
@@ -193,7 +207,7 @@ async def _run_sample(manager: MemoryManager, sample: dict, top_k: int) -> dict[
 
 
 async def run(
-    max_samples: int | None = None, top_k: int = 5, embedder: Embedder | None = None
+    max_samples: int | None = None, top_k: int = 5, embedder: BatchEmbedder | None = None
 ) -> dict[str, object]:
     dataset = load_dataset()
     if max_samples is not None:

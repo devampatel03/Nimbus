@@ -76,7 +76,9 @@ class GraphRepository:
             confidence=confidence,
             source_speaker=old_edge.source_speaker,
         )
-        old_edge.valid_to = datetime.now(tz=valid_from.tzinfo)
+        # Valid time closes when the successor becomes true (bi-temporal as_of
+        # reads depend on this), never before the old edge began.
+        old_edge.valid_to = max(valid_from, old_edge.valid_from)
         old_edge.superseded_by = new_edge.id
         await self._session.flush()
         return new_edge

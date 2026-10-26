@@ -60,6 +60,13 @@ class MemoryChunk(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
         Index("idx_memory_chunk_created", "created_at"),
+        # R8: one approval promotes at most one chunk (single-use).
+        Index(
+            "uq_memory_chunk_promoted_approval",
+            "promoted_approval_id",
+            unique=True,
+            postgresql_where=text("promoted_approval_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

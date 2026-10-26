@@ -6,5 +6,7 @@
   "provenance": "graph_edge:33333333-4444-5555-6666-777777777777",
   "valid_from": "2026-09-10T12:00:00+05:30",
   "valid_to": null,
-  "confidence": 0.9
+  "confidence": 0.9,
+  "lane": "trusted",
+  "untrusted": false
 }

@@ -20,6 +20,7 @@ to contribute" (AGENT_OPERATING_MANUAL.md 3.3).
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,12 @@ class ScoringTerms:
     importance: float  # 0..1
     speaker_relevance: float  # 0..1, overlap with present_speakers
     verified_bonus: float  # 0..1, typically 0 or 1
+
+
+def age_days(then: datetime, reference: datetime) -> float:
+    """Days from `then` to `reference` (the query's `as_of`, or now), floored
+    at 0 so rows newer than the reference are not boosted above 'brand new'."""
+    return max((reference - then).total_seconds() / 86400, 0.0)
 
 
 def recency_term(age_days: float, weights: RetrievalWeights = DEFAULT_WEIGHTS) -> float:

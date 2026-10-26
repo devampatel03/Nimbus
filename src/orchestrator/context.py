@@ -9,12 +9,13 @@ DATA block (INV-6). Raw strings are never accepted as data.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
+from src.contracts.memory_query import MemoryQuery
 from src.llm.types import ChatMessage
 from src.memory.store import ChunkHit, MemoryStore
 from src.personality.agent_character import AgentStance
@@ -36,21 +37,25 @@ class MemoryRecall(Protocol):
     async def recall(self, query: str, *, limit: int) -> Sequence[RecalledMemory]: ...
 
 
-class SyncEmbedder(Protocol):
-    def embed(self, text: str) -> list[float]: ...
-
-
 class StoreRecall:
-    """`MemoryRecall` over the pgvector `MemoryStore`."""
+    """`MemoryRecall` over the pgvector `MemoryStore` (which embeds the query).
 
-    def __init__(self, store: MemoryStore, embedder: SyncEmbedder) -> None:
+    Default search excludes untrusted/unpromoted rows (R8). Every recalled hit
+    is rendered as a DATA block regardless; untrusted ones get a distinct
+    source label so the model and the audit trail can tell them apart (INV-6).
+    """
+
+    def __init__(self, store: MemoryStore, *, user_id: UUID | None = None) -> None:
         self._store = store
-        self._embedder = embedder
+        self._user_id = user_id or UUID(int=0)  # single user (AD-8)
 
     async def recall(self, query: str, *, limit: int) -> Sequence[RecalledMemory]:
-        vec = await asyncio.to_thread(self._embedder.embed, query)
-        hits: list[ChunkHit] = await self._store.search(vec, limit=limit)
-        return [RecalledMemory(text=h.content) for h in hits]
+        q = MemoryQuery(user_id=self._user_id, query_text=query, top_k=limit)
+        hits: list[ChunkHit] = await self._store.search(q)
+        return [
+            RecalledMemory(text=h.content, source="memory:untrusted" if h.untrusted else "memory")
+            for h in hits
+        ]
 
 
 @dataclass(frozen=True)

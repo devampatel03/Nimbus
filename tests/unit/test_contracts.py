@@ -59,6 +59,9 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "top_k": "int",
         "active_entities": "list[str]",
         "present_speakers": "list[UUID]",
+        "as_of": "datetime | None",
+        "known_at": "datetime | None",
+        "include_unpromoted": "bool",
     },
     MemoryResult: {
         "memory_id": "UUID",
@@ -69,6 +72,8 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "valid_from": "datetime",
         "valid_to": "datetime | None",
         "confidence": "float",
+        "lane": "Literal['trusted', 'untrusted']",
+        "untrusted": "bool",
     },
     UserProfileSlice: {
         "user_id": "UUID",
@@ -193,3 +198,32 @@ def test_all_event_kinds_have_a_fixture() -> None:
         for f in ("event.json", *(v[0] for v in EVENT_VARIANTS))
     }
     assert {"text", "voice", "recorder"} <= {k.value for k in kinds}
+
+
+def test_memory_result_untrusted_flag_cannot_disagree_with_lane() -> None:
+    """INV-6: callers render `untrusted` hits as DATA blocks; the flag must be
+    derived from the lane, never settable independently."""
+    base = json.loads((FIXTURES_DIR / "memory_result.json").read_text())
+    base.update(lane="untrusted", untrusted=False)
+    with pytest.raises(ValueError):
+        MemoryResult.model_validate(base)
+    base.update(lane="trusted", untrusted=True)
+    with pytest.raises(ValueError):
+        MemoryResult.model_validate(base)
+
+
+def test_memory_query_rejects_naive_datetimes() -> None:
+    base = json.loads((FIXTURES_DIR / "memory_query.json").read_text())
+    for key in ("as_of", "known_at"):
+        with pytest.raises(ValueError):
+            MemoryQuery.model_validate({**base, key: "2026-01-01T00:00:00"})
+
+
+def test_memory_query_defaults_are_safe() -> None:
+    """R8: unpromoted/untrusted-derived rows are excluded unless asked for."""
+    legacy = json.loads((FIXTURES_DIR / "memory_query.json").read_text())
+    for k in ("as_of", "known_at", "include_unpromoted"):
+        legacy.pop(k)  # pre-P2.4 payloads must keep parsing
+    q = MemoryQuery.model_validate(legacy)
+    assert q.include_unpromoted is False
+    assert q.as_of is None and q.known_at is None
