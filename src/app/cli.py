@@ -44,10 +44,16 @@ def run() -> int:
     except ValidationError as exc:
         print(describe_validation_error(exc), file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - startup boundary: type name only
+        print(f"startup failed: {type(exc).__name__}", file=sys.stderr)
+        return 2
     try:
         return asyncio.run(run_app(cfg, handle_signals=True))
     except KeyboardInterrupt:  # Windows: Ctrl-C cancels the main task
         return 0
+    except Exception as exc:  # noqa: BLE001 - never 1 (= unhealthy); type name only
+        print(f"startup failed: {type(exc).__name__}", file=sys.stderr)
+        return 2
 
 
 def main(argv: Sequence[str]) -> int:

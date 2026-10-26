@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from src.app.runtime import AppConfig, BackendFactory, Backends, SessionFactory, run_app
+from src.app.runtime import AppConfig, BackendFactory, Backends, Beat, SessionFactory, run_app
 from src.app.settings import AppSettings
 from src.gateway.store import UpdateStore
 from src.gateway.telegram import TelegramGateway
@@ -90,10 +90,10 @@ async def _tiny_sleep(s: float) -> None:
 
 
 def backends_for(fake: FakeTelegram, provider: Provider | None = None) -> BackendFactory:
-    def factory(cfg: AppConfig, sf: SessionFactory) -> Backends:
+    def factory(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
         assert cfg.gateway is not None
         egress = make_egress(fake)
-        gw = TelegramGateway(cfg.gateway, egress, UpdateStore(sf), sleep=_tiny_sleep)
+        gw = TelegramGateway(cfg.gateway, egress, UpdateStore(sf), sleep=_tiny_sleep, on_poll=beat)
         return Backends(
             gateway=gw,
             provider=provider or FakeLLM(default="fake reply"),

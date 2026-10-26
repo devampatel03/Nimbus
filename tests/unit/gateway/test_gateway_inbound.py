@@ -521,3 +521,56 @@ async def test_failed_notice_is_retried_not_lost() -> None:
         assert n < 100, "hot loop"
     assert [m["text"] for m in fake.sent] == [NOTICE]
     assert store.notices == {}
+
+
+# ---- P2.1b MED-4: liveness hook fires on completed poll cycles only ----
+
+
+async def test_on_poll_fires_for_each_completed_poll_including_empty_ones() -> None:
+    fake = FakeTelegram()
+    polls = 0
+    beats: list[int] = []
+
+    def hook() -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 3:
+            fake.push(message(1, "x"))
+
+    fake.poll_hook = hook
+    gw = TelegramGateway(
+        make_settings(),
+        make_egress(fake),
+        MemStore(),
+        sleep=no_sleep,
+        on_poll=lambda: beats.append(1),
+    )
+    async for u in gw.inbound():
+        await gw.ack(u)
+        await gw.aclose()
+    assert len(beats) >= 3  # two empty long polls and the one that returned the update
+
+
+async def test_on_poll_does_not_fire_when_the_poll_fails() -> None:
+    fake = FakeTelegram()
+    fake.scripted = [httpx.Response(500, json={"ok": False}) for _ in range(3)]
+    beats: list[int] = []
+    gw = TelegramGateway(
+        make_settings(),
+        make_egress(fake),
+        MemStore(),
+        sleep=no_sleep,
+        on_poll=lambda: beats.append(1),
+    )
+    n = 0
+
+    def stop_after_failures() -> None:
+        nonlocal n
+        n += 1
+        if n == 1:
+            asyncio.get_running_loop().create_task(gw.aclose())
+
+    fake.poll_hook = stop_after_failures
+    async for _ in gw.inbound():
+        pass
+    assert len(beats) == 1  # only the first successful poll; the 3 failures beat nothing

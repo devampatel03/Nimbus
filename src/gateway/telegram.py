@@ -66,8 +66,12 @@ class TelegramGateway:
         *,
         limiter: RateLimiter | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        on_poll: Callable[[], None] | None = None,
     ) -> None:
         self._s = settings
+        # Liveness signal for the app heartbeat: called after every COMPLETED
+        # getUpdates cycle (empty long polls included), never on a failed one.
+        self._on_poll = on_poll
         self._chat = settings.allowed_user_id  # private chat id == user id
         self._store = store
         self._sleep = sleep
@@ -100,6 +104,8 @@ class TelegramGateway:
                 offset = await self._store.get_offset()
                 raw_updates = await self._api.get_updates(offset)
                 backoff = 1.0
+                if self._on_poll is not None:
+                    self._on_poll()
             except TelegramAuthError:
                 logger.error("telegram auth failed; stopping poll loop")
                 raise

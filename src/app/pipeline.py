@@ -25,7 +25,7 @@ import asyncio
 import logging
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 from src.gateway.protocols import Gateway
@@ -88,9 +88,18 @@ class TurnGateway:
         return await self._inner.fetch_file(file, max_bytes=max_bytes)
 
 
-def _remember(result: TurnResult) -> list[ChatMessage]:
-    kept = [m for m in result.messages if m.role != "system"]
-    return [*kept, ChatMessage(role="assistant", content=result.text)]
+def _remember(user_text: str, result: TurnResult) -> list[ChatMessage] | None:
+    """What a turn leaves in the conversation window: the user's text and the
+    final answer, nothing else. Only a turn that completed (`status == "ok"`) is
+    kept. A refused turn (for example a pasted secret the guard blocked) must not
+    be replayed into every later request, which would block them all. System
+    prompts and tool traffic (untrusted output) are never carried over."""
+    if result.status != "ok":
+        return None
+    return [
+        ChatMessage(role="user", content=user_text),
+        ChatMessage(role="assistant", content=result.text),
+    ]
 
 
 class History:
@@ -123,7 +132,9 @@ class TurnWorker:
         *,
         history_messages: int,
         turn_timeout_s: float = 180.0,
+        on_progress: Callable[[], None] | None = None,
     ) -> None:
+        self._progress = on_progress
         self._gw = gateway
         self._orch = orchestrator
         self._queue = queue
@@ -142,6 +153,8 @@ class TurnWorker:
                 await self._apologise(item)
             finally:
                 self._queue.task_done()
+                if self._progress is not None:
+                    self._progress()  # a turn finished: the loop is demonstrably alive
 
     async def _apologise(self, item: PendingTurn) -> None:
         if item.update.kind is not UpdateKind.TEXT:
@@ -164,7 +177,9 @@ class TurnWorker:
         if not text.strip():
             return
         result = await self._orch.run_turn(text, history=self._history.get(), turn_id=uuid.uuid4())
-        self._history.replace(_remember(result))
+        kept = _remember(text, result)
+        if kept is not None:
+            self._history.replace([*self._history.get(), *kept])
         await self._gw.send_text(result.text, reply_to=_ref(u))
 
 

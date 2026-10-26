@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from src.gateway.types import (
     ApprovalCard,
@@ -27,7 +27,11 @@ class InMemoryGateway:
     """A `Gateway` over an asyncio queue. `push()` feeds updates in; sent text is
     recorded in `sent`; acks in `acked`."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, on_poll: Callable[[], None] | None = None, poll_interval_s: float = 0.5
+    ) -> None:
+        self._on_poll = on_poll
+        self._poll_s = poll_interval_s
         self._inbox: asyncio.Queue[InboundUpdate] = asyncio.Queue()
         self.sent: list[str] = []
         self.acked: list[tuple[int, uuid.UUID | None]] = []
@@ -40,7 +44,14 @@ class InMemoryGateway:
 
     async def inbound(self) -> AsyncIterator[InboundUpdate]:
         while not self.closed:
-            yield await self._inbox.get()
+            try:
+                update = await asyncio.wait_for(self._inbox.get(), timeout=self._poll_s)
+            except TimeoutError:
+                update = None  # an empty "long poll"
+            if self._on_poll is not None:
+                self._on_poll()
+            if update is not None:
+                yield update
 
     async def aclose(self) -> None:
         self.closed = True

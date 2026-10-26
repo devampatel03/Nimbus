@@ -253,8 +253,9 @@ def test_dev_mode_only_from_operator_env(monkeypatch):
 _SRC = Path(__file__).resolve().parents[2] / "src"
 _OWN = Path("personality") / "agent_character.py"
 # The app entrypoint is the ONE place outside src/personality that may use the operator dev
-# switch; src/app/card.py refuses it unless APP_ENV=development (tests/unit/app/test_card.py).
-_SCAN_ALLOWLIST: frozenset[str] = frozenset({"app/card.py"})
+# switch. It is NOT exempt from the scan: it gets an exact budget (see _card_module_violations).
+_SCAN_ALLOWLIST: frozenset[str] = frozenset()
+_BUDGETED = "app/card.py"
 # load_character_card is the UNGATED reader. Outside src/personality it is banned with no
 # exceptions (the last user, orchestrator/context_builder.py, was deleted in P2.5b).
 _UNGATED_LOADER_ALLOWLIST: frozenset[str] = frozenset()
@@ -354,6 +355,50 @@ def _scan_dev_mode_misuse(source: str, *, outside_personality: bool = False) -> 
     return sorted(set(hits))
 
 
+def _card_module_violations(source: str) -> list[str]:
+    """`src/app/card.py` is scanned like everything else, minus an EXACT budget:
+    one import and one reference of `card_dev_mode_from_env`, and exactly one
+    `load_approved_character_card(..., dev_mode=True)` call (the literal True).
+    Anything else (a second switch, any environment access, string-built names,
+    dynamic imports) is a violation."""
+    tree = ast.parse(source)
+    hits = _scan_dev_mode_misuse(source, outside_personality=True)
+    imports = [h for h in hits if h == "import card_dev_mode_from_env"]
+    refs = [h for h in hits if h.startswith("card_dev_mode_from_env line")]
+    kwargs = [h for h in hits if h.startswith("dev_mode kwarg line")]
+    rest = [h for h in hits if h not in imports + refs + kwargs]
+    out = list(rest)
+    if len(imports) != 1:
+        out.append(f"expected exactly 1 import of the env helper, found {len(imports)}")
+    if len(refs) != 1:
+        out.append(f"expected exactly 1 use of the env helper, found {len(refs)}")
+    if len(kwargs) != 1:
+        out.append(f"expected exactly 1 dev_mode= call, found {len(kwargs)}")
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            for kw in n.keywords:
+                if kw.arg == "dev_mode" and not (
+                    isinstance(kw.value, ast.Constant) and kw.value.value is True
+                ):
+                    out.append(f"dev_mode must be the literal True, line {n.lineno}")
+        if isinstance(n, ast.Name) and n.id in {
+            "os",
+            "environ",
+            "getenv",
+            "__import__",
+            "eval",
+            "exec",
+        }:
+            out.append(f"forbidden name {n.id} line {n.lineno}")
+        if isinstance(n, ast.Attribute) and n.attr in {"environ", "getenv", "putenv", "unsetenv"}:
+            out.append(f"forbidden attribute {n.attr} line {n.lineno}")
+        if isinstance(n, ast.alias) and n.name.split(".")[0] == "os":
+            out.append("forbidden import os")
+        if isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] == "os":
+            out.append("forbidden import from os")
+    return sorted(set(out))
+
+
 def test_dev_mode_not_referenced_anywhere_else_in_src():
     offenders: dict[str, list[str]] = {}
     for py in sorted(_SRC.rglob("*.py")):
@@ -361,6 +406,11 @@ def test_dev_mode_not_referenced_anywhere_else_in_src():
         if rel == _OWN or rel.as_posix() in _SCAN_ALLOWLIST:
             continue
         outside = rel.parts[0] != "personality"
+        if rel.as_posix() == _BUDGETED:
+            hits = _card_module_violations(py.read_text(encoding="utf-8"))
+            if hits:
+                offenders[rel.as_posix()] = hits
+            continue
         hits = _scan_dev_mode_misuse(py.read_text(encoding="utf-8"), outside_personality=outside)
         if rel.as_posix() in _UNGATED_LOADER_ALLOWLIST:
             hits = [h for h in hits if h != "ungated load_character_card"]
@@ -623,3 +673,47 @@ def test_cli_hash_helper_matches_card_sha256():
         check=True,
     ).stdout.strip()
     assert out == card_sha256()
+
+
+_GOOD_CARD_MODULE = (
+    "from src.personality.agent_character import (\n"
+    "    card_dev_mode_from_env, load_approved_character_card)\n"
+    "def load_card(env):\n"
+    "    if card_dev_mode_from_env():\n"
+    "        return load_approved_character_card(dev_mode=True)\n"
+    "    return load_approved_character_card()\n"
+)
+
+
+def test_the_real_card_module_is_within_its_exact_budget():
+    source = (_SRC / "app" / "card.py").read_text(encoding="utf-8")
+    assert _card_module_violations(source) == []
+
+
+def test_budget_scan_accepts_the_minimal_good_module():
+    assert _card_module_violations(_GOOD_CARD_MODULE) == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "import os\ndef alt():\n    if os.environ.get('NIMBUS_DEBUG') == 'on':\n        return load_approved_character_card(dev_mode=True)\n",
+        "def alt():\n    return load_approved_character_card(dev_mode=True)\n",
+        "def alt(flag):\n    return load_approved_character_card(dev_mode=flag)\n",
+        "def alt():\n    return load_approved_character_card(**{'dev_mode': True})\n",
+        "def alt():\n    return __import__('os').environ.get('X_DBG')\n",
+        "def alt():\n    import os\n    return os.getenv('X')\n",
+        "from os import environ\n",
+        "def alt():\n    return card_dev_mode_from_env() or card_dev_mode_from_env()\n",
+        "def alt():\n    return 'NIMBUS_CARD' + '_DEV_MODE'\n",
+        "import os\nos.environ['NIMBUS_CARD_DEV_MODE'] = '1'\n",
+        "def alt():\n    return eval('1')\n",
+    ],
+)
+def test_budget_scan_rejects_any_second_switch_or_env_access(extra):
+    assert _card_module_violations(_GOOD_CARD_MODULE + extra) != []
+
+
+def test_budget_scan_rejects_missing_or_duplicated_gate_pieces():
+    assert _card_module_violations(_GOOD_CARD_MODULE.replace("dev_mode=True", "")) != []
+    assert _card_module_violations("x = 1" + "\n") != []

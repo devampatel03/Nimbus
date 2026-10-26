@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from config.settings import Settings as DbSettings
 from src.app.card import StartupRefused, load_card
 from src.app.db import build_engine, build_session_factory
-from src.app.heartbeat import Heartbeat
+from src.app.heartbeat import Heartbeat, HeartbeatPathError
 from src.app.pipeline import PendingTurn, TurnGateway, TurnWorker
 from src.app.recall import SessionScopedRecall
 from src.app.seams import JobRunner, NoopJobRunner, NoopScheduler, Scheduler
@@ -143,23 +143,26 @@ class Backends:
     closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
-BackendFactory = Callable[[AppConfig, SessionFactory], Backends]
+Beat = Callable[[], None]
+# (config, sessions, gateway liveness beat) -> backends. The gateway must call
+# `beat` after every completed poll cycle; that is the gateway loop's heartbeat.
+BackendFactory = Callable[[AppConfig, SessionFactory, Beat], Backends]
 
 
-def real_backends(cfg: AppConfig, sf: SessionFactory) -> Backends:
+def real_backends(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
     if cfg.gateway is None:
         raise StartupRefused("telegram settings are required")
     egress = EgressClient(cfg.net)
-    gw = TelegramGateway(cfg.gateway, egress, UpdateStore(sf))
+    gw = TelegramGateway(cfg.gateway, egress, UpdateStore(sf), on_poll=beat)
     return Backends(gateway=gw, closers=[gw.aclose, egress.aclose])
 
 
-def fake_backends(cfg: AppConfig, sf: SessionFactory) -> Backends:
+def fake_backends(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
     from src.app.fakes import InMemoryGateway
     from src.llm.fake import FakeLLM
     from src.memory.manager import DeterministicStubEmbedder
 
-    gw = InMemoryGateway()
+    gw = InMemoryGateway(on_poll=beat)
     return Backends(
         gateway=gw,
         provider=FakeLLM(default="fake reply"),
@@ -231,6 +234,7 @@ class Runtime:
             orchestrator,
             self.queue,
             history_messages=cfg.app.history_messages,
+            on_progress=lambda: heartbeat.beat("gateway"),
         )
         self._beat_every = min(15.0, cfg.app.heartbeat_stale_s / 3)
 
@@ -243,17 +247,11 @@ class Runtime:
             self.heartbeat.beat(name)
             remaining -= step
 
-    async def _ticker(self, name: str) -> None:
-        # Sleep first: a unit that keeps crashing never lives long enough to beat.
-        while True:
-            await asyncio.sleep(self._beat_every)
-            self.heartbeat.beat(name)
-
     async def gateway_loop(self) -> None:
         # Bound-method references, not `.run(` calls: `Ingestor.run` is not a tool
         # execution, and the INV-5 call-site pin must stay free of exceptions.
         consume = self.ingestor.run
-        await _first_done(consume(), self.turns.serve(), self._ticker("gateway"))
+        await _first_done(consume(), self.turns.serve())
 
     async def worker_loop(self) -> None:
         while not self.stop.is_set():
@@ -277,21 +275,27 @@ class Runtime:
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> Callable[[], None]:
+    """SIGINT/SIGTERM set `stop`. Where the loop cannot register handlers
+    (Windows) fall back to `signal.signal`; `restore` puts back whatever was
+    installed before, on both paths."""
     loop = asyncio.get_running_loop()
     installed: list[signal.Signals] = []
+    previous: dict[signal.Signals, Any] = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop.set)
             installed.append(sig)
         except (NotImplementedError, RuntimeError, ValueError):
-            # Windows / non-main thread: fall back to the plain handler.
             with contextlib.suppress(ValueError, OSError):
-                signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+                previous[sig] = signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
 
     def restore() -> None:
         for sig in installed:
             with contextlib.suppress(Exception):
                 loop.remove_signal_handler(sig)
+        for sig, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, handler)
 
     return restore
 
@@ -321,16 +325,22 @@ async def run_app(
         log.critical("startup refused: character card not usable err=%s", type(exc).__name__)
         return EXIT_CONFIG
 
+    heartbeat = Heartbeat(cfg.app.heartbeat_path)
+    try:
+        heartbeat.prepare()  # private dir (0700); refuse a shared/foreign location
+    except HeartbeatPathError as exc:
+        log.critical("startup refused: %s", exc)
+        return EXIT_CONFIG
+
     own_engine = engine is None
     eng = engine or build_engine(cfg.dsn, statement_timeout_s=cfg.app.db_statement_timeout_s)
     sf = build_session_factory(eng)
     be: Backends | None = None
     restore_signals: Callable[[], None] | None = None
-    heartbeat = Heartbeat(cfg.app.heartbeat_path)
     try:
         # 3. Backends and the one GuardedLLM.
         factory = backends or (fake_backends if cfg.app.fake_backends else real_backends)
-        be = factory(cfg, sf)
+        be = factory(cfg, sf, lambda: heartbeat.beat("gateway"))
         cipher = DataCipher.from_env() if cfg.llm.store_payload else None
         audit = PostgresAuditStore(sf, cipher=cipher, retention_days=cfg.llm.payload_retention_days)
         llm = build_guarded_llm(

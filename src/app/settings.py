@@ -10,7 +10,8 @@ it (production refuses dev mode, see `src.app.card`).
 
 from __future__ import annotations
 
-import tempfile
+import os
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -19,7 +20,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def default_heartbeat_path() -> Path:
-    return Path(tempfile.gettempdir()) / "nimbus-heartbeat.json"
+    """A per-user state directory, never the shared temp dir: another local user
+    could otherwise pre-create, replace or forge the file. `Heartbeat.prepare()`
+    creates the directory 0700 and refuses an unsafe location."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "nimbus" / "heartbeat.json"
 
 
 class AppSettings(BaseSettings):

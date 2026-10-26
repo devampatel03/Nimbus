@@ -201,8 +201,8 @@ async def test_embedding_model_change_aborts_startup_and_closes_backends(
     factory = backends_for(fake)
     built: list[rt.Backends] = []
 
-    def spying(cfg: rt.AppConfig, sf: rt.SessionFactory) -> rt.Backends:
-        b = factory(cfg, sf)
+    def spying(cfg: rt.AppConfig, sf: rt.SessionFactory, beat: rt.Beat) -> rt.Backends:
+        b = factory(cfg, sf, beat)
         built.append(b)
         return b
 
@@ -300,3 +300,67 @@ async def test_flood_is_answered_in_order_without_loss_or_duplication(
             .where(InboundRow.processed_at.is_(None), InboundRow.update_id >= BASE + 100)
         )
     assert pending == 0
+
+
+async def test_revoked_token_is_fatal_exit_4_and_heartbeat_is_removed(tmp_path: Path) -> None:
+    import httpx
+
+    fake = PacedTelegram()
+    fake.scripted.append(httpx.Response(401, json={"ok": False, "error_code": 401}))
+    cfg = make_cfg(tmp_path)
+    stop = asyncio.Event()
+    code = await asyncio.wait_for(rt.run_app(cfg, backends=backends_for(fake), stop=stop), 30)
+    assert code == rt.EXIT_FATAL_LOOP == 4  # not retried forever, and the process ends by itself
+    assert not cfg.app.heartbeat_path.exists()
+    assert (
+        sum(u.endswith("/getUpdates") for u in fake.raw_urls) == 1
+    )  # no restart loop against a dead token
+
+
+async def test_hung_gateway_poll_makes_the_heartbeat_go_stale_while_others_stay_fresh(
+    tmp_path: Path,
+) -> None:
+    """MED-4: the gateway beat is progress, not a timer. A gateway whose inbound()
+    never returns (and never completes a poll) must read as unhealthy."""
+    from src.app.fakes import InMemoryGateway
+    from src.app.heartbeat import check_heartbeat
+
+    class HungGateway(InMemoryGateway):
+        async def inbound(self) -> Any:  # type: ignore[override]
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+    def factory(cfg: rt.AppConfig, sf: rt.SessionFactory, beat: rt.Beat) -> rt.Backends:
+        return rt.Backends(
+            gateway=HungGateway(), provider=EchoProvider(), embedder=DeterministicStubEmbedder()
+        )
+
+    cfg = make_cfg(tmp_path, heartbeat_stale_s=0.7)
+    verdict: list[str] = []
+
+    async def observe() -> bool:
+        await asyncio.sleep(1.2)
+        loops = heartbeat_loops(cfg.app.heartbeat_path)
+        verdict.append(check_heartbeat(cfg.app.heartbeat_path, stale_s=0.7).detail)
+        return loops["worker"] > loops["gateway"]
+
+    code = await run_until(cfg, factory, observe)
+    assert code == EXIT_OK
+    assert verdict and "stale loop=gateway" in verdict[0]
+
+
+async def test_idle_but_polling_gateway_stays_healthy(tmp_path: Path) -> None:
+    fake = PacedTelegram()  # no updates: every poll is empty
+    cfg = make_cfg(tmp_path)
+    first: dict[str, float] = {}
+
+    async def observe() -> bool:
+        if not first and cfg.app.heartbeat_path.exists():
+            first.update(heartbeat_loops(cfg.app.heartbeat_path))
+        if not first:
+            return False
+        now = heartbeat_loops(cfg.app.heartbeat_path)
+        return now["gateway"] > first["gateway"] + 0.2  # advanced with no traffic at all
+
+    await run_until(cfg, backends_for(fake), observe)
+    assert first

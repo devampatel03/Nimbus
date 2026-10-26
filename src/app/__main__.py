@@ -4,7 +4,8 @@
 """`python -m src.app` runs the bot; `python -m src.app healthcheck` probes it.
 
 Exit codes: 0 ok / clean stop, 1 unhealthy (healthcheck), 2 configuration or
-startup refused (bad settings, unapproved character card), 3 embedding migration
+startup refused (bad settings, unapproved character card, any other startup
+failure), 3 embedding migration
 required, 4 a loop failed fatally (for example a revoked bot token).
 """
 

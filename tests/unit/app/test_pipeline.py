@@ -177,3 +177,81 @@ def test_history_window_never_starts_with_an_orphan_tool_message() -> None:
     h.replace([*msgs, ChatMessage(role="user", content="u2")])
     assert [m.content for m in h.get()] == ["u2"]
     History(0).replace(msgs)
+
+
+# ---- MED-2: a blocked/failed turn must never poison later turns ----
+
+CANARY = "CANARY-91ac33e7f02b4d58"  # pragma: allowlist secret
+
+
+class RecordingStub(StubOrchestrator):
+    def __init__(self, status: str = "ok") -> None:
+        super().__init__()
+        self.status = status
+
+    async def run_turn(self, text: str, *, history: Any = (), **_: Any) -> TurnResult:
+        self.calls.append((text, list(history)))
+        msgs = (
+            ChatMessage(role="system", content="SYSTEM-PROMPT-WITH-CARD"),
+            *history,
+            ChatMessage(role="user", content=text),
+            ChatMessage(role="assistant", content=None),
+            ChatMessage(role="tool", content="<<<DATA untrusted tool output>>>", tool_call_id="t"),
+        )
+        return TurnResult(self.reply, self.status, messages=msgs)
+
+
+@pytest.mark.parametrize("status", ["unavailable", "budget_exceeded", "error"])
+async def test_non_ok_turns_are_not_remembered(status: str) -> None:
+    gw, orch = InMemoryGateway(), RecordingStub(status)
+    q: asyncio.Queue[PendingTurn] = asyncio.Queue()
+    worker = TurnWorker(gw, orch, q, history_messages=20)  # type: ignore[arg-type]
+    await _run_one(worker, q, PendingTurn(text_update(1, f"my key is {CANARY}"), uuid.uuid4()))
+    orch.status = "ok"
+    await _run_one(worker, q, PendingTurn(text_update(2, "clean question"), uuid.uuid4()))
+    assert orch.calls[1][1] == []  # nothing from the failed turn reached the next request
+
+
+async def test_history_holds_only_user_and_assistant_text_never_system_or_tool() -> None:
+    gw, orch = InMemoryGateway(), RecordingStub("ok")
+    q: asyncio.Queue[PendingTurn] = asyncio.Queue()
+    worker = TurnWorker(gw, orch, q, history_messages=20)  # type: ignore[arg-type]
+    await _run_one(worker, q, PendingTurn(text_update(1, "first"), uuid.uuid4()))
+    await _run_one(worker, q, PendingTurn(text_update(2, "second"), uuid.uuid4()))
+    hist = orch.calls[1][1]
+    assert [(m.role, m.content) for m in hist] == [("user", "first"), ("assistant", "answer")]
+    assert all("SYSTEM-PROMPT" not in (m.content or "") for m in hist)
+
+
+async def test_canary_message_blocks_only_itself_provider_runs_for_the_next_clean_turn() -> None:
+    """End to end through the real guard: the turn with a canary is refused before
+    any provider call; the next, clean turn reaches the provider and its request
+    contains no trace of the canary."""
+    from src.llm.fake import FakeLLM
+    from src.orchestrator.dispatch import DenyAllWritesPolicy
+    from src.orchestrator.loop import Orchestrator
+    from tests.fakes.llm import build_env
+
+    provider = FakeLLM(default="fine")
+    env = build_env(provider=provider, canaries=(CANARY,))
+    orch = Orchestrator(env.llm, [], DenyAllWritesPolicy(), character_card="card")
+    gw = InMemoryGateway()
+    q: asyncio.Queue[PendingTurn] = asyncio.Queue()
+    worker = TurnWorker(gw, orch, q, history_messages=20)
+    await _run_one(worker, q, PendingTurn(text_update(1, f"here: {CANARY}"), uuid.uuid4()))
+    assert provider.requests == []  # blocked before any provider call
+    await _run_one(worker, q, PendingTurn(text_update(2, "what is 2+2?"), uuid.uuid4()))
+    assert len(provider.requests) == 1  # NOT blocked by a poisoned history
+    sent_text = " ".join(m.content or "" for m in provider.requests[0].messages)
+    assert CANARY not in sent_text
+    await _run_one(worker, q, PendingTurn(text_update(3, "and 3+3?"), uuid.uuid4()))
+    assert len(provider.requests) == 2 and gw.sent[-1] == "fine"
+
+
+async def test_on_progress_fires_after_each_turn_even_a_failed_one() -> None:
+    beats: list[int] = []
+    gw, orch = InMemoryGateway(), StubOrchestrator(boom=RuntimeError("x"))
+    q: asyncio.Queue[PendingTurn] = asyncio.Queue()
+    worker = TurnWorker(gw, orch, q, history_messages=4, on_progress=lambda: beats.append(1))  # type: ignore[arg-type]
+    await _run_one(worker, q, PendingTurn(text_update(1), uuid.uuid4()))
+    assert beats == [1]
