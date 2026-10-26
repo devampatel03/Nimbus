@@ -12,4 +12,10 @@ if echo "$FILE_PATH" | grep -qE '(^|/)(\.env(\.[a-zA-Z0-9_]+)?$|.*secrets?.*|.*c
   exit 2
 fi
 
+# R9 / ADR-0015: the character card and its human-approval pin are human-only.
+if echo "$FILE_PATH" | grep -qE '(^|[/\])personality[/\]character_card\.(md|sha256)$'; then
+  echo "BLOCKED: $FILE_PATH is the human-authored character card / approval pin (R9, HUMAN_TODO H1). Ask the human to edit it directly." >&2
+  exit 2
+fi
+
 exit 0

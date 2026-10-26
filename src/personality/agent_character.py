@@ -21,10 +21,13 @@ not a replacement of tested interfaces", same resolution as
 `src/orchestrator/approver.py`'s `review`/`review_async` split.
 """
 
+import hashlib
+import os
+import re
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +42,123 @@ from src.memory.schemas.base import Base
 _TZ = DateTime(timezone=True)
 
 CHARACTER_CARD_PATH = Path(__file__).resolve().parents[2] / "personality" / "character_card.md"
+
+CHARACTER_CARD_PIN_PATH = CHARACTER_CARD_PATH.with_suffix(".sha256")
+
+CARD_HUMAN_MARKER = "human-authored: true"
+_PLACEHOLDER_TOKENS = ("PLACEHOLDER", "TODO(owner)")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+CARD_DEV_MODE_ENV = "NIMBUS_CARD_DEV_MODE"
+
+
+class CardNotApprovedError(RuntimeError):
+    """The character card is not a human-approved, pinned card (R9, ADR-0015)."""
+
+
+def card_sha256(path: Path = CHARACTER_CARD_PATH) -> str:
+    """sha256 of the card with CRLF normalised to LF (checkout-independent)."""
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
+@dataclass(frozen=True)
+class CardStatus:
+    exists: bool
+    has_marker: bool
+    is_placeholder: bool
+    pin_present: bool
+    hash_matches: bool
+    problems: tuple[str, ...]
+
+    @property
+    def production_ready(self) -> bool:
+        return not self.problems
+
+
+def _read_pin(pin_path: Path) -> tuple[str | None, list[str]]:
+    """Return (sha256, problems). Pin format: `sha256:`, `approver:`, `date:` lines."""
+    if not pin_path.exists():
+        return None, [f"approval pin missing at {pin_path.name}"]
+    fields: dict[str, str] = {}
+    for line in pin_path.read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            fields[key.strip().lower()] = value.strip()
+    problems: list[str] = []
+    digest = fields.get("sha256", "").lower()
+    if not _SHA256_RE.fullmatch(digest):
+        problems.append("approval pin has no valid sha256 line")
+    if not fields.get("approver"):
+        problems.append("approval pin has no approver")
+    try:
+        date.fromisoformat(fields.get("date", ""))
+    except ValueError:
+        problems.append("approval pin has no valid ISO date")
+    return (digest if _SHA256_RE.fullmatch(digest) else None), problems
+
+
+def inspect_character_card(
+    path: Path = CHARACTER_CARD_PATH, pin_path: Path = CHARACTER_CARD_PIN_PATH
+) -> CardStatus:
+    """Read-only audit of the card against R9. Never raises for a bad card."""
+    if not path.exists():
+        return CardStatus(False, False, False, pin_path.exists(), False, ("card file missing",))
+    text = path.read_text(encoding="utf-8")
+    first = text.splitlines()[0] if text.strip() else ""
+    has_marker = first == CARD_HUMAN_MARKER
+    is_placeholder = any(tok in text for tok in _PLACEHOLDER_TOKENS)
+    pinned, pin_problems = _read_pin(pin_path)
+    hash_matches = pinned is not None and pinned == card_sha256(path)
+
+    problems: list[str] = []
+    if not has_marker:
+        problems.append(f"line 1 is not the `{CARD_HUMAN_MARKER}` marker")
+    if is_placeholder:
+        problems.append("card is still a placeholder")
+    problems.extend(pin_problems)
+    if pinned is not None and not hash_matches:
+        problems.append("card sha256 differs from the human-approved pin")
+    return CardStatus(
+        True, has_marker, is_placeholder, pin_path.exists(), hash_matches, tuple(problems)
+    )
+
+
+def require_production_ready(
+    path: Path = CHARACTER_CARD_PATH, pin_path: Path = CHARACTER_CARD_PIN_PATH
+) -> None:
+    """Fail closed unless the card has the marker, is not a placeholder and
+    matches the human-approved sha256 pin. For the app entrypoint / PRR / cutover.
+    """
+    status = inspect_character_card(path, pin_path)
+    if not status.production_ready:
+        raise CardNotApprovedError(
+            "character card is not production-ready (R9, ADR-0015, HUMAN_TODO H1): "
+            + "; ".join(status.problems)
+        )
+
+
+def card_dev_mode_from_env() -> bool:
+    """Operator-only switch: exactly `NIMBUS_CARD_DEV_MODE=1` in the process
+    environment. Nothing in the prompt/tool layers reads or sets it (tested).
+    """
+    return os.environ.get(CARD_DEV_MODE_ENV) == "1"
+
+
+def load_approved_character_card(
+    path: Path = CHARACTER_CARD_PATH,
+    pin_path: Path = CHARACTER_CARD_PIN_PATH,
+    *,
+    dev_mode: bool = False,
+) -> str:
+    """Production loader: fails closed (`CardNotApprovedError`) unless the card
+    is approved. `dev_mode` must be the literal `True` to skip the gate; any
+    other value (strings, ints) is treated as production.
+    """
+    if dev_mode is True:
+        return load_character_card(path)
+    require_production_ready(path, pin_path)
+    return load_character_card(path)
+
 
 _GOAL_NEGATION_MARKERS = (
     "stop ",
