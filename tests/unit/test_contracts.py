@@ -19,13 +19,13 @@ import pytest
 from pydantic import BaseModel
 
 from src.contracts import (
-    DiarizedTranscript,
+    Event,
     MemoryQuery,
     MemoryResult,
     ProactiveCandidate,
-    SessionBundle,
     ToolIntent,
     ToolResult,
+    Transcript,
     UserProfileSlice,
 )
 
@@ -35,23 +35,22 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 # Recorded once at freeze time; a field removal or type change breaks the
 # corresponding assertion below.
 EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
-    SessionBundle: {
-        "session_id": "UUID",
-        "user_id": "UUID",
-        "mode": "Literal['mode_a', 'mode_b']",
-        "started_at": "datetime",
-        "ended_at": "datetime | None",
-        "audio_ref": "str",
-        "sample_rate_hz": "int",
-        "codec": "str",
-        "language_hint": "str | None",
-        "device_id": "str",
-        "client_app_version": "str",
+    Event: {
+        "source_key": "str",
+        "kind": "EventKind",
+        "source": "str",
+        "lane": "Literal['trusted', 'untrusted']",
+        "confidence": "float",
+        "body": "str | None",
+        "meta": "dict[str, Any]",
+        "file_unique_id": "str | None",
+        "occurred_at": "datetime",
     },
-    DiarizedTranscript: {
-        "session_id": "UUID",
-        "utterances": "list[Utterance]",
-        "source_asr_model": "str",
+    Transcript: {
+        "segments": "list[Segment]",
+        "source_model": "str",
+        "language": "str | None",
+        "untrusted": "bool",
         "created_at": "datetime",
     },
     MemoryQuery: {
@@ -106,8 +105,8 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 }
 
 FIXTURE_FILES: dict[type[BaseModel], str] = {
-    SessionBundle: "session_bundle.json",
-    DiarizedTranscript: "diarized_transcript.json",
+    Event: "event.json",
+    Transcript: "transcript.json",
     MemoryQuery: "memory_query.json",
     MemoryResult: "memory_result.json",
     UserProfileSlice: "user_profile_slice.json",
@@ -155,3 +154,17 @@ def test_golden_fixture_validates(model: type[BaseModel]) -> None:
     instance = model.model_validate(data)
 
     assert model.model_validate(json.loads(instance.model_dump_json())) == instance
+
+
+def test_retired_contracts_are_gone() -> None:
+    """SessionBundle/DiarizedTranscript were retired by P2.2 (TARGET_DESIGN P2.2):
+    the phone-capture pipeline no longer exists; Event/Transcript replace them."""
+    import importlib
+
+    from src import contracts
+
+    for name in ("SessionBundle", "DiarizedTranscript", "Utterance"):
+        assert not hasattr(contracts, name)
+    for mod in ("session_bundle", "diarized_transcript"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"src.contracts.{mod}")
