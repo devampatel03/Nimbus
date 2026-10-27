@@ -18,6 +18,7 @@ from src.memory.schemas.graph import GraphEdge, GraphNode
 from src.memory.schemas.memory_chunk import MemoryChunk
 from src.memory.schemas.ops import InboundUpdate, Job, LLMAudit, PendingAction, SystemFlag
 from src.memory.schemas.person import Person
+from src.memory.schemas.scheduling import Reminder, Task
 from src.memory.schemas.session import Session
 from src.memory.schemas.triggers import attach_table_triggers, install_orm_ddl
 
@@ -38,6 +39,8 @@ __all__ = [
     "MemoryChunk",
     "PendingAction",
     "Person",
+    "Reminder",
     "Session",
     "SystemFlag",
+    "Task",
 ]

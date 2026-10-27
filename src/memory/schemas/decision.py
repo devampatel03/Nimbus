@@ -43,12 +43,12 @@ class Decision(Base):
     outcome: Mapped[str | None] = mapped_column(nullable=True)
     outcome_captured_at: Mapped[datetime | None] = mapped_column(_TZ, nullable=True)
 
-    # P1.2c provenance (R7/R8). Legacy writers omit these; server defaults keep them valid.
+    # P1.2c provenance (R7/R8). `lane` has no default (P3.3): every writer states it.
     source_event_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("event.id"), nullable=True
     )
     confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
-    lane: Mapped[str] = mapped_column(nullable=False, server_default=text("'trusted'"))
+    lane: Mapped[str] = mapped_column(nullable=False)  # explicit; no default (P3.3)
     promoted: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
     promoted_approval_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("pending_action.id"), nullable=True

@@ -75,9 +75,15 @@ async def test_provenance_coverage_is_one_across_all_row_creating_paths(
         valid_from=now,
         source_session=sess.id,
         confidence=0.9,
+        lane="trusted",
     )
     await repo.supersede(
-        edge, object_id=None, object_literal="Mumbai", valid_from=now, confidence=0.8
+        edge,
+        object_id=None,
+        object_literal="Mumbai",
+        valid_from=now,
+        confidence=0.8,
+        lane="trusted",
     )
     db_session.add_all(
         [
@@ -102,6 +108,7 @@ async def test_provenance_coverage_is_one_across_all_row_creating_paths(
                 description="call mom",
                 confidence=0.8,
                 created_at=now,
+                lane="trusted",
             ),
             Decision(
                 source_session=sess.id,
@@ -109,6 +116,7 @@ async def test_provenance_coverage_is_one_across_all_row_creating_paths(
                 reasoning="one store",
                 created_at=now,
                 review_at=now,
+                lane="trusted",
             ),
         ]
     )

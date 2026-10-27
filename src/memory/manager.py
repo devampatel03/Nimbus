@@ -31,7 +31,7 @@ import math
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import ClassVar, Protocol
+from typing import ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import ColumnElement, case, select
@@ -109,6 +109,7 @@ class SemanticFact(BaseModel):
     valid_from: datetime
     source_session: uuid.UUID
     confidence: float
+    lane: Literal["trusted", "untrusted"]  # required: no implicit trust (R8)
     source_speaker: uuid.UUID | None = None
 
 
@@ -195,6 +196,7 @@ class MemoryManager:
                     object_literal=fact.object_literal,
                     valid_from=fact.valid_from,
                     confidence=fact.confidence,
+                    lane=fact.lane,
                 )
             else:
                 edge = await self._graph_repo.insert_fact(
@@ -205,6 +207,7 @@ class MemoryManager:
                     valid_from=fact.valid_from,
                     source_session=fact.source_session,
                     confidence=fact.confidence,
+                    lane=fact.lane,
                     source_speaker=fact.source_speaker,
                 )
             written.append(edge)
