@@ -7,6 +7,7 @@ due reminder once, edits and deletes cancel the old delivery. Fake clock."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from typing import Any
@@ -141,6 +142,31 @@ async def test_telegram_outage_retries_then_delivers_once(sf: SF, clock: FakeClo
         clock.advance(minutes=2)
     assert len(gw.sent) == 1  # delivered once, labelled late because of the outage
     assert gw.sent[0].startswith("Reminder: x (late: was due")
+
+
+async def test_shutdown_right_after_the_send_does_not_repeat_the_reminder(
+    sf: SF, clock: FakeClock
+) -> None:
+    class CancelAfterSend(RecordingGateway):
+        async def send_text(self, text: str, *, reply_to: Any = None) -> list[Any]:
+            sent = await super().send_text(text, reply_to=reply_to)
+            asyncio.current_task().cancel()  # type: ignore[union-attr]  # SIGTERM lands here
+            return sent
+
+    gw = CancelAfterSend()
+    store, runner = build(sf, clock, gw)
+    await store.create("once", clock.now() + timedelta(minutes=1))
+    clock.advance(minutes=1)
+    task = asyncio.create_task(runner.run_due())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.2)  # the shielded bookkeeping finishes
+    assert len(gw.sent) == 1
+    restarted_gw = RecordingGateway()
+    _, runner2 = build(sf, clock, restarted_gw)
+    clock.advance(minutes=1)
+    await runner2.run_due()
+    assert restarted_gw.sent == []  # recorded as fired: the restart does not send it again
 
 
 async def test_dead_lettered_reminder_tells_the_user(sf: SF, clock: FakeClock) -> None:

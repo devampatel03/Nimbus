@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -156,9 +157,14 @@ class ReminderDelivery:
         if late:
             text += f" (late: was due {format_ist(r.remind_at)})"
         await self._gw.send_text(text)
+        # Shielded: a shutdown that lands right after the send must still record it,
+        # or the restart would repeat the reminder.
+        await asyncio.shield(self._mark_fired(reminder_id, r.remind_at, now))
+
+    async def _mark_fired(self, reminder_id: uuid.UUID, remind_at: datetime, now: datetime) -> None:
         async with self._sf() as session, session.begin():
             row = await session.get(Reminder, reminder_id, with_for_update=True)
-            if row is not None and row.status == "pending" and row.remind_at == r.remind_at:
+            if row is not None and row.status == "pending" and row.remind_at == remind_at:
                 row.status = "fired"
                 row.fired_at = now
                 row.updated_at = now
