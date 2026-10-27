@@ -28,6 +28,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 log = logging.getLogger(__name__)
 
 
+def _rx(pattern: str) -> re.Pattern[str]:
+    r"""ASCII-only classes: `\d` must not match other scripts' digits."""
+    return re.compile(pattern, re.ASCII)
+
+
 def _load_ist() -> tzinfo:
     try:
         return ZoneInfo("Asia/Kolkata")
@@ -72,6 +77,7 @@ _WEEKDAYS = {
     "saturday": 5, "sat": 5, "sunday": 6, "sun": 6,
 }  # fmt: skip
 _WEEKDAY_RE = "|".join(sorted(_WEEKDAYS, key=len, reverse=True))
+_FULL_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _FILLER = frozenset({"at", "on", "the", "of", "by", "around", "for", "@", "from", "this"})
@@ -175,7 +181,7 @@ def _hm(hour: int, minute: int) -> str:
 
 # -- ISO 8601 ---------------------------------------------------------------
 
-_ISO_RE = re.compile(
+_ISO_RE = _rx(
     r"^(\d{4})-(\d{2})-(\d{2})(?:[t ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?"
     r"(z|[+-]\d{2}:?\d{2})?)?$"
 )
@@ -216,7 +222,7 @@ def _parse_iso(s: str, now: datetime) -> ResolvedTime | None:
 
 # -- relative ("in 2 hours") ------------------------------------------------
 
-_REL_RE = re.compile(
+_REL_RE = _rx(
     r"^in (?:(\d{1,30})|an?|half an?) ?(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)$"
 )
 _UNIT_SECONDS = {"min": 60, "hour": 3600, "hr": 3600, "day": 86400, "week": 604800}
@@ -254,16 +260,18 @@ def _parse_relative(s: str, now: datetime) -> ResolvedTime | None:
 # -- compositional ("tomorrow at 9am", "next monday 10:30", "28 Oct 5pm") ----
 
 _ORD = r"(?:st|nd|rd|th)?"
-_RE_DAYWORD = re.compile(r"\b(day after tomorrow|tomorrow|today|tonight|yesterday)\b")
-_RE_WEEKDAY = re.compile(rf"\b(?:(next|this)\s+)?({_WEEKDAY_RE})\b")
-_RE_ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
-_RE_NUM_DATE = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{4}|\d{2}))?\b")
-_RE_D_MON = re.compile(rf"\b(\d{{1,2}}){_ORD}\s+(?:of\s+)?({_MONTH_RE})\b(?:\s+(\d{{4}})\b)?")
-_RE_MON_D = re.compile(rf"\b({_MONTH_RE})\s+(\d{{1,2}}){_ORD}\b(?:,?\s+(\d{{4}})\b)?")
-_RE_NOON = re.compile(r"\b(noon|midnight)\b")
-_RE_MERIDIEM = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])")
-_RE_COLON = re.compile(r"\b(\d{1,2}):(\d{2})\b")
-_RE_AT_HOUR = re.compile(r"\bat\s+(\d{1,2})\b")
+_RE_DAYWORD = _rx(r"\b(day after tomorrow|tomorrow|today|tonight|yesterday)\b")
+_RE_WEEKDAY = _rx(rf"\b(?:(next|this)\s+)?({_WEEKDAY_RE})\b")
+_RE_ISO_DATE = _rx(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_RE_NUM_DATE = _rx(
+    r"\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{4}|\d{2}))?\b(?!\s*[ap]\.?m\b)"  # 9.30pm is a time
+)
+_RE_D_MON = _rx(rf"\b(\d{{1,2}}){_ORD}\s+(?:of\s+)?({_MONTH_RE})\b(?:\s+(\d{{4}})\b)?")
+_RE_MON_D = _rx(rf"\b({_MONTH_RE})\s+(\d{{1,2}}){_ORD}\b(?:,?\s+(\d{{4}})\b)?")
+_RE_NOON = _rx(r"\b(noon|midnight)\b")
+_RE_MERIDIEM = _rx(r"\b(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])")
+_RE_COLON = _rx(r"\b(\d{1,2}):(\d{2})\b")
+_RE_AT_HOUR = _rx(r"\bat\s+(\d{1,2})\b")
 
 
 @dataclass
@@ -382,6 +390,12 @@ def _resolve_date(spec: _Date, t: time, local_now: datetime, assumptions: list[s
             cand += timedelta(days=7)
             if not spec.nxt:
                 assumptions.append("That time has passed today, so used next week.")
+        elif spec.nxt:
+            name = _FULL_DAYS[spec.weekday]
+            assumptions.append(
+                f"'next {name}' read as the coming {name} ({cand.day} "
+                f"{_MONTH_NAMES[cand.month - 1]})."
+            )
         return cand
     if spec.kind == "ymd":
         assert spec.year is not None
@@ -410,6 +424,8 @@ def _parse_compositional(s: str, now: datetime) -> ResolvedTime:
         raise _err("unrecognised", "I could not read that time. Try e.g. 'tomorrow 9am'.")
     local_now = now.astimezone(IST)
     assumptions: list[str] = []
+    if "midnight" in s:
+        assumptions.append("Midnight read as the start of that day (12:00 AM).")
     if t is None:
         default = time(20, 0) if tonight else time(DEFAULT_HOUR, 0)
         t = default

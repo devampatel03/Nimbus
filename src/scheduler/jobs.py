@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, literal_column, or_, select, update
+from sqlalchemy import and_, case, delete, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -46,6 +46,7 @@ DEFAULT_LEASE_S = 300.0
 DEFAULT_BACKOFF_BASE_S = 30.0
 DEFAULT_BACKOFF_MAX_S = 3600.0
 DEFAULT_MAX_ATTEMPTS = 5
+INTERRUPTED = "Interrupted"
 _ERROR_RE = re.compile(r"[^A-Za-z0-9_.:-]")
 
 
@@ -348,3 +349,62 @@ class JobQueue:
             .returning(Job.id)
         )
         return len(res.all())
+
+    async def defer(self, job: ClaimedJob, until: datetime) -> bool:
+        """Put the job back to pending at `until` WITHOUT counting this run as an
+        attempt (the work was not tried: the model is switched off or the daily
+        budget is used). False if the lease was lost."""
+        async with self._sf() as session, session.begin():
+            res = await session.execute(
+                update(Job)
+                .where(*self._guard(job))
+                .values(
+                    status="pending",
+                    attempts=Job.attempts - 1,
+                    run_at=until,
+                    locked_by=None,
+                    locked_at=None,
+                    updated_at=self._clock.now(),
+                )
+                .returning(Job.id)
+            )
+            return res.scalar_one_or_none() is not None
+
+    async def recover_orphans(self) -> int:
+        """Boot recovery for the single-process design: every `running` row at
+        startup belongs to a process that is gone. Release them to pending at once
+        (no waiting for the lease). The first interruption does not count as an
+        attempt; a job interrupted again straight after (`last_error` still
+        'Interrupted') does, so a job that kills the process cannot loop forever.
+        Call once, before the runner loops start."""
+        async with self._sf() as session, session.begin():
+            res = await session.execute(
+                update(Job)
+                .where(Job.status == "running", Job.locked_by != self.worker_id)
+                .values(
+                    status="pending",
+                    attempts=case(
+                        (Job.last_error == INTERRUPTED, Job.attempts),
+                        else_=func.greatest(Job.attempts - 1, 0),
+                    ),
+                    last_error=INTERRUPTED,
+                    locked_by=None,
+                    locked_at=None,
+                    updated_at=self._clock.now(),
+                )
+                .returning(Job.id)
+            )
+            return len(res.all())
+
+    async def purge_finished(self, *, older_than: timedelta) -> int:
+        """Delete done / dead / cancelled jobs last touched before `now - older_than`.
+        Keep `older_than` longer than any sweeper look-back that relies on the
+        dedupe key of a finished job."""
+        cutoff = self._clock.now() - older_than
+        async with self._sf() as session, session.begin():
+            res = await session.execute(
+                delete(Job)
+                .where(Job.status.in_(("done", "dead", "cancelled")), Job.updated_at < cutoff)
+                .returning(Job.id)
+            )
+            return len(res.all())

@@ -75,6 +75,11 @@ OK_CASES: list[tuple[str, datetime]] = [
     ("29 Feb 2028 9am", ist(2028, 2, 29, 9)),
     ("Feb 29 9am", ist(2028, 2, 29, 9)),  # next leap day
     ("2028-02-29T10:00", ist(2028, 2, 29, 10)),
+    # dotted minutes (9.30pm) are a time, not a numeric date
+    ("tomorrow 9.30pm", ist(2026, 10, 28, 21, 30)),
+    ("at 6.05 am", ist(2026, 10, 28, 6, 5)),
+    ("5.11.2026 6pm", ist(2026, 11, 5, 18)),  # still a day-first date
+    ("this friday 10am", ist(2026, 10, 30, 10)),
 ]
 
 
@@ -138,6 +143,10 @@ ERR_CASES: list[tuple[str, str]] = [
     ("in 99999 days", "too_far"),
     ("1 Jan 2099 9am", "too_far"),
     ("in 99999999999999999999 days", "too_far"),
+    # non-ASCII digits are not numbers here (Arabic-Indic)
+    ("in " + chr(0x662) + " hours", "unrecognised"),
+    ("tomorrow " + chr(0x669) + "am", "unrecognised"),
+    ("2026-10-" + chr(0x662) + chr(0x668) + "T09:00", "unrecognised"),
 ]
 
 
@@ -191,3 +200,21 @@ def test_ist_is_asia_kolkata_with_no_dst() -> None:
     assert getattr(IST, "key", "Asia/Kolkata") == "Asia/Kolkata"
     for month in range(1, 13):
         assert datetime(2027, month, 1, tzinfo=IST).utcoffset() == timedelta(hours=5, minutes=30)
+
+
+def test_next_weekday_that_is_also_the_coming_one_says_so() -> None:
+    nxt = parse_when("next friday 10am", now=NOW)
+    this = parse_when("this friday 10am", now=NOW)
+    assert nxt.at == this.at  # same date either way ...
+    assert any("next Friday" in a for a in nxt.assumptions)  # ... and the echo says how it read it
+    assert not this.assumptions
+    far = parse_when("next tuesday 11am", now=NOW)  # 7 days away: nothing ambiguous
+    assert not far.assumptions
+
+
+def test_midnight_is_read_as_the_start_of_the_day_and_says_so() -> None:
+    late = datetime(2026, 10, 27, 18, 29, tzinfo=UTC)  # 23:59 IST
+    got = parse_when("tomorrow midnight", now=late)
+    assert format_ist(got.at) == "Wed 28 Oct 2026, 12:00 AM IST"  # one minute from now
+    assert any("start of" in a for a in got.assumptions)
+    assert "12:00 AM" in confirmation_text(got, now=late)
