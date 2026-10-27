@@ -71,8 +71,6 @@ Omi (client reference)
 SOFTWARE DEPENDENCIES (from pyproject.toml)
 -------------------------------------------------------------------------
 
-fastapi                 MIT License
-uvicorn                 BSD 3-Clause License
 sqlalchemy              MIT License
 asyncpg                 Apache License, Version 2.0
 pydantic                MIT License

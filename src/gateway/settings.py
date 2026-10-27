@@ -40,6 +40,9 @@ class GatewaySettings(BaseSettings):
     global_interval_s: float = Field(default=1 / 30, ge=0)
     max_429_retries: int = Field(default=3, ge=0, le=10)
     max_retry_after_s: int = Field(default=120, ge=1, le=3600)
+    # Clock used for the HH:MM in the "could not process your message" notice.
+    # A fixed offset (default IST, +05:30) needs no tz database.
+    notice_utc_offset_minutes: int = Field(default=330, ge=-720, le=840)
 
     @field_validator("bot_token")
     @classmethod

@@ -3,10 +3,7 @@
 
 """Structural check (INV-5): a `LoopTool` is executed only by the `Dispatcher`,
 after the Policy has decided. Any other `.run(` call site in `src/` could
-bypass the policy, so the set of files calling `.run(` is pinned.
-
-`src/api/routes/tasks.py` is a temporary exception (authenticated REST CRUD on
-the owner's own task store); P2.1b deletes it and this entry with it."""
+bypass the policy, so the set of files calling `.run(` is pinned."""
 
 from __future__ import annotations
 
@@ -16,7 +13,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[3] / "src"
-ALLOWED = {"src/orchestrator/dispatch.py", "src/api/routes/tasks.py"}
+ALLOWED = {"src/orchestrator/dispatch.py"}
 
 
 def _is_tool_run(n: ast.AST) -> bool:

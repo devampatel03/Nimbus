@@ -197,14 +197,20 @@ async def test_poison_budget_survives_restarts_and_unblocks_queue(
     # Each "process" gets exactly one delivery of the poison update, then crashes.
     for _ in range(3):
         gw = TelegramGateway(
-            make_settings(), make_egress(fake), UpdateStore(sf, max_deliveries=4), sleep=_no_sleep
+            make_settings(),
+            make_egress(fake),
+            UpdateStore(sf, max_deliveries=4, poison_min_age_s=0),
+            sleep=_no_sleep,
         )
         async for u in gw.inbound():
             delivered.append(u.update_id)
             break
     assert delivered == [base + 1] * 3  # budget counted across restarts
     gw = TelegramGateway(
-        make_settings(), make_egress(fake), UpdateStore(sf, max_deliveries=4), sleep=_no_sleep
+        make_settings(),
+        make_egress(fake),
+        UpdateStore(sf, max_deliveries=4, poison_min_age_s=0),
+        sleep=_no_sleep,
     )
     got: list[int] = []
     async for u in gw.inbound():
@@ -219,3 +225,35 @@ async def test_poison_budget_survives_restarts_and_unblocks_queue(
     assert {base + i for i in range(2, 151)} <= set(got)
     assert (await _rows(sf))[base + 1] is True  # poisoned: processed, offset moved on
     assert await UpdateStore(sf).get_offset() == base + 151
+
+
+async def test_poison_needs_minimum_age_and_leaves_a_durable_content_free_notice(
+    sf: async_sessionmaker[AsyncSession],
+) -> None:
+    from sqlalchemy import text
+
+    base = 9_800_000_000
+    store = UpdateStore(sf, max_deliveries=3, poison_min_age_s=600)
+    # Young row: any number of redeliveries never poisons (now() = txn start).
+    assert await store.begin(base + 1, 4242, "text") is Seen.NEW
+    for _ in range(10):
+        assert await store.begin(base + 1, 4242, "text") is Seen.REDELIVERY
+    assert await store.pending_poison_notices() == []
+    assert (await _rows(sf))[base + 1] is False
+    # Old row (inserted aged: the table is append-only so it cannot be backdated).
+    async with sf() as s, s.begin():
+        await s.execute(
+            text(
+                "INSERT INTO inbound_update (update_id, from_user_id, kind, received_at) "
+                "VALUES (:u, 4242, 'text', now() - interval '11 minutes')"
+            ),
+            {"u": base + 2},
+        )
+    assert await store.begin(base + 2, 4242, "text") is Seen.REDELIVERY  # n=2
+    assert await store.begin(base + 2, 4242, "text") is Seen.REDELIVERY  # n=3
+    assert await store.begin(base + 2, 4242, "text") is Seen.POISON  # n=4 > budget, old enough
+    pending = await store.pending_poison_notices()
+    assert [u for u, _ in pending] == [base + 2]
+    await store.clear_poison_notice(base + 2)
+    assert await store.pending_poison_notices() == []
+    assert (await _rows(sf))[base + 2] is True
