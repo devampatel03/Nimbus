@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
+from src.lanes.data import UntrustedText
 from src.llm.types import ToolSpec
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ MAX_TOOL_OUTPUT_CHARS = 4000
 TRUNCATION_MARKER = "\n[truncated]"
 MAX_TOOL_ERROR_CHARS = 200
 CALL_CAP_MESSAGE = "Denied: too many tool calls in this turn."
+# Each external item costs one quarantine call; bound them per tool output.
+MAX_EXTERNAL_ITEMS = 5
 
 
 class Risk(StrEnum):
@@ -53,7 +56,12 @@ class ToolError(Exception):
 class ToolOutput:
     text: str
     # Untrusted unless a tool explicitly opts out; rendered as a DataBlock.
+    # `text` is for Nimbus-local text: it is data-framed, not quarantined.
     untrusted: bool = True
+    # Externally authored free text (email bodies, invite descriptions, page
+    # content). Each item is quarantined by the loop (ADR-0010 interim
+    # default: every item, no bypass) or withheld. Never rendered raw.
+    external: tuple[UntrustedText, ...] = ()
 
 
 class LoopTool(Protocol):
@@ -107,6 +115,8 @@ class DispatchResult:
     untrusted: bool = False
     rule_id: str = ""
     tainted: bool = False  # the turn's taint when this call was decided
+    external: tuple[UntrustedText, ...] = ()  # at most MAX_EXTERNAL_ITEMS
+    external_dropped: int = 0  # over the cap, or not UntrustedText (fail closed)
 
 
 def safe_name(name: str) -> str:
@@ -160,6 +170,12 @@ class Dispatcher:
             out = await tool.run(args)
             text = "" if out.text is None else str(out.text)
             untrusted = bool(out.untrusted)
+            raw_external = out.external if isinstance(out.external, tuple) else ()
+            valid = tuple(u for u in raw_external if isinstance(u, UntrustedText))
+            external = valid[:MAX_EXTERNAL_ITEMS]
+            dropped = len(raw_external) - len(external)
+            if not isinstance(out.external, tuple) and out.external:
+                dropped += 1
         except ToolError as e:
             # Error text may echo external content: capped and treated as DATA.
             msg = str(e)[:MAX_TOOL_ERROR_CHARS]
@@ -171,4 +187,12 @@ class Dispatcher:
             return DispatchResult(name, "error", "Tool error: failed.", rule_id=decision.rule_id)
         if len(text) > MAX_TOOL_OUTPUT_CHARS:
             text = text[:MAX_TOOL_OUTPUT_CHARS] + TRUNCATION_MARKER
-        return DispatchResult(name, "ok", text, untrusted=untrusted, rule_id=decision.rule_id)
+        return DispatchResult(
+            name,
+            "ok",
+            text,
+            untrusted=untrusted,
+            rule_id=decision.rule_id,
+            external=external,
+            external_dropped=dropped,
+        )

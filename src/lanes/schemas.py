@@ -17,8 +17,16 @@ into one of the REGISTERED schemas below, every one of which is:
 
 Free text is NFKC-folded, control / zero-width / bidi characters are dropped,
 whitespace is collapsed to single spaces (one line per field, so a value cannot
-fake a "key: value" line), markdown images become a fixed token, and any
-DataBlock delimiter or nonce pattern is REJECTED. Length caps apply after folding (U+FDFA expands ~18x under NFKC).
+fake a "key: value" line), secret-shaped substrings are redacted with the same
+patterns the LLM guard blocks on (`src.llm.scrub.redact_secrets`), so one
+stored value cannot make every later turn fail the guard, and any DataBlock
+delimiter or nonce pattern is REJECTED. Length caps apply after folding (U+FDFA
+expands ~18x under NFKC).
+
+Markdown images, HTML `<img>` tags and markdown link targets are replaced with
+fixed tokens. That is BEST EFFORT only: bare URLs stay (they are data). The
+real exfil controls are on the way out (gateway HTML-escaping, link previews
+off, outbound host allow-list), not here.
 
 H18 interim default (ADR-0010 Proposed): every untrusted field goes through
 the quarantine LLM. There is no deterministic short-field schema for external
@@ -38,13 +46,16 @@ from typing import Annotated, Any, ClassVar, Final, Union, get_args, get_origin
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from src.lanes.data import SourceKind, fold
+from src.llm.scrub import redact_secrets
 
 _DELIMITER_PATTERN = re.compile(r"[<>]{3,}|(?i:\bnonce\s*=)")
 _WS = re.compile(r"\s+")
-# Markdown image syntax is an exfil primitive (a client that renders it fetches
-# the URL). Free text never needs it; it becomes a fixed token.
+# Best effort (see module doc): rendered images/links are exfil primitives.
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)?")
+_HTML_IMG = re.compile(r"(?i)<\s*img\b[^>]*>?")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)?")
 IMAGE_REMOVED = "[image removed]"
+LINK_REMOVED = "[link removed]"
 
 
 class UncappedSchemaError(TypeError):
@@ -57,7 +68,10 @@ def _clean_free_text(limit: int) -> Any:
             return value  # strict str validation rejects it next
         if len(value) > 4 * limit + 64:
             raise ValueError("free text too long")  # before folding a huge value
-        text = _MD_IMAGE.sub(IMAGE_REMOVED, _WS.sub(" ", fold(value)).strip())
+        text = _WS.sub(" ", fold(value)).strip()
+        text = _HTML_IMG.sub(IMAGE_REMOVED, _MD_IMAGE.sub(IMAGE_REMOVED, text))
+        text = _MD_LINK.sub(lambda m: f"{m.group(1)} {LINK_REMOVED}".strip(), text)
+        text = redact_secrets(text)
         if _DELIMITER_PATTERN.search(text):
             raise ValueError("free text contains a delimiter pattern")
         return text

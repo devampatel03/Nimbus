@@ -23,8 +23,9 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from src.lanes.data import BlockOrigin, default_nonce, render_data_block
-from src.lanes.quarantine import Quarantine, local_data_block
+from src.lanes.data import BlockOrigin, DataBlock, default_nonce, render_data_block
+from src.lanes.quarantine import Quarantine, QuarantineError, local_data_block, withheld_block
+from src.lanes.schemas import SCHEMA_FOR_SOURCE
 from src.lanes.taint import Taint, TaintSource
 from src.llm.protocols import LLMClient
 from src.llm.types import (
@@ -223,4 +224,34 @@ class Orchestrator:
             )
             taint.absorb(block)
             content = render_data_block(block, self._nonce or default_nonce)
+        extra = await self._external_blocks(call.name, result, taint)
+        if extra:
+            content = "\n\n".join([content, *extra])
         return ChatMessage(role="tool", content=content, tool_call_id=call.id)
+
+    async def _external_blocks(self, name: str, result: DispatchResult, taint: Taint) -> list[str]:
+        """Quarantine each external item (H18 interim default: every item, no
+        bypass); withhold on failure, without a quarantine, or over the cap."""
+        if not result.external and not result.external_dropped:
+            return []
+        taint.mark(TaintSource.UNTRUSTED_TOOL_OUTPUT)
+        label = f"tool.{name}.external"
+        blocks: list[DataBlock] = []
+        for item in result.external:
+            if self._quarantine is None:
+                blocks.append(withheld_block(label, reason="quarantine_unavailable"))
+                continue
+            try:
+                out = await self._quarantine.extract(item, SCHEMA_FOR_SOURCE[item.source])
+            except QuarantineError as e:
+                blocks.append(withheld_block(label, reason=e.code))
+                continue
+            taint.mark(TaintSource.QUARANTINE_OUTPUT)
+            blocks.append(out.data_block())
+        if result.external_dropped:
+            blocks.append(withheld_block(label, reason="over_item_cap"))
+        rendered: list[str] = []
+        for block in blocks:
+            taint.absorb(block)
+            rendered.append(render_data_block(block, self._nonce or default_nonce))
+        return rendered

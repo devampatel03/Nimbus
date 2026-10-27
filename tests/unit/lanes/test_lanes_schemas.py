@@ -242,3 +242,36 @@ def test_markdown_images_become_a_fixed_token(summary: str) -> None:
 
     m = NoteDigest.model_validate_json(json.dumps({"summary": summary}))
     assert IMAGE_REMOVED in m.summary and "evil.example" not in m.summary
+
+
+# MED-C (PR #29): a schema-valid free-text value shaped like a secret must not
+# poison every later turn (the guard hard-blocks secrets in prompts).
+_SECRETY = [
+    "sk-" + "a" * 30,
+    "token = " + "b" * 20,
+    "ghp_" + "c" * 36,
+    "Bearer " + "d" * 30,
+    "%73k-" + "e" * 30,  # percent-encoded: found only after decoding
+]
+
+
+@pytest.mark.parametrize("value", _SECRETY)
+def test_secret_shaped_free_text_is_redacted_and_passes_the_guard(value: str) -> None:
+    from src.llm.scrub import Scrubber
+
+    m = NoteDigest.model_validate_json(json.dumps({"summary": f"see {value} now"}))
+    assert "[REDACTED:" in m.summary
+    Scrubber().check(m.summary)  # would raise ScrubBlocked if still secret-shaped
+
+
+@pytest.mark.parametrize(
+    "summary,gone",
+    [
+        ('<img src="https://evil.example/p?q=1">', "evil.example"),
+        ("<IMG SRC=https://evil.example/x", "evil.example"),
+        ("click [here](https://evil.example/?d=1) now", "evil.example"),
+    ],
+)
+def test_html_images_and_markdown_link_targets_are_removed(summary: str, gone: str) -> None:
+    m = NoteDigest.model_validate_json(json.dumps({"summary": summary}))
+    assert gone not in m.summary

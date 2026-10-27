@@ -107,9 +107,9 @@ def _no_str(*_: Any, **__: Any) -> NoReturn:
 class Quarantined(Generic[T]):
     """Validated quarantine output. untrusted=True always."""
 
-    __slots__ = ("_value", "schema", "source", "truncated_input")
+    __slots__ = ("_quarantined_value", "schema", "source", "truncated_input")
 
-    _value: T
+    _quarantined_value: T
     schema: type[T]
     source: SourceKind
     truncated_input: bool
@@ -141,14 +141,14 @@ class Quarantined(Generic[T]):
         raises KeyError: it is reachable only through `data_block()`."""
         if name not in self.schema.categorical_fields():
             raise KeyError(name)
-        return getattr(self._value, name)
+        return getattr(self._quarantined_value, name)
 
     def data_block(self) -> DataBlock:
         lines = [
             f"source: {self.source.value}",
             f"schema: {self.schema.__name__}",
             f"input_truncated: {'yes' if self.truncated_input else 'no'}",
-            *_field_lines(self._value),
+            *_field_lines(self._quarantined_value),
         ]
         return _mint_block(
             _MINT,
@@ -185,7 +185,7 @@ def _new_quarantined(
     value: T, schema: type[T], source: SourceKind, truncated: bool
 ) -> Quarantined[T]:
     q: Quarantined[T] = object.__new__(Quarantined)
-    object.__setattr__(q, "_value", value)
+    object.__setattr__(q, "_quarantined_value", value)
     object.__setattr__(q, "schema", schema)
     object.__setattr__(q, "source", source)
     object.__setattr__(q, "truncated_input", truncated)
@@ -286,6 +286,7 @@ class _WithheldReason(StrEnum):
     UNAVAILABLE = "unavailable"
     SCHEMA_INVALID = "schema_invalid"
     UNREGISTERED_SCHEMA = "unregistered_schema"
+    OVER_ITEM_CAP = "over_item_cap"  # too many items, or not UntrustedText
 
 
 def withheld_block(label: str, *, reason: str) -> DataBlock:
