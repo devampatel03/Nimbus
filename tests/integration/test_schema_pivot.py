@@ -139,8 +139,8 @@ async def mk_edge(engine: AsyncEngine) -> uuid.UUID:
     await run(
         engine,
         "INSERT INTO graph_edge (id, subject_id, predicate, object_literal, valid_from, "
-        "ingested_at, source_session, confidence) "
-        "VALUES (:id, :n, 'lives_in', 'Pune', now(), now(), :s, 0.9)",
+        "ingested_at, source_session, confidence, lane) "
+        "VALUES (:id, :n, 'lives_in', 'Pune', now(), now(), :s, 0.9, 'trusted')",
         id=eid,
         n=nid,
         s=sid,
@@ -323,15 +323,15 @@ async def test_commitment_and_decision_content_immutable(engine: AsyncEngine) ->
     cid, did = uuid.uuid4(), uuid.uuid4()
     await run(
         engine,
-        "INSERT INTO commitment (id, source_session, description, confidence, created_at) "
-        "VALUES (:i, :s, 'call mom', 0.8, now())",
+        "INSERT INTO commitment (id, source_session, description, confidence, created_at, "
+        "lane) VALUES (:i, :s, 'call mom', 0.8, now(), 'trusted')",
         i=cid,
         s=sid,
     )
     await run(
         engine,
         "INSERT INTO decision (id, source_session, decision_text, reasoning, created_at, "
-        "review_at) VALUES (:i, :s, 'd', 'r', now(), now())",
+        "review_at, lane) VALUES (:i, :s, 'd', 'r', now(), now(), 'trusted')",
         i=did,
         s=sid,
     )

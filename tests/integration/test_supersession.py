@@ -48,6 +48,7 @@ async def test_updating_a_fact_creates_supersession_not_mutation(db_session: Asy
         source_session=session_id,
         confidence=0.9,
         source_speaker=person_id,
+        lane="trusted",
     )
     original_object_literal = old_edge.object_literal
     original_valid_from = old_edge.valid_from
@@ -59,6 +60,7 @@ async def test_updating_a_fact_creates_supersession_not_mutation(db_session: Asy
         object_literal="Bengaluru",
         valid_from=now,
         confidence=0.95,
+        lane="trusted",
     )
 
     # Old row: object columns and valid_from untouched, but now closed out.
