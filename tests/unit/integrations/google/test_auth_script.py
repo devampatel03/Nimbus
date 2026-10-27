@@ -15,7 +15,7 @@ from types import ModuleType
 import pytest
 
 from src.db.crypto import KEY_ENV_VAR, generate_key
-from src.integrations.google.auth import ALLOWED_SCOPES
+from src.integrations.google.auth import ALLOWED_SCOPES, BASE_SCOPES
 
 SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "google_oauth.py"
 TRANSPORTS = {"httpx", "requests", "aiohttp", "urllib3", "socket", "http", "smtplib", "urllib"}
@@ -29,16 +29,33 @@ def _load() -> ModuleType:
     return module
 
 
-def test_script_scope_names_cover_exactly_the_allowed_set() -> None:
+def test_script_scope_names_cover_exactly_the_allowed_ceiling() -> None:
     mod = _load()
     assert set(mod.SCOPE_NAMES.values()) == set(ALLOWED_SCOPES)
-    assert set(mod._resolve_scopes(",".join(mod.SCOPE_NAMES))) == set(ALLOWED_SCOPES)
+
+
+def test_script_default_scopes_exclude_gmail_compose() -> None:
+    """H16 is undecided: the default consent has no draft scope."""
+    mod = _load()
+    args = mod._parse_args(["authorize"])
+    assert args.scopes == "calendar,gmail-read,drive-read"
+    assert set(mod._resolve_scopes(args.scopes, allow_compose=False)) == set(BASE_SCOPES)
+
+
+def test_script_refuses_gmail_compose_unless_flag_set() -> None:
+    mod = _load()
+    with pytest.raises(SystemExit):
+        mod._resolve_scopes("calendar,gmail-compose", allow_compose=False)
+    assert set(mod._resolve_scopes(",".join(mod.SCOPE_NAMES), allow_compose=True)) == set(
+        ALLOWED_SCOPES
+    )
 
 
 @pytest.mark.parametrize("raw", ["send", "gmail", "drive", "", " , "])
-def test_script_rejects_unknown_or_empty_scope_names(raw: str) -> None:
+@pytest.mark.parametrize("allow", [False, True])
+def test_script_rejects_unknown_or_empty_scope_names(raw: str, allow: bool) -> None:
     with pytest.raises(SystemExit):
-        _load()._resolve_scopes(raw)
+        _load()._resolve_scopes(raw, allow_compose=allow)
 
 
 def test_script_imports_no_transport() -> None:

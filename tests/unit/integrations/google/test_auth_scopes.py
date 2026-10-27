@@ -16,8 +16,11 @@ import pytest
 from src.integrations.google import auth
 from src.integrations.google.auth import (
     ALLOWED_SCOPES,
+    BASE_SCOPES,
     DEFAULT_SCOPES,
+    GoogleOAuthSettings,
     GoogleReauthRequired,
+    allowed_scopes,
     lint_scopes,
     parse_scope_string,
 )
@@ -36,11 +39,38 @@ from tests.unit.integrations.google.auth_helpers import (
 REPO = Path(__file__).resolve().parents[4]
 
 
-def test_allowed_scope_set_is_exact() -> None:
-    assert ALLOWED_SCOPES == frozenset({SCOPE_CAL, SCOPE_GREAD, SCOPE_GCOMPOSE, SCOPE_DRIVE})
-    assert isinstance(ALLOWED_SCOPES, frozenset)
-    assert set(DEFAULT_SCOPES) == set(ALLOWED_SCOPES)
+def test_base_scope_set_is_exact_and_excludes_gmail_compose() -> None:
+    """H16 is undecided: the default allowed set carries NO draft scope."""
+    assert BASE_SCOPES == frozenset({SCOPE_CAL, SCOPE_GREAD, SCOPE_DRIVE})
+    assert isinstance(BASE_SCOPES, frozenset)
+    assert SCOPE_GCOMPOSE not in BASE_SCOPES
+    assert set(DEFAULT_SCOPES) == set(BASE_SCOPES)
+    assert allowed_scopes(allow_compose=False) == BASE_SCOPES
     assert len(DEFAULT_SCOPES) == len(set(DEFAULT_SCOPES))
+
+
+def test_effective_set_with_compose_flag_is_base_plus_exactly_compose() -> None:
+    assert allowed_scopes(allow_compose=True) == frozenset(
+        {SCOPE_CAL, SCOPE_GREAD, SCOPE_GCOMPOSE, SCOPE_DRIVE}
+    )
+    assert allowed_scopes(allow_compose=True) == ALLOWED_SCOPES  # the absolute ceiling
+
+
+def test_settings_flag_defaults_off_and_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert GoogleOAuthSettings(_env_file=None).allow_gmail_compose is False
+    monkeypatch.setenv("GOOGLE_ALLOW_GMAIL_COMPOSE", "true")
+    assert GoogleOAuthSettings(_env_file=None).allow_gmail_compose is True
+
+
+def test_gmail_compose_rejected_unless_flag_on() -> None:
+    with pytest.raises(GoogleReauthRequired) as exc:
+        lint_scopes([SCOPE_CAL, SCOPE_GCOMPOSE])
+    assert exc.value.code == "scope_violation"
+    with pytest.raises(GoogleReauthRequired):
+        lint_scopes([SCOPE_GCOMPOSE], allow_compose=False)
+    assert lint_scopes([SCOPE_CAL, SCOPE_GCOMPOSE], allow_compose=True) == frozenset(
+        {SCOPE_CAL, SCOPE_GCOMPOSE}
+    )
 
 
 @pytest.mark.parametrize(
@@ -64,16 +94,17 @@ def test_allowed_scope_set_is_exact() -> None:
         "",
     ],
 )
-def test_any_scope_outside_the_set_is_rejected(bad: str) -> None:
+@pytest.mark.parametrize("compose", [False, True])
+def test_any_scope_outside_the_set_is_rejected(bad: str, compose: bool) -> None:
     with pytest.raises(GoogleReauthRequired) as exc:
-        lint_scopes([SCOPE_CAL, bad])
+        lint_scopes([SCOPE_CAL, bad], allow_compose=compose)
     assert exc.value.code == "scope_violation"
     assert bad.strip() == "" or bad not in str(exc.value)  # fixed-code message only
 
 
 def test_lint_accepts_any_nonempty_subset_granular_consent() -> None:
     assert lint_scopes([SCOPE_CAL]) == frozenset({SCOPE_CAL})
-    assert lint_scopes(DEFAULT_SCOPES) == ALLOWED_SCOPES
+    assert lint_scopes(DEFAULT_SCOPES) == BASE_SCOPES
 
 
 def test_lint_rejects_empty_grant() -> None:
@@ -96,7 +127,7 @@ def test_lint_consults_the_constant_so_widening_it_would_admit_send(
     constant would admit it."""
     with pytest.raises(GoogleReauthRequired):
         lint_scopes([SCOPE_SEND])
-    monkeypatch.setattr(auth, "ALLOWED_SCOPES", ALLOWED_SCOPES | {SCOPE_SEND})
+    monkeypatch.setattr(auth, "BASE_SCOPES", BASE_SCOPES | {SCOPE_SEND})
     assert lint_scopes([SCOPE_SEND]) == frozenset({SCOPE_SEND})
 
 

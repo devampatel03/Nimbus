@@ -45,8 +45,8 @@ from src.integrations.google.auth import (
     GoogleOAuthSettings,
     GoogleTokenClient,
     PostgresTokenStore,
-    authorize_interactive,
 )
+from src.integrations.google.consent import authorize_interactive
 from src.net import EgressClient
 
 SCOPE_NAMES = {
@@ -55,6 +55,10 @@ SCOPE_NAMES = {
     "gmail-compose": SCOPE_GMAIL_COMPOSE,
     "drive-read": SCOPE_DRIVE_READONLY,
 }
+# gmail-compose is NOT in the default: whether to request it is the human
+# decision H16 (ADR-0007). It is refused unless GOOGLE_ALLOW_GMAIL_COMPOSE=true.
+DEFAULT_SCOPE_NAMES = "calendar,gmail-read,drive-read"
+COMPOSE_NAME = "gmail-compose"
 LIVE_ENV = "NIMBUS_LIVE_GOOGLE"
 
 
@@ -64,9 +68,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     auth = sub.add_parser("authorize", help="run the one-time consent flow")
     auth.add_argument(
         "--scopes",
-        default=",".join(SCOPE_NAMES),
-        help="comma list from: " + ", ".join(SCOPE_NAMES) + " (default: all; ADR-0007 alternative "
-        "is 'calendar,gmail-read,drive-read' = no draft scope)",
+        default=DEFAULT_SCOPE_NAMES,
+        help="comma list from: " + ", ".join(SCOPE_NAMES) + f" (default: {DEFAULT_SCOPE_NAMES}; "
+        f"'{COMPOSE_NAME}' needs GOOGLE_ALLOW_GMAIL_COMPOSE=true, pending decision H16)",
     )
     auth.add_argument(
         "--port", type=int, default=0, help="fixed loopback port (default: ephemeral)"
@@ -79,11 +83,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _resolve_scopes(raw: str) -> list[str]:
+def _resolve_scopes(raw: str, *, allow_compose: bool) -> list[str]:
     scopes: list[str] = []
     for name in (n.strip() for n in raw.split(",") if n.strip()):
         if name not in SCOPE_NAMES:
             raise SystemExit(f"unknown scope name: {name!r} (allowed: {', '.join(SCOPE_NAMES)})")
+        if name == COMPOSE_NAME and not allow_compose:
+            raise SystemExit(
+                f"scope {COMPOSE_NAME!r} is disabled: set GOOGLE_ALLOW_GMAIL_COMPOSE=true only "
+                "after the human decision H16 (ADR-0007)"
+            )
         scopes.append(SCOPE_NAMES[name])
     if not scopes:
         raise SystemExit("no scopes selected")
@@ -114,7 +123,9 @@ async def _main(args: argparse.Namespace) -> int:
     except CryptoError:
         print("FAILED: NIMBUS_DATA_KEY is missing or invalid")
         return 2
-    store = PostgresTokenStore(async_session_factory, cipher)
+    store = PostgresTokenStore(
+        async_session_factory, cipher, allow_compose=settings.allow_gmail_compose
+    )
     try:
         async with EgressClient() as egress:
             auth = GoogleAuth(GoogleTokenClient(settings, egress), store)
@@ -123,7 +134,7 @@ async def _main(args: argparse.Namespace) -> int:
                     settings=settings,
                     egress=egress,
                     store=store,
-                    scopes=_resolve_scopes(args.scopes),
+                    scopes=_resolve_scopes(args.scopes, allow_compose=settings.allow_gmail_compose),
                     present_url=lambda url: _present(url, open_browser=not args.no_browser),
                     timeout_s=args.timeout,
                     port=args.port,

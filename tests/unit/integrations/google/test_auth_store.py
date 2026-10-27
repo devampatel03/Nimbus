@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, a
 
 from src.db.crypto import DataCipher, generate_key
 from src.integrations.google.auth import (
-    ALLOWED_SCOPES,
+    BASE_SCOPES,
     CREDENTIALS_AAD,
     CREDENTIALS_FLAG_KEY,
     GoogleAuthError,
@@ -29,12 +29,17 @@ from src.integrations.google.auth import (
     StoredCredentials,
 )
 from src.memory.schemas.ops import SystemFlag
-from tests.unit.integrations.google.auth_helpers import REFRESH_TOKEN, SCOPE_CAL, SCOPE_SEND
+from tests.unit.integrations.google.auth_helpers import (
+    REFRESH_TOKEN,
+    SCOPE_CAL,
+    SCOPE_GCOMPOSE,
+    SCOPE_SEND,
+)
 
 NOW = datetime(2026, 10, 27, 9, 30, tzinfo=UTC)
 
 
-def _creds(scopes: frozenset[str] = ALLOWED_SCOPES) -> StoredCredentials:
+def _creds(scopes: frozenset[str] = BASE_SCOPES) -> StoredCredentials:
     return StoredCredentials(refresh_token=SecretStr(REFRESH_TOKEN), scopes=scopes, obtained_at=NOW)
 
 
@@ -60,7 +65,7 @@ async def test_roundtrip_and_ciphertext_at_rest(sf: async_sessionmaker[AsyncSess
     loaded = await store.load()
     assert loaded is not None
     assert loaded.refresh_token.get_secret_value() == REFRESH_TOKEN
-    assert loaded.scopes == ALLOWED_SCOPES
+    assert loaded.scopes == BASE_SCOPES
     assert loaded.obtained_at == NOW
 
     async with sf() as s:
@@ -174,3 +179,25 @@ async def test_decrypted_scope_tampering_is_caught_on_load(
     with pytest.raises(GoogleReauthRequired) as exc:
         await PostgresTokenStore(sf, cipher).load()
     assert exc.value.code == "scope_violation"
+
+
+async def test_compose_scope_is_rejected_on_save_and_load_unless_flag_on(
+    sf: async_sessionmaker[AsyncSession],
+) -> None:
+    cipher = _cipher()
+    with_compose = _creds(frozenset({SCOPE_CAL, SCOPE_GCOMPOSE}))
+    off = PostgresTokenStore(sf, cipher)
+    with pytest.raises(GoogleReauthRequired) as exc:
+        await off.save(with_compose)
+    assert exc.value.code == "scope_violation"
+    assert await off.load() is None
+
+    on = PostgresTokenStore(sf, cipher, allow_compose=True)
+    await on.save(with_compose)
+    loaded = await on.load()
+    assert loaded is not None and SCOPE_GCOMPOSE in loaded.scopes
+
+    # the flag was switched off after the token was stored: store.load refuses it
+    with pytest.raises(GoogleReauthRequired) as exc2:
+        await off.load()
+    assert exc2.value.code == "scope_violation"

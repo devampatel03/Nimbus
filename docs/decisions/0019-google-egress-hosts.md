@@ -9,14 +9,14 @@ The existing rules only restricted *which paths are denied* (Gmail send/import/i
 
 ## Decision
 - No host, port or `Service` is added. `accounts.google.com` (the consent page) is **not** allow-listed: only the operator's browser opens it; no Nimbus process connects to it.
-- New default deny rule `deny_google_oauth_unexpected` in `src/net/policy.py` (applied in `EgressClient.request`, on same-host redirect hops and in `_GuardTransport`, like every default rule). For `Service.GOOGLE_OAUTH` it allows exactly:
+- New policy in `src/net/policy.py`. For `Service.GOOGLE_OAUTH` it allows exactly:
 
   | Method | Path | Use |
   |---|---|---|
   | POST | `/token` | authorization-code exchange (PKCE) and refresh |
   | POST | `/revoke` | revoke a refresh or access token |
 
-  Any other path denies with reason `google_oauth_path`; any other method on those paths denies with `google_oauth_method`. The rule is last in `DEFAULT_DENY_RULES`, so Gmail send paths still report `gmail_send_path` on this host.
+  The path must match the **original, unmodified** string exactly: `/TOKEN`, `/%74oken` and `/token/` are denied (checked in `normalise_path`, before the lowercased/decoded form is produced for the other rules). Any other path denies with reason `google_oauth_path` (Gmail send paths keep reason `gmail_send_path`); any other method on those paths denies with `google_oauth_method` (rule `deny_google_oauth_unexpected`, applied in `EgressClient.request`, on same-host redirect hops and in `_GuardTransport`).
 - `deny_gmail_send`, `deny_gmail_settings_write` and `deny_google_batch` are unchanged and keep applying on **every** Google host (`Service.GMAIL`, `GOOGLE_APIS`, `GOOGLE_OAUTH`). `tests/unit/net/test_r13_google_oauth_paths.py` asserts send, drafts-send, import and insert (including `:send`, `/upload/...` and percent-encoded forms) are denied on all three with zero transport calls.
 - `www.googleapis.com` / `gmail.googleapis.com` path patterns for Calendar, Gmail drafts and Drive are owned by P3.5, P3.6 and P3.8; this ADR does not change them.
 

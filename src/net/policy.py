@@ -211,7 +211,15 @@ def normalise_path(path: object, *, service: Service, method: str) -> str:
     segments = decoded.split("/")
     if any(seg in (".", "..") for seg in segments):
         raise deny("bad_path")
-    return decoded.lower()
+    lowered = decoded.lower()
+    # oauth2.googleapis.com: the ORIGINAL path must be exactly /token or /revoke.
+    # Checked on `path` (not the lowercased, decoded form the deny rules see) so
+    # '/TOKEN' and '/%74oken' are refused (ADR-0019). A Gmail send path keeps
+    # its more specific reason code.
+    if service is Service.GOOGLE_OAUTH and path not in _GOOGLE_OAUTH_PATHS:
+        send = deny_gmail_send(service, method, lowered)
+        raise deny(send if send is not None else "google_oauth_path")
+    return lowered
 
 
 def check_method(method: object, *, service: Service) -> str:

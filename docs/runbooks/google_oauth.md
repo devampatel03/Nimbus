@@ -6,25 +6,27 @@ Owner: operator (human steps H4, H16, H17). Code: `src/integrations/google/auth.
 
 A single **refresh token**, obtained once on your own machine through a loopback consent flow (PKCE, `state` check, `127.0.0.1` on an ephemeral port, one request, then the listener closes). It is stored **encrypted** (AES-256-GCM, `NIMBUS_DATA_KEY`) in the Postgres `system_flag` table under key `google_oauth_credentials`. The bot turns it into short-lived access tokens held in memory only. The bot never serves the callback: the app opens no inbound port (R3).
 
-Allowed scopes (exact set; anything else is rejected at consent, at every refresh and when read back from the store):
+Allowed scopes (exact; anything else is rejected at consent, at code exchange, at every refresh and when read back from the store):
 
-| Scope | Why |
-|---|---|
-| `https://www.googleapis.com/auth/calendar.events` | create and edit events (not whole-calendar admin) |
-| `https://www.googleapis.com/auth/gmail.readonly` | search and read mail (output is untrusted data) |
-| `https://www.googleapis.com/auth/gmail.compose` | create drafts (ADR-0007 proposed default) |
-| `https://www.googleapis.com/auth/drive.readonly` | read-only Drive (H17) |
+| Scope | Default | Why |
+|---|---|---|
+| `https://www.googleapis.com/auth/calendar.events` | allowed | create and edit events (not whole-calendar admin) |
+| `https://www.googleapis.com/auth/gmail.readonly` | allowed | search and read mail (output is untrusted data) |
+| `https://www.googleapis.com/auth/drive.readonly` | allowed | read-only Drive (H17) |
+| `https://www.googleapis.com/auth/gmail.compose` | **OFF (opt-in)** | create drafts; see below |
 
-**Honest limit (ADR-0007):** Gmail has no drafts-only scope. A token holding `gmail.compose` can technically also send. Nimbus has no send method and `src/net` denies the send/import/insert paths, but the token itself could send if it were stolen from the VM. If you decide that is unacceptable (H16), authorise without the draft scope: `--scopes calendar,gmail-read,drive-read`. `gmail.send`, `gmail.modify`, `mail.google.com`, full `drive` and full `calendar` are never requested and a token that reports them is refused.
+**`gmail.compose` is not part of the default and is not decided by this code.** Whether Nimbus may ever hold a draft-capable Gmail scope is the pending human decision **H16** (ADR-0007, status Proposed; its disclosure text in SECURITY.md and `/privacy` is not written yet). Until the human answers, leave it off: the script refuses `gmail-compose`, and the bot refuses any grant or stored token that contains it. To opt in *after* H16 is answered in favour, set `GOOGLE_ALLOW_GMAIL_COMPOSE=true` on both the operator machine and the VM, then re-run `authorize --scopes calendar,gmail-read,gmail-compose,drive-read`. Turning the flag off again makes the bot refuse the stored token (`scope_violation`) until you re-authorise without it.
+
+Why it needs a human decision: Gmail has no drafts-only scope. A token holding `gmail.compose` can technically also send. Nimbus has no send method and `src/net` denies the send/import/insert paths, but the token itself could send if it were stolen from the VM. The strictest alternative (ADR-0007) is to stay on `gmail.readonly` only. `gmail.send`, `gmail.modify`, `mail.google.com`, full `drive` and full `calendar` are never requested and never accepted, whatever the flag.
 
 ## One-time Google Cloud setup (H4)
 
 1. Create (or reuse) a Google Cloud project. Enable the **Google Calendar API**, **Gmail API** and **Google Drive API**.
-2. **OAuth consent screen**: user type External; add the four scopes above; add your own Google account as a test user while setting up.
+2. **OAuth consent screen**: user type External; add the three default scopes above (add `gmail.compose` only if H16 is decided in favour); add your own Google account as a test user while setting up.
 3. **Publish the app: set Publishing status to "In production" (R15).** This is mandatory.
    - If the app stays in **Testing**, Google expires the refresh token after **7 days**. Calendar, Gmail and Drive then fail with `invalid_grant` one week after every authorisation. The failure is silent until a tool call needs Google.
    - "In production" without Google verification is fine for a personal bot: tokens last until you revoke them or they go unused for about 6 months, and the app is capped at 100 users. The cost is the **unverified-app warning** below.
-   - Re-check after any change to the consent screen: editing scopes can flip the status back to Testing in the console. Verify the status reads "In production".
+   - Verify the consent screen page reads "In production" after you publish, and again if the refresh token ever dies with `invalid_grant`.
 4. **Credentials**: create an OAuth client ID of type **Desktop app**. Note the client ID and client secret. (For a desktop client the secret is not confidential in the Google sense, but treat it as one: it is `SecretStr`, never logged or committed.)
 5. Put `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the environment of the machine that runs the script (and the VM, for refreshes). Do not commit them.
 
@@ -33,7 +35,7 @@ Allowed scopes (exact set; anything else is rejected at consent, at every refres
 Prerequisites on the machine: repo checkout, `uv sync --extra dev`, the env vars above, `NIMBUS_DATA_KEY` (the same key the VM uses) and the `POSTGRES_*` settings pointing at the **bot's** database. Open a tunnel first, for example `ssh -N -L 5432:127.0.0.1:5432 <vm>` and use `POSTGRES_HOST=localhost`. Never expose Postgres publicly.
 
 ```
-uv run python scripts/google_oauth.py authorize
+uv run python scripts/google_oauth.py authorize          # default: calendar, gmail-read, drive-read
 ```
 
 1. The script prints a consent URL and opens it in your browser.
@@ -60,7 +62,7 @@ The bot raises fixed error codes (no secret text). Re-auth cases also send you a
 |---|---|---|
 | `invalid_grant` | refresh token expired or revoked: Testing-mode 7-day expiry, you removed access at myaccount.google.com, password change on some accounts, or ~6 months unused | Check publishing status is "In production" (R15), then re-run `authorize`. The bot stops calling Google for that token until a new one is stored. |
 | `no_token` | nothing stored yet | run `authorize` |
-| `scope_violation` | the stored or returned grant has a scope outside the allowed set; the token is never used | `revoke`, then `authorize` again; investigate how an extra scope got granted |
+| `scope_violation` | the stored or returned grant has a scope outside the effective allowed set (including `gmail.compose` while the flag is off), or a refresh tried to add a scope the token never had; the token is never used | `revoke`, then `authorize` again; investigate how an extra scope got granted |
 | `scope_missing` | grant lacks a scope the action needs (unticked box) | `authorize` again, keep all boxes ticked |
 | `token_decrypt_failed` | `NIMBUS_DATA_KEY` differs from the key that sealed the token | restore the correct key, or `authorize` again to overwrite |
 | `token_store_corrupt` | the `system_flag` row is malformed | `revoke` (it forgets an unreadable row), then `authorize` |
@@ -88,6 +90,12 @@ The Google record is sealed with the single column key, which also seals other c
 
 Rotating the client secret: create a new secret in the console, update `GOOGLE_CLIENT_SECRET`, restart. The refresh token stays valid (it is bound to the client ID, not the secret).
 
+## Operational limits worth knowing
+
+- The re-auth Telegram message is deduplicated in memory (once per 24 h per cause). After a bot restart a dead token is re-tried once and you may be told again; persisting that state is a follow-up.
+- Access-token refresh is serialised by one lock per process: a slow Google outage can delay all Google tool calls for up to about 45 s each (timeout x retries) before they fail with `network_error` or `server_error`.
+- Logs carry one fixed line for: successful authorisation (scope names only), revoke, a token turning dead (`invalid_grant`) and `scope_violation`. They never contain tokens or codes.
+
 ## Security properties to keep in mind
 
 - Telegram, Oracle and the model provider can see plaintext they are sent; this runbook does not change that (Brief §8). The Google token never goes to the model provider: scrubbing blocks token-shaped strings in prompts and logs.
@@ -97,4 +105,4 @@ Rotating the client secret: create a new secret in the console, update `GOOGLE_C
 
 ## Dependency and env summary
 
-No new Python dependencies. New env vars: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (optional tuning: `GOOGLE_MAX_RETRIES`, `GOOGLE_BACKOFF_BASE_S`, `GOOGLE_BACKOFF_MAX_S`, `GOOGLE_REQUEST_TIMEOUT_S`). Script-only: `NIMBUS_LIVE_GOOGLE=1` gates `smoke`. Needs the existing `NIMBUS_DATA_KEY`. No migration: the record lives in `system_flag`.
+No new Python dependencies. New env vars: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ALLOW_GMAIL_COMPOSE` (default false; H16) (optional tuning: `GOOGLE_MAX_RETRIES`, `GOOGLE_BACKOFF_BASE_S`, `GOOGLE_BACKOFF_MAX_S`, `GOOGLE_REQUEST_TIMEOUT_S`). Script-only: `NIMBUS_LIVE_GOOGLE=1` gates `smoke`. Needs the existing `NIMBUS_DATA_KEY`. No migration: the record lives in `system_flag`.

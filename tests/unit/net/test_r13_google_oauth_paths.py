@@ -39,6 +39,12 @@ async def test_oauth_token_and_revoke_post_reach_transport(path: str) -> None:
         ("GET", "/oauth2/v3/userinfo", "google_oauth_path"),
         ("POST", "/o/oauth2/v2/auth", "google_oauth_path"),
         ("POST", "/", "google_oauth_path"),
+        # exact match only: no case-folded or percent-decoded variants
+        ("POST", "/TOKEN", "google_oauth_path"),
+        ("POST", "/Revoke", "google_oauth_path"),
+        ("POST", "/%74oken", "google_oauth_path"),
+        ("POST", "/rev%6Fke", "google_oauth_path"),
+        ("POST", "/token%2F", "google_oauth_path"),
         ("POST", "/gmail/v1/users/me/messages/send", "gmail_send_path"),
         ("POST", "/gmail/v1/users/me/drafts/send", "gmail_send_path"),
     ],
@@ -92,3 +98,13 @@ async def test_sdk_client_pinned_to_oauth_host_enforces_paths_too() -> None:
         ok = await http.post("https://oauth2.googleapis.com/token", content=b"x=y")
     assert ok.status_code == 200
     assert len(transport.calls) == 1
+
+
+async def test_sdk_client_rejects_case_and_encoded_variants_at_the_transport_guard() -> None:
+    transport = RecordingTransport()
+    http = build_sdk_http_client(Service.GOOGLE_OAUTH, make_settings(), transport=transport)
+    async with http:
+        for path in ("/TOKEN", "/%74oken", "/Revoke"):
+            with pytest.raises(EgressDenied):
+                await http.post(f"https://oauth2.googleapis.com{path}", content=b"x=y")
+    assert transport.calls == []

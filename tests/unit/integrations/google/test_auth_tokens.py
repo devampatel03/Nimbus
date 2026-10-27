@@ -19,7 +19,7 @@ from pydantic import SecretStr, ValidationError
 
 from src.core.logging import install_log_scrubbing
 from src.integrations.google.auth import (
-    ALLOWED_SCOPES,
+    BASE_SCOPES,
     GoogleAuth,
     GoogleAuthError,
     GoogleReauthRequired,
@@ -36,8 +36,10 @@ from tests.unit.integrations.google.auth_helpers import (
     CLIENT_SECRET,
     REFRESH_TOKEN,
     SCOPE_CAL,
+    SCOPE_DRIVE,
     SCOPE_FULL_MAIL,
     SCOPE_GCOMPOSE,
+    SCOPE_GREAD,
     SCOPE_SEND,
     Clock,
     FakeTokenEndpoint,
@@ -53,9 +55,7 @@ CANARIES = (ACCESS_TOKEN, REFRESH_TOKEN, CLIENT_SECRET, AUTH_CODE)
 NOW = datetime(2026, 10, 27, tzinfo=UTC)
 
 
-def creds(
-    refresh: str = REFRESH_TOKEN, scopes: frozenset[str] = ALLOWED_SCOPES
-) -> StoredCredentials:
+def creds(refresh: str = REFRESH_TOKEN, scopes: frozenset[str] = BASE_SCOPES) -> StoredCredentials:
     return StoredCredentials(refresh_token=SecretStr(refresh), scopes=scopes, obtained_at=NOW)
 
 
@@ -65,6 +65,7 @@ class Harness:
         *responses: httpx.Response | Exception,
         stored: StoredCredentials | None = None,
         max_retries: int = 2,
+        allow_compose: bool = False,
     ) -> None:
         self.fake = FakeTokenEndpoint(*responses)
         self.store = InMemoryTokenStore(stored)
@@ -73,7 +74,7 @@ class Harness:
         self.notices: list[ReauthNotice] = []
         self.egress: EgressClient = self.fake.egress()
         self.client = GoogleTokenClient(
-            auth_settings(max_retries=max_retries),
+            auth_settings(max_retries=max_retries, allow_gmail_compose=allow_compose),
             self.egress,
             sleep=self.sleeps,
             jitter=lambda: 1.0,
@@ -158,6 +159,70 @@ async def test_stored_token_reporting_extra_scopes_is_rejected_without_network()
             await h.auth.access_token()
     assert exc.value.code == "scope_violation"
     assert h.fake.calls == 0
+
+
+# ---- scope-lint: H16 compose gate + refresh may never widen ---------------
+
+WITH_COMPOSE = frozenset({SCOPE_CAL, SCOPE_GREAD, SCOPE_GCOMPOSE, SCOPE_DRIVE})
+
+
+async def test_refresh_may_not_widen_beyond_stored_scopes() -> None:
+    """Stored {calendar}; Google reports calendar + gmail.readonly (allowed
+    in general, but never granted for this token) -> rejected, token dead."""
+    h = Harness(ok(scope=f"{SCOPE_CAL} {SCOPE_GREAD}"), stored=creds(scopes=frozenset({SCOPE_CAL})))
+    async with h.egress:
+        with pytest.raises(GoogleReauthRequired) as exc:
+            await h.auth.access_token()
+        assert exc.value.code == "scope_violation"
+        with pytest.raises(GoogleReauthRequired):
+            await h.auth.access_token()  # marked dead: no second request
+    assert h.fake.calls == 1
+
+
+async def test_refresh_returning_compose_over_stored_calendar_is_rejected() -> None:
+    h = Harness(
+        ok(scope=f"{SCOPE_CAL} {SCOPE_GCOMPOSE}"),
+        stored=creds(scopes=frozenset({SCOPE_CAL})),
+        allow_compose=True,  # even with the flag on, a refresh cannot add scopes
+    )
+    async with h.egress:
+        with pytest.raises(GoogleReauthRequired) as exc:
+            await h.auth.access_token()
+    assert exc.value.code == "scope_violation"
+
+
+async def test_refresh_without_scope_field_keeps_stored_scopes() -> None:
+    body = {k: v for k, v in fixture("refresh_ok.json").items() if k != "scope"}
+    h = Harness(json_response(200, body), stored=creds(scopes=frozenset({SCOPE_CAL})))
+    async with h.egress:
+        assert (await h.auth.access_token(required_scopes=[SCOPE_CAL])).get_secret_value()
+        # cached scopes are exactly the stored ones, not the wider allowed set
+        with pytest.raises(GoogleReauthRequired) as exc:
+            await h.auth.access_token(required_scopes=[SCOPE_GREAD])
+    assert exc.value.code == "scope_missing"
+
+
+async def test_stored_compose_is_rejected_when_flag_off_without_network() -> None:
+    h = Harness(stored=creds(scopes=WITH_COMPOSE))
+    async with h.egress:
+        with pytest.raises(GoogleReauthRequired) as exc:
+            await h.auth.access_token()
+    assert exc.value.code == "scope_violation" and h.fake.calls == 0
+
+
+async def test_compose_in_refresh_is_rejected_when_flag_off_and_accepted_when_on() -> None:
+    body = ok(scope=" ".join(sorted(WITH_COMPOSE)))
+    off = Harness(body, stored=creds(scopes=WITH_COMPOSE))
+    async with off.egress:
+        with pytest.raises(GoogleReauthRequired):
+            await off.auth.access_token()
+    on = Harness(
+        ok(scope=" ".join(sorted(WITH_COMPOSE))),
+        stored=creds(scopes=WITH_COMPOSE),
+        allow_compose=True,
+    )
+    async with on.egress:
+        assert (await on.auth.access_token(required_scopes=[SCOPE_GCOMPOSE])).get_secret_value()
 
 
 # ---- failure modes --------------------------------------------------------
@@ -378,12 +443,89 @@ async def test_revoke_network_failure_still_forgets_locally_and_reports() -> Non
         assert await h.store.load() is None
 
 
+class _UnreadableStore(InMemoryTokenStore):
+    """Behaves like PostgresTokenStore.load on an out-of-policy record."""
+
+    async def load(self) -> StoredCredentials | None:
+        raise GoogleReauthRequired("scope_violation")
+
+
+async def test_revoke_of_unreadable_record_forgets_it_and_reports_manual_revoke() -> None:
+    h = Harness()
+    store = _UnreadableStore(creds())
+    auth = GoogleAuth(h.client, store, clock=h.clock)
+    async with h.egress:
+        with pytest.raises(GoogleAuthError) as exc:
+            await auth.revoke_and_forget()
+    assert exc.value.code == "revoke_failed"
+    assert store._creds is None
+    assert h.fake.calls == 0
+
+
 async def test_status_reports_scopes_never_secrets() -> None:
     h = Harness(stored=creds(scopes=frozenset({SCOPE_CAL})))
     st = await h.auth.status()
     assert st.has_token and st.scopes == frozenset({SCOPE_CAL}) and st.scope_ok
     assert REFRESH_TOKEN not in repr(st)
     assert not (await Harness().auth.status()).has_token
+
+
+# ---- MED-4: fixed-code, secret-free audit/log lines -----------------------
+
+LOGGER = "nimbus.integrations.google.auth"
+
+
+def _lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == LOGGER]
+
+
+def _assert_no_secrets(caplog: pytest.LogCaptureFixture) -> None:
+    blob = " ".join(repr(r.__dict__) + r.getMessage() for r in caplog.records)
+    for canary in CANARIES:
+        assert canary not in blob
+
+
+async def test_invalid_grant_transition_is_logged_once(
+    caplog: pytest.LogCaptureFixture, scrubbing: object
+) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    h = Harness(json_response(400, fixture("invalid_grant.json")), stored=creds())
+    async with h.egress:
+        for _ in range(3):
+            with pytest.raises(GoogleReauthRequired):
+                await h.auth.access_token()
+    lines = [m for m in _lines(caplog) if "reauth_required" in m]
+    assert lines == ["google auth reauth_required code=invalid_grant"]
+    _assert_no_secrets(caplog)
+
+
+async def test_scope_violation_on_refresh_and_on_load_are_logged(
+    caplog: pytest.LogCaptureFixture, scrubbing: object
+) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    h = Harness(ok(scope=f"{SCOPE_CAL} {SCOPE_SEND}"), stored=creds())
+    async with h.egress:
+        with pytest.raises(GoogleReauthRequired):
+            await h.auth.access_token()
+    h2 = Harness(stored=creds(scopes=frozenset({SCOPE_CAL, SCOPE_SEND})))
+    async with h2.egress:
+        with pytest.raises(GoogleReauthRequired):
+            await h2.auth.access_token()
+    lines = [m for m in _lines(caplog) if "scope_violation" in m]
+    assert lines == [
+        "google auth reauth_required code=scope_violation",
+        "google auth reauth_required code=scope_violation",
+    ]
+    _assert_no_secrets(caplog)
+
+
+async def test_revoke_is_logged(caplog: pytest.LogCaptureFixture, scrubbing: object) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    h = Harness(json_response(200, {}), stored=creds())
+    async with h.egress:
+        await h.auth.revoke_and_forget()
+    assert "google oauth token revoked and forgotten" in _lines(caplog)
+    _assert_no_secrets(caplog)
 
 
 # ---- INV-7 ----------------------------------------------------------------

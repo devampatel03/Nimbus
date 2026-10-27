@@ -8,10 +8,9 @@ ADR-0019; R3, R6, R12, R13, R15; INV-7).
 How it fits together
 --------------------
 * ``scripts/google_oauth.py authorize`` runs on the OPERATOR'S machine (never in
-  the bot process, so the app opens no inbound port, R3). It starts a
-  one-shot HTTP listener on ``127.0.0.1`` (ephemeral port), prints the consent
-  URL, receives the redirect, checks ``state``, exchanges the code with PKCE
-  (S256) and stores the refresh token.
+  the bot process, so the app opens no inbound port, R3). The consent flow
+  (PKCE, one-shot ``127.0.0.1`` listener, state check, code exchange) lives in
+  ``consent.py``, which only the script imports.
 * The refresh token is stored ONLY as AES-256-GCM ciphertext (``src/db/crypto``)
   inside the existing ``system_flag`` table (key ``google_oauth_credentials``),
   with an AAD that binds it to that row. No new table or migration.
@@ -22,18 +21,20 @@ How it fits together
   HTTP transport itself (INV-1). The browser, not this process, talks to
   ``accounts.google.com``.
 
-Scopes (exact, enforced; see ``ALLOWED_SCOPES``)
-------------------------------------------------
-``calendar.events``, ``gmail.readonly``, ``gmail.compose`` (ADR-0007 proposed
-default: drafts; Gmail has no drafts-only scope, so the send block is enforced
-in code and in ``src.net``, not by OAuth), ``drive.readonly`` (H17). Anything
-else -- the Gmail send and modify scopes, the full-mailbox scope, full Drive,
-full Calendar -- is rejected: in the consent URL we build, in what Google
-reports as granted at code exchange and at every refresh, and in what we read
-back from the store. A token that reports an extra scope is never used (and is
-revoked best-effort at consent time). Granting a SUBSET is fine (Google's
-granular consent lets the user untick scopes); callers pass ``required_scopes``
-to :meth:`GoogleAuth.access_token`.
+Scopes (exact, enforced)
+------------------------
+Base set (``BASE_SCOPES``): ``calendar.events``, ``gmail.readonly``,
+``drive.readonly`` (H17). ``gmail.compose`` (drafts) is NOT in the base set:
+whether to ever request it is the human decision H16 (ADR-0007, Proposed), so
+it is allowed only when ``GOOGLE_ALLOW_GMAIL_COMPOSE`` is set
+(``allowed_scopes(allow_compose=True)``). That EFFECTIVE set is what scope-lint
+uses at every point: the consent URL, the code-exchange grant, every refresh
+response and every read from the store. Anything else -- the Gmail send and
+modify scopes, the full-mailbox scope, full Drive, full Calendar -- is never
+allowed. A grant that reports a scope outside the effective set (or, at
+refresh, any scope the stored token did not already have) is never used
+(revoked best-effort at consent time). Granting a SUBSET is fine (granular
+consent); callers pass ``required_scopes`` to :meth:`GoogleAuth.access_token`.
 
 R15 -- publishing status (operator action, H4)
 ----------------------------------------------
@@ -65,17 +66,15 @@ import asyncio
 import base64
 import binascii
 import hashlib
-import hmac
 import json
 import logging
 import random
-import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol, Self
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from typing import Any, Protocol
+from urllib.parse import urlencode
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -99,15 +98,19 @@ SCOPE_GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"  # searc
 SCOPE_GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"  # drafts (ADR-0007, H16)
 SCOPE_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"  # read-only Drive (H17)
 
-ALLOWED_SCOPES: frozenset[str] = frozenset(
-    {
-        SCOPE_CALENDAR_EVENTS,
-        SCOPE_GMAIL_READONLY,
-        SCOPE_GMAIL_COMPOSE,
-        SCOPE_DRIVE_READONLY,
-    }
+# Allowed with no opt-in.
+BASE_SCOPES: frozenset[str] = frozenset(
+    {SCOPE_CALENDAR_EVENTS, SCOPE_GMAIL_READONLY, SCOPE_DRIVE_READONLY}
 )
-DEFAULT_SCOPES: tuple[str, ...] = tuple(sorted(ALLOWED_SCOPES))
+# Absolute ceiling: base + the H16-gated draft scope. Nothing outside this is
+# ever acceptable, whatever the flags.
+ALLOWED_SCOPES: frozenset[str] = BASE_SCOPES | {SCOPE_GMAIL_COMPOSE}
+DEFAULT_SCOPES: tuple[str, ...] = tuple(sorted(BASE_SCOPES))
+
+
+def allowed_scopes(*, allow_compose: bool) -> frozenset[str]:
+    """The effective allowed set: base, plus gmail.compose iff opted in (H16)."""
+    return BASE_SCOPES | {SCOPE_GMAIL_COMPOSE} if allow_compose else frozenset(BASE_SCOPES)
 
 
 class GoogleAuthError(Exception):
@@ -130,12 +133,12 @@ def parse_scope_string(scope: str) -> frozenset[str]:
     return frozenset(scope.split())
 
 
-def lint_scopes(scopes: Iterable[str]) -> frozenset[str]:
-    """Return `scopes` as a set if it is a non-empty subset of ALLOWED_SCOPES;
-    otherwise raise `GoogleReauthRequired("scope_violation")`. The offending
-    scope is deliberately not put in the error."""
+def lint_scopes(scopes: Iterable[str], *, allow_compose: bool = False) -> frozenset[str]:
+    """Return `scopes` as a set if it is a non-empty subset of the effective
+    allowed set; otherwise raise `GoogleReauthRequired("scope_violation")`. The
+    offending scope is deliberately not put in the error."""
     granted = frozenset(scopes)
-    if not granted or not granted <= ALLOWED_SCOPES:
+    if not granted or not granted <= allowed_scopes(allow_compose=allow_compose):
         raise GoogleReauthRequired("scope_violation")
     return granted
 
@@ -159,6 +162,9 @@ class GoogleOAuthSettings(BaseSettings):
 
     client_id: SecretStr | None = None
     client_secret: SecretStr | None = None
+    # H16 (ADR-0007) is a pending human decision: gmail.compose is OFF unless
+    # the operator explicitly opts in. Never default this to True in code.
+    allow_gmail_compose: bool = False
     max_retries: int = Field(default=2, ge=0, le=5)
     backoff_base_s: float = Field(default=0.5, ge=0, le=30)
     backoff_max_s: float = Field(default=8.0, ge=0, le=120)
@@ -170,228 +176,6 @@ class GoogleOAuthSettings(BaseSettings):
         if not self.client_id.get_secret_value() or not self.client_secret.get_secret_value():
             raise GoogleAuthError("client_not_configured")
         return self.client_id, self.client_secret
-
-
-# --------------------------------------------------------------------------
-# PKCE (RFC 7636, S256)
-# --------------------------------------------------------------------------
-
-
-def pkce_challenge(verifier: str) -> str:
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-
-
-@dataclass(frozen=True)
-class PkcePair:
-    verifier: SecretStr
-    challenge: str
-
-
-def generate_pkce() -> PkcePair:
-    verifier = secrets.token_urlsafe(64)  # 86 chars of [A-Za-z0-9_-]; RFC range is 43..128
-    return PkcePair(verifier=SecretStr(verifier), challenge=pkce_challenge(verifier))
-
-
-_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"  # opened by the BROWSER only
-
-
-def build_authorization_url(
-    *,
-    client_id: str | SecretStr,
-    redirect_uri: str,
-    scopes: Iterable[str],
-    state: str,
-    code_challenge: str,
-) -> str:
-    requested = lint_scopes(scopes)
-    cid = client_id.get_secret_value() if isinstance(client_id, SecretStr) else client_id
-    params = {
-        "response_type": "code",
-        "client_id": cid,
-        "redirect_uri": redirect_uri,
-        "scope": " ".join(sorted(requested)),
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-        "access_type": "offline",  # we need a refresh token
-        "prompt": "consent",  # Google only re-issues a refresh token with consent
-        "include_granted_scopes": "false",  # never fold in previously granted scopes
-    }
-    return f"{_AUTH_ENDPOINT}?{urlencode(params, quote_via=quote)}"
-
-
-# --------------------------------------------------------------------------
-# Loopback receiver (runs only inside scripts/google_oauth.py)
-# --------------------------------------------------------------------------
-
-CALLBACK_PATH = "/oauth2callback"
-_LOOPBACK_HOST = "127.0.0.1"  # literal on purpose: never 0.0.0.0, never configurable
-_MAX_REQUEST_BYTES = 8192
-
-_PAGE = (
-    b"<!doctype html><meta charset=utf-8><title>Nimbus</title>"
-    b"<p>Authorisation received. You can close this tab and return to the terminal.</p>"
-)
-
-
-@dataclass(frozen=True)
-class CallbackParams:
-    state: str | None
-    code: SecretStr | None = field(default=None)
-    error: str | None = None
-
-
-def _response(status: int, reason: str, body: bytes) -> bytes:
-    head = (
-        f"HTTP/1.1 {status} {reason}\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Cache-Control: no-store\r\n"
-        "Referrer-Policy: no-referrer\r\n"
-        "Content-Security-Policy: default-src 'none'\r\n"
-        "Connection: close\r\n\r\n"
-    )
-    return head.encode("ascii") + body
-
-
-def _first(query: dict[str, list[str]], name: str) -> str | None:
-    values = query.get(name)
-    return values[0] if values else None
-
-
-class LoopbackServer:
-    """One-shot HTTP listener on 127.0.0.1. The FIRST well-formed request
-    (right Host header, GET, callback path) ends the flow; the listening socket
-    is closed as soon as it is read, so a second request is refused. A
-    connection that never sends a request line does not count (it times out
-    after `request_read_timeout_s`). The overall wait is bounded by `timeout_s`.
-    Nothing from the request (code, state) is echoed back to the browser."""
-
-    def __init__(
-        self,
-        *,
-        timeout_s: float = 300.0,
-        port: int = 0,
-        request_read_timeout_s: float = 5.0,
-    ) -> None:
-        self._timeout_s = timeout_s
-        self._want_port = port
-        self._read_timeout_s = request_read_timeout_s
-        self._server: asyncio.Server | None = None
-        self._outcome: asyncio.Future[CallbackParams | str] | None = None
-        self._port = 0
-
-    async def __aenter__(self) -> Self:
-        loop = asyncio.get_running_loop()
-        self._outcome = loop.create_future()
-        self._server = await asyncio.start_server(
-            self._handle, host=_LOOPBACK_HOST, port=self._want_port, limit=_MAX_REQUEST_BYTES
-        )
-        self._port = int(self._server.sockets[0].getsockname()[1])
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self._close()
-
-    @property
-    def port(self) -> int:
-        return self._port
-
-    @property
-    def redirect_uri(self) -> str:
-        return f"http://{_LOOPBACK_HOST}:{self._port}{CALLBACK_PATH}"
-
-    @property
-    def bound_hosts(self) -> list[str]:
-        assert self._server is not None
-        return [str(s.getsockname()[0]) for s in self._server.sockets]
-
-    async def _close(self) -> None:
-        server, self._server = self._server, None
-        if server is None:
-            return
-        server.close()
-        try:
-            async with asyncio.timeout(2):
-                await server.wait_closed()
-        except TimeoutError:
-            pass
-
-    async def wait(self) -> CallbackParams:
-        assert self._outcome is not None
-        try:
-            async with asyncio.timeout(self._timeout_s):
-                outcome = await self._outcome
-        except TimeoutError:
-            outcome = "callback_timeout"
-        if self._server is not None:
-            self._server.close()  # stop accepting at once; full cleanup in __aexit__
-        if isinstance(outcome, str):
-            raise GoogleAuthError(outcome)
-        return outcome
-
-    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            try:
-                raw = await asyncio.wait_for(
-                    reader.readuntil(b"\r\n\r\n"), timeout=self._read_timeout_s
-                )
-            except (TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-                return  # no usable request: does not consume the one-shot
-            assert self._outcome is not None
-            if self._outcome.done():
-                return
-            status, reason, outcome = self._decide(raw)
-            self._outcome.set_result(outcome)
-            if self._server is not None:
-                self._server.close()
-            body = _PAGE if status == 200 else b"<!doctype html><p>Request rejected.</p>"
-            writer.write(_response(status, reason, body))
-            await writer.drain()
-        except (ConnectionError, OSError):
-            pass
-        finally:
-            writer.close()
-
-    def _decide(self, raw: bytes) -> tuple[int, str, CallbackParams | str]:
-        try:
-            head = raw.decode("latin-1").split("\r\n")
-            method, target, _version = head[0].split(" ")
-            headers = {}
-            for line in head[1:]:
-                if ":" in line:
-                    name, _, value = line.partition(":")
-                    headers[name.strip().lower()] = value.strip()
-        except ValueError:
-            return 400, "Bad Request", "bad_callback"
-        if headers.get("host") != f"{_LOOPBACK_HOST}:{self._port}":
-            return 400, "Bad Request", "bad_callback"  # DNS-rebinding guard
-        if method != "GET":
-            return 405, "Method Not Allowed", "bad_callback"
-        try:
-            parts = urlsplit(target)
-            query = parse_qs(parts.query, max_num_fields=20)
-        except ValueError:
-            return 400, "Bad Request", "bad_callback"
-        if parts.path != CALLBACK_PATH:
-            return 404, "Not Found", "bad_callback"
-        state = _first(query, "state")
-        code = _first(query, "code")
-        error = _first(query, "error")
-        if code is None and error is None:
-            return 400, "Bad Request", "bad_callback"
-        if error is not None and not error.replace("_", "").isalnum():
-            error = "unknown"
-        return (
-            200,
-            "OK",
-            CallbackParams(
-                state=state,
-                code=SecretStr(code) if code is not None else None,
-                error=error[:64] if error is not None else None,
-            ),
-        )
 
 
 # --------------------------------------------------------------------------
@@ -444,6 +228,10 @@ class GoogleTokenClient:
         self._egress = egress
         self._sleep = sleep
         self._jitter = jitter
+
+    @property
+    def allow_compose(self) -> bool:
+        return self._settings.allow_gmail_compose
 
     async def exchange_code(
         self, code: SecretStr, verifier: SecretStr, redirect_uri: str
@@ -586,14 +374,17 @@ class InMemoryTokenStore:
     """Test / dry-run store. `initial` is deliberately not linted so tests can
     seed a hostile record; `save` lints like the real store."""
 
-    def __init__(self, initial: StoredCredentials | None = None) -> None:
+    def __init__(
+        self, initial: StoredCredentials | None = None, *, allow_compose: bool = False
+    ) -> None:
         self._creds = initial
+        self._allow_compose = allow_compose
 
     async def load(self) -> StoredCredentials | None:
         return self._creds
 
     async def save(self, creds: StoredCredentials) -> None:
-        lint_scopes(creds.scopes)
+        lint_scopes(creds.scopes, allow_compose=self._allow_compose)
         self._creds = creds
 
     async def delete(self) -> None:
@@ -606,13 +397,18 @@ class PostgresTokenStore:
     scopes live INSIDE the ciphertext so they cannot be edited in place."""
 
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], cipher: DataCipher
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        cipher: DataCipher,
+        *,
+        allow_compose: bool = False,
     ) -> None:
         self._sf = session_factory
         self._cipher = cipher
+        self._allow_compose = allow_compose
 
     async def save(self, creds: StoredCredentials) -> None:
-        scopes = lint_scopes(creds.scopes)
+        scopes = lint_scopes(creds.scopes, allow_compose=self._allow_compose)
         plaintext = json.dumps(
             {
                 "refresh_token": creds.refresh_token.get_secret_value(),
@@ -670,7 +466,7 @@ class PostgresTokenStore:
             raise GoogleAuthError("token_store_corrupt") from None
         return StoredCredentials(
             refresh_token=SecretStr(refresh),
-            scopes=lint_scopes(scope_set),
+            scopes=lint_scopes(scope_set, allow_compose=self._allow_compose),
             obtained_at=obtained,
         )
 
@@ -738,7 +534,21 @@ def _fingerprint(token: SecretStr) -> str:
 
 
 class GoogleAuth:
-    """Hands out access tokens. Single-flight (one lock), memory-only cache."""
+    """Hands out access tokens. Memory-only cache.
+
+    Single-flight limits (by design, keep in mind when adding callers):
+    * One ``asyncio.Lock`` serialises ALL calls, including the store read, so a
+      slow refresh (up to ``request_timeout_s`` x attempts plus backoff, about
+      45 s with defaults) delays every other Google caller in this process.
+    * It is process-local. The CLI script and any second bot process refresh
+      independently; Google tolerates this (refresh tokens are reusable), and a
+      rotated refresh token is persisted by whoever sees it first.
+    * The cache and the dead-token / notified state are in memory: after a
+      restart a dead token is re-probed once and the user may be notified again
+      (follow-up: persist this state).
+    * The store is read on every call (cheap, and picks up re-authorisation done
+      by the script without a restart).
+    """
 
     def __init__(
         self,
@@ -771,7 +581,9 @@ class GoogleAuth:
                 if fingerprint in self._dead:
                     raise GoogleReauthRequired(self._dead[fingerprint])  # fail fast, no I/O
                 try:
-                    stored_scopes = lint_scopes(creds.scopes)
+                    stored_scopes = lint_scopes(
+                        creds.scopes, allow_compose=self._client.allow_compose
+                    )
                 except GoogleReauthRequired:
                     self._dead[fingerprint] = "scope_violation"
                     raise
@@ -801,7 +613,12 @@ class GoogleAuth:
             self._dead[fingerprint] = exc.code
             raise
         try:
-            scopes = lint_scopes(grant.scopes if grant.scopes is not None else stored_scopes)
+            if grant.scopes is None:
+                scopes = stored_scopes  # Google omitted it: keep exactly what was granted
+            else:
+                scopes = lint_scopes(grant.scopes, allow_compose=self._client.allow_compose)
+                if not scopes <= stored_scopes:  # a refresh can never widen a grant
+                    raise GoogleReauthRequired("scope_violation")
         except GoogleReauthRequired:
             self._dead[fingerprint] = "scope_violation"  # that token is never used
             raise
@@ -831,14 +648,16 @@ class GoogleAuth:
         return cached.token
 
     async def _notify(self, code: str, fingerprint: str) -> None:
-        if self._notifier is None:
-            return
+        """Log (fixed code only) and notify, once per (code, token) per window."""
         key = (code, fingerprint)
         now = self._clock()
         last = self._notified.get(key)
         if last is not None and now - last < self._renotify_after_s:
             return
         self._notified[key] = now
+        logger.warning("google auth reauth_required code=%s", code)
+        if self._notifier is None:
+            return
         notice = ReauthNotice(code=code, message=REAUTH_MESSAGES.get(code, _DEFAULT_REAUTH_MESSAGE))
         try:
             await self._notifier(notice)
@@ -853,7 +672,7 @@ class GoogleAuth:
         if creds is None:
             return AuthStatus(has_token=False, scopes=frozenset(), scope_ok=False)
         try:
-            lint_scopes(creds.scopes)
+            lint_scopes(creds.scopes, allow_compose=self._client.allow_compose)
             ok = True
         except GoogleReauthRequired:
             ok = False
@@ -864,11 +683,14 @@ class GoogleAuth:
         outcome (raises `revoke_failed` afterwards so the operator revokes by
         hand at https://myaccount.google.com/permissions)."""
         async with self._lock:
+            remote_failed = False
             try:
                 creds = await self._store.load()
             except GoogleAuthError:
-                creds = None  # unreadable record: just forget it
-            remote_failed = False
+                # Unreadable (wrong key, corrupt, out-of-policy scopes): forget it
+                # locally, but we could not revoke it at Google, so say so.
+                creds = None
+                remote_failed = True
             if creds is not None:
                 try:
                     await self._client.revoke(creds.refresh_token)
@@ -877,73 +699,6 @@ class GoogleAuth:
             await self._store.delete()
             self._cached = None
             self._dead.clear()
+            logger.info("google oauth token revoked and forgotten")
             if remote_failed:
                 raise GoogleAuthError("revoke_failed")
-
-
-# --------------------------------------------------------------------------
-# One-time interactive authorisation (operator machine)
-# --------------------------------------------------------------------------
-
-
-async def authorize_interactive(
-    *,
-    settings: GoogleOAuthSettings,
-    egress: EgressClient,
-    store: TokenStore,
-    scopes: Iterable[str],
-    present_url: Callable[[str], object],
-    timeout_s: float = 300.0,
-    port: int = 0,
-    client: GoogleTokenClient | None = None,
-) -> frozenset[str]:
-    """Run the consent flow once and persist the refresh token. Returns the
-    scopes Google actually granted. Nothing is stored unless the grant passes
-    state check, scope-lint and carries a refresh token."""
-    requested = lint_scopes(scopes)
-    client_id, _ = settings.require_client()  # before any listener is opened
-    token_client = client if client is not None else GoogleTokenClient(settings, egress)
-    pkce = generate_pkce()
-    state = secrets.token_urlsafe(32)
-    async with LoopbackServer(timeout_s=timeout_s, port=port) as server:
-        present_url(
-            build_authorization_url(
-                client_id=client_id,
-                redirect_uri=server.redirect_uri,
-                scopes=requested,
-                state=state,
-                code_challenge=pkce.challenge,
-            )
-        )
-        params = await server.wait()
-        redirect_uri = server.redirect_uri
-    if params.state is None or not hmac.compare_digest(
-        params.state.encode("utf-8"), state.encode("utf-8")
-    ):
-        raise GoogleAuthError("state_mismatch")
-    if params.error is not None:
-        raise GoogleAuthError(
-            "authorization_denied" if params.error == "access_denied" else "authorization_failed"
-        )
-    if params.code is None:
-        raise GoogleAuthError("bad_callback")
-    grant = await token_client.exchange_code(params.code, pkce.verifier, redirect_uri)
-    try:
-        if grant.scopes is None or not grant.scopes <= requested:
-            raise GoogleReauthRequired("scope_violation")
-        granted = lint_scopes(grant.scopes)
-    except GoogleReauthRequired:
-        victim = grant.refresh_token if grant.refresh_token is not None else grant.access_token
-        try:
-            await token_client.revoke(victim)  # best effort: do not leave it live
-        except GoogleAuthError:
-            logger.warning("google revoke of rejected grant failed")
-        raise
-    if grant.refresh_token is None:
-        raise GoogleAuthError("no_refresh_token")
-    await store.save(
-        StoredCredentials(
-            refresh_token=grant.refresh_token, scopes=granted, obtained_at=datetime.now(UTC)
-        )
-    )
-    return granted
