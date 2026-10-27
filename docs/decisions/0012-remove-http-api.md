@@ -1,6 +1,7 @@
 # 0012 — Remove the FastAPI/JWT surface entirely; health via heartbeat row and outbound ping
 
 - Status: Accepted. The Brief allowed "minimal localhost health endpoint or REMOVE". This ADR chooses REMOVE. Supersedes MEMORY.md AD-15..18.
+- Executed: P2.1b (PR #26, 2026-10-27 UTC). `src/api`, fastapi, uvicorn and pyjwt are removed. Deviations from the Decision below: (1) the heartbeat is one JSON file written atomically by `src/app/heartbeat.py`, not `system_flag.heartbeat_<loop>` rows; `healthcheck` reads the file and does not touch the DB. (2) The `HEALTHCHECK_PING_URL` ping is not built (P6.4, H8).
 
 ## Context
 `src/api/**` holds a JWT login, REST chat/tasks/memory and a WebSocket. Its only production role is calling `build_graph` (COUPLING §1). Telegram long polling needs no inbound HTTP (R3). A localhost health endpoint would keep `fastapi`, `uvicorn` and a listening socket around just for docker's HEALTHCHECK.

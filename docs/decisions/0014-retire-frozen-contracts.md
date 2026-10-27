@@ -1,6 +1,7 @@
 # 0014 — Retire the voice- and egress-shaped frozen contracts; keep the golden-fixture pattern
 
 - Status: Accepted. Amends T0.8's "frozen interface contracts" (CLAUDE.md task table, MEMORY.md "Interface contracts").
+- Executed: `SessionBundle` and `DiarizedTranscript` replaced by `Event` and `Transcript` (P2.2, PR #20). `ToolIntent` and `ToolResult` deleted (P2.5b, PR #25). Deviation: `ToolOutput` lives in `src/orchestrator/dispatch.py`, not `contracts/tool_io.py`. The stale `SessionBundle` docstring in `src/memory/schemas/session.py` is still open.
 
 ## Context
 T0.8 froze six Pydantic contracts:

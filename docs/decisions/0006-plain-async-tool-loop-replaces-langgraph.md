@@ -1,6 +1,7 @@
 # 0006 — Plain async tool loop replaces LangGraph; approved actions execute without re-entering the model
 
 - Status: Accepted (P0.4, 2026-10-24). Overrides AUDIT_DISPOSITION's "KEEP langgraph".
+- Executed: loop and dispatch in P2.5a (PR #15, 2026-10-26). LangGraph, `graph.py` and `approver.py` deleted in P2.5b (PR #25, 2026-10-26 UTC). The interim policy is `DenyAllWritesPolicy` until P3.1.
 
 ## Context
 `src/orchestrator/graph.py` is a fixed LangGraph pipeline (route, retrieve, think, act, respond) with one `act` step. It was designed for a local model. Nimbus Lite needs:
@@ -24,7 +25,7 @@ A `require_approval` decision persists a `pending_action` holding the **frozen p
 ## Consequences
 - Fewer dependencies. The control flow can be read in one file and tested with FakeLLM transcripts.
 - "What was approved is exactly what runs" holds by construction (no TOCTOU through the model).
-- `tests/unit/test_graph.py` and `test_risk_gating.py` are rewritten.
+- `tests/unit/test_graph.py` and `test_risk_gating.py` are rewritten. [W2 correction: both files were deleted in P2.5b, not rewritten. Their replacements are in `tests/unit/orchestrator/`.]
 - No built-in graph visualisation or checkpointing. Turn state that must survive a restart lives in Postgres rows: `inbound_update`, `pending_action`, `job`.
 
 ## Alternatives

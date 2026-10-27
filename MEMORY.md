@@ -155,9 +155,9 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADRs `docs/decisions/0001-0015`, task
 - Deterministic policy matrix plus HMAC approval token (ADR-0009). Supersedes AD-22 and AD-27.
 - Lanes and quarantine: ADR-0010 is Proposed (H18), blocks P3.0.
 - User-set reminders sit outside the interruption budget (ADR-0011, proposed default, H17/Q5).
-- FastAPI and JWT removed (ADR-0012). Code removal is P2.1b.
+- FastAPI and JWT removed (ADR-0012). Code removal is P2.1b. **[CLOSED W2: `src/api` deleted, PR #26]**
 - Embeddings are local Qwen3-Embedding-0.6B, provisional until P2.3 (ADR-0013).
-- Frozen contracts retired (ADR-0014). Code removal is P2.2 and P2.5b.
+- Frozen contracts retired (ADR-0014). Code removal is P2.2 and P2.5b. **[CLOSED W2: PR #20 and PR #25]**
 - Character card stays at `personality/character_card.md` with an R9 guard (ADR-0015).
 - Module settings pattern: `src/<module>/settings.py` (`docs/pivot/SETTINGS_PATTERN.md`, P1.5). `config/settings.py` keeps only Postgres, auth and CORS.
 - Log scrubbing is a `logging.Logger.makeRecord` wrapper (`src/core/logging.py`, `install_log_scrubbing`) calling `src.llm.scrub.redact_secrets`. It covers message, args, exception text, stack info and extras. Extras are scrubbed after the stdlib merges `extra=` into the record, so the order matters (P1.5, INV-7).
@@ -189,48 +189,48 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADRs `docs/decisions/0001-0015`, task
 - AD-7 → Step 11 real embedder, then ADR-0013. AD-8, AD-9, AD-20, AD-21 → pgvector store (P1.3b). AD-23 → no local vLLM (Brief §5, P1.4b).
 - Redis had no AD row. Its only decision record was the T1.7 warm-context row (CLAUDE.md history), superseded by P1.3a.
 - Old INV-1 (one httpx call site), INV-2 (ToolIntent has no memory fields) and INV-4 (Mode A never blocks on network) are retired or rewritten by Brief §4 and ADR-0002. Old text: `git show b9fb56d:CLAUDE.md`.
-- Old "Interface contracts" and "API auth" sections → ADR-0014 and ADR-0012. Code removal is still pending.
+- Old "Interface contracts" and "API auth" sections → ADR-0014 and ADR-0012. Code removal is still pending. **[CLOSED W2: code removed, PR #20, #25, #26]**
 
 ### Open follow-ups (from STATE, with owning task)
 
 | Follow-up | Owner | Source |
 |---|---|---|
-| Legacy `lane='trusted'` server default still on memory writers; drop when touched | P2.2 | P1.2c |
+| Legacy `lane='trusted'` server default still on memory writers; drop when touched. **[Re-owned W2: P2.2 is finished. Default still live at `src/memory/schemas/graph.py:100`, `commitment.py:56`, `decision.py:51`]** | P3.3 (memory write path) | P1.2c |
 | App DB role `nimbus` is a superuser (can disable triggers). Use a non-superuser app role. HIGH until P6.1/P6.2 | P6.1/P6.2 | P1.2c |
-| Trigger gap: jsonb numeric-scale rewrite (LOW) | unassigned, proposed P2.2 | P1.2c |
-| Source_event_id is immutable on legacy tables; backfill needs a trigger-drop migration | unassigned, proposed P2.2 | P1.2c |
-| R8: FK proves the approval row exists, not that it was consumed | P3.1/P3.2 | P1.2c |
+| Trigger gap: jsonb numeric-scale rewrite (LOW). **[Re-owned W2]** | P4.6 | P1.2c |
+| Source_event_id is immutable on legacy tables; backfill needs a trigger-drop migration. **[Re-owned W2]** | P4.6 | P1.2c |
+| R8: FK proves the approval row exists, not that it was consumed. **[PARTLY CLOSED W2: the chunk path checks consumed status in `store.promote` and migration `c4e8a1d92b37`; graph-edge path and a DB-level check remain]** | P4.6 (was P3.1/P3.2) | P1.2c |
 | Key decoder accepts mixed std/urlsafe base64 and edge whitespace (LOW) | unassigned, proposed P6.1 | P1.2c |
 | `compare_metadata` ignores CHECK constraints and server defaults | unassigned | P1.2b |
-| Store creates a synthetic event per chunk; ingest must pass the real `event_id` (MED-1) | P2.2 | P1.3b |
-| ChunkHit must carry lane/untrusted before any promote path (MED-2, INV-6) | P3.0, P4.6 | P1.3b |
-| Reconcile `store.py` with TARGET_DESIGN protocols (`record_event`/`add_chunks`/`promote`) | P2.x or ADR | P1.3b |
-| `Qwen3Embedder` needs a `model_id` attribute | P2.3 | P1.3b |
-| `invalidate` on an unknown id silently no-ops (LOW) | unassigned, proposed P2.4 | P1.3b |
-| `hnsw.iterative_scan` SET LOCAL leaks past the transaction; session filter unindexed (LOW) | P2.4 | P1.3b |
-| Harness `_scratch_dsn` breaks on DSN query strings; batch inserts (LoCoMo wall time ~8 min) | P2.4 | P1.3b |
+| Store creates a synthetic event per chunk; ingest must pass the real `event_id` (MED-1). **[CLOSED W2: event-linked chunks, P2.4 PR #23, ADR-0017]** | P2.2 | P1.3b |
+| ChunkHit must carry lane/untrusted before any promote path (MED-2, INV-6). **[PARTLY CLOSED W2: hits carry lane, untrusted, promoted (ADR-0017); promote path still P4.6]** | P3.0, P4.6 | P1.3b |
+| Reconcile `store.py` with TARGET_DESIGN protocols (`record_event`/`add_chunks`/`promote`). **[CLOSED W2: ADR-0017]** | P2.x or ADR | P1.3b |
+| `Qwen3Embedder` needs a `model_id` attribute. **[CLOSED W2: `src/memory/embedder.py`]** | P2.3 | P1.3b |
+| `invalidate` on an unknown id silently no-ops (LOW). **[CLOSED W2: raises `ChunkNotFoundError`, ADR-0017]** | unassigned, proposed P2.4 | P1.3b |
+| `hnsw.iterative_scan` SET LOCAL leaks past the transaction; session filter unindexed (LOW). **[PARTLY CLOSED W2: session filter dropped, ADR-0017; SET LOCAL leak not re-verified]** | P2.4 | P1.3b |
+| Harness `_scratch_dsn` breaks on DSN query strings; batch inserts (LoCoMo wall time ~8 min). **[PARTLY CLOSED W2: one embed batch per session, ADR-0018 (22 s vs 65 s on 2 samples); DSN fix not re-verified]** | P2.4 | P1.3b |
 | Denied egress is not logged (sanitised); FORBIDDEN_HEADERS not applied in `_GuardTransport`; non-ASCII decoded paths not rejected. Not confirmed closed in STATE | verify, proposed P2.5a | P1.4a→P1.4b |
 | No size cap in `build_sdk_http_client` | unassigned, proposed P2.5a | P1.4a |
 | No post-DNS private-IP check | P4.5 | P1.4a |
 | ActionSpec no-URL rule (no generic fetch) | P2.5b | P1.4a |
-| Wire `PostgresFlagStore`/`PostgresAuditStore` at app wiring (legacy stores are process-local, so cap and kill switch do not survive restart). `/panic` must set `system_flag` | P2.1b | P1.4b |
-| Held spend reservation is in-memory only (lost on restart); hung audit write blocks the call (needs a DB statement timeout) | P2.1b | P1.4b |
+| Wire `PostgresFlagStore`/`PostgresAuditStore` at app wiring (legacy stores are process-local, so cap and kill switch do not survive restart). `/panic` must set `system_flag`. **[CLOSED W2: wired in `src/app/runtime.py`, P2.1b; `/panic` not evidenced]** | P2.1b | P1.4b |
+| Held spend reservation is in-memory only (lost on restart); hung audit write blocks the call (needs a DB statement timeout). **[PARTLY CLOSED W2: 30 s `statement_timeout` (P2.1b); reservation still in-memory]** | P2.1b | P1.4b |
 | Base64 and spaced canary obfuscation | P4.4 | P1.4b |
 | Memory-tagged-message lane check unimplemented | P3.0 | P1.4b |
 | `llm_audit` has no 'started' state | unassigned | P1.4b |
 | 500/502/503/429 unbilled and retried under one reservation (OPEN, disclosed). Record real provider 5xx billing before PRR | P5.4, before P6.7 | P1.4b |
 | `retrieve_memory` `memory_manager is None` branch is redundant | P2.4 | P1.4b |
-| INV-1 part 4 (runtime zero-transport check with fake transport) not yet in the INV-1 test | unassigned, proposed P2.5a | P1.4c/P1.5 |
-| INV-1 part 5 (`HF_HUB_OFFLINE=1` set and asserted for the local embedder) | P2.3 | P1.4c/P1.5 |
-| Stale scrubber wording in `tasks.py`, `reminders.py`, `state.py` and API routes; `ToolIntent` fixtures; `test_graph.py` weak assertion (STATE cites line 139) | P2.5b | P1.4c |
+| INV-1 part 4 (runtime zero-transport check with fake transport) not yet in the INV-1 test. **[CLOSED W2: `tests/unit/llm/test_llm_guard_r4.py`, cited in the INV-1 file]** | unassigned, proposed P2.5a | P1.4c/P1.5 |
+| INV-1 part 5 (`HF_HUB_OFFLINE=1` set and asserted for the local embedder). **[CLOSED W2: `src/memory/embedder.py`, PR #16. The INV-1 file comment still names P2.3 as owner: stale, protected file]** | P2.3 | P1.4c/P1.5 |
+| Stale scrubber wording in `tasks.py`, `reminders.py`, `state.py` and API routes; `ToolIntent` fixtures; `test_graph.py` weak assertion (STATE cites line 139). **[CLOSED W2 P2.5b, PR #25: no scrubber wording left in `src/tools`, `src/app`, `src/orchestrator`; `test_graph.py` and ToolIntent deleted]** | P2.5b | P1.4c |
 | `.env.example` CLOUD_EGRESS_*, GEMINI_MODEL, VLLM, QDRANT and REDIS dead lines | human (agents cannot read `.env.*`), H19/H21 | P1.0, P1.3b, P1.4c |
-| NOTICE lists Apache AGE (line 102), Parakeet-TDT 0.6B v2 (lines 14-18) and pyannote-segmentation-3.0 (lines 24-27); none are in the dependency set. Remove, unless a live model uses them | orchestrator, before W2 | this gate |
-| Dependency removals: fastapi, uvicorn, pyjwt → P2.1b; langgraph → P2.5b; apscheduler → P3.3 (ADR-0008; TARGET_DESIGN:55 lists it as dropped, but the P3.3 row does not name the removal, so reconcile); sentence-transformers → P2.3 becomes an optional `[local-embed]` extra (ADR-0013), not a removal | P2.1b, P2.5b, P3.3, P2.3 | this gate |
+| NOTICE lists Apache AGE (line 102), Parakeet-TDT 0.6B v2 (lines 14-18) and pyannote-segmentation-3.0 (lines 24-27); none are in the dependency set. Remove, unless a live model uses them. **[PARTLY CLOSED W2: arq is gone. Corrected at W2 gate review: Apache AGE (NOTICE line 99), Parakeet (14-18) and pyannote (24-27) are still in NOTICE; apscheduler (line 82) is still a core dependency until P3.3]** | orchestrator, before W3 ends | this gate |
+| Dependency removals: fastapi, uvicorn, pyjwt → P2.1b; langgraph → P2.5b; apscheduler → P3.3 (ADR-0008; TARGET_DESIGN:55 lists it as dropped, but the P3.3 row does not name the removal, so reconcile); sentence-transformers → P2.3 becomes an optional `[local-embed]` extra (ADR-0013), not a removal. **[PARTLY CLOSED W2: fastapi, uvicorn, pyjwt, langgraph absent from pyproject and uv.lock; sentence-transformers is the optional extra (PR #18); apscheduler still a core dependency, P3.3]** | P2.1b, P2.5b, P3.3, P2.3 | this gate |
 | `arm64` buildx image not run under emulation; pin digest | P6.1 (H15 partial) | P1.2a |
 | ADR-0001 and ADR-0014 wording amendments | orchestrator, wave gate (not done in W1) | P1.2c |
-| `src/orchestrator/graph.py` `add_node` `# type: ignore` (LangGraph) | P2.5b | prior T1.10 |
-| LoCoMo real-embedder re-baseline; anti-sycophancy and stance harnesses still placeholders | P2.4; P5.3 | prior |
-| Legacy `Approver._llm_judge` (`approver.py:162-193`) returns `approved` from model output (INV-5 violation, HIGH until W2). Reached via `graph.py:220`; built through `GraphDependencies` in `api/main.py`. Interim: DenyAllWritesPolicy | P2.5a (interim), P2.5b (removal), P3.1 (real policy) | this gate |
+| `src/orchestrator/graph.py` `add_node` `# type: ignore` (LangGraph). **[CLOSED W2: `graph.py` deleted, P2.5b PR #25]** | P2.5b | prior T1.10 |
+| LoCoMo real-embedder re-baseline; anti-sycophancy and stance harnesses still placeholders. **[W2: stub recorded (ADR-0018); real-embedder NOT MEASURED; personality harnesses not re-run]** | P2.4; P5.3 | prior |
+| Legacy `Approver._llm_judge` (`approver.py:162-193`) returns `approved` from model output (INV-5 violation, HIGH until W2). Reached via `graph.py:220`; built through `GraphDependencies` in `api/main.py`. Interim: DenyAllWritesPolicy. **[CLOSED W2: `approver.py` and `graph.py` deleted, P2.5b PR #25; INV-5 AST regression test `tests/unit/orchestrator/test_inv5_no_llm_permission.py`; real policy still P3.1]** | P2.5a (interim), P2.5b (removal), P3.1 (real policy) | this gate |
 
 ### Human items at W1 gate
 
@@ -241,3 +241,137 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADRs `docs/decisions/0001-0015`, task
 - H18 (ADR-0010, quarantine every untrusted field): open. Blocks P3.0.
 - H19 (`.env.example` cleanup, VLLM line): open, by hand.
 - H21 (orphaned `nimbus-qdrant-1` and `nimbus-redis-1` containers and volumes still running on the dev host, plus `.env.example` QDRANT/REDIS): open, by hand.
+
+## Pivot W2 — Nimbus Lite build wave (2026-10-25 to 2026-10-27)
+
+Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`, `docs/pivot/reports/WAVE_W2.md`, `docs/pivot/reports/KPI.md`. Merge dates are UTC from GitHub `mergedAt`. W2 gate docs: branch `task/W2-gate-docs` (PR into `pivot`).
+
+### Architecture decisions (W2)
+
+- Gateway: offset advances only on ack; at-least-once; redelivery budget of 5; consumer dedupes on `telegram:<update_id>` (ADR-0016, P2.1a PR #14, 2 rounds). The ADR's "poison audit" wording is still ambiguous (STATE L1, open).
+- One process, `src/app`: gateway, worker and scheduler loops, supervised. Exit codes 0/1/2/3/4. `APP_ENV` defaults to `production`; fake backends and the dev card bypass are refused outside `development` (P2.1b PR #26, 2 rounds).
+- Heartbeat is a JSON file, not the `system_flag` rows ADR-0012 describes. `healthcheck` fails closed on missing, malformed, non-finite or future-dated beats. ADR-0012 executed with this deviation; the HEALTHCHECK_PING_URL ping is not built (P6.4). `src/api`, FastAPI, uvicorn and pyjwt deleted (PR #26).
+- LangGraph, `graph.py` and `approver.py` deleted (ADR-0006 executed, P2.5b PR #25). Tool protocol v2 (`src/tools/base.py` `FunctionTool`/`ToolGroup`; `ProposedCall`, `ToolOutput`, `LoopTool` in `src/orchestrator/dispatch.py`, not `contracts/tool_io.py` as ADR-0014 says).
+- Loop: ≤12 tools, iteration cap, token budget (P2.5a PR #15, 3 review passes; round 3 orchestrator-approved). Interim policy `DenyAllWritesPolicy` denies every write (INV-5 interim; real policy P3.1, ADR-0009).
+- Ingest: events idempotent on `source_key`; follow-on attempts persisted before paid calls, with backoff and a tombstone after 3 attempts or 24 h (P2.2 PR #20, P2.2-fu PR #22).
+- Memory (ADR-0017, P2.4 PR #23): `record_event`, `add_chunks` idempotent on `(event_id, chunk_index)`, `as_of`/`known_at` on chunks and graph edges, chunk `promote` bound to a consumed approval (`tool=memory, action=promote, item_id`) with single use via migration `c4e8a1d92b37`. Graph `supersede` sets the old `valid_to` to `max(new.valid_from, old.valid_from)` (sign-off in ADR-0017). Edge promotion has no method yet (P4.6).
+- LoCoMo gate stays provisional 0.70 / target 0.85 (ADR-0018). Stub only: 13/233 = 5.58% on 2 of 10 samples. Real-embedder baseline NOT MEASURED (needs H6 or H3).
+- Embedder: optional `local-embed` extra (ADR-0013, PR #18). `HF_HUB_OFFLINE` enforced (PR #16). `ApiEmbedder` shares the `CallAccountant` of `GuardedLLM` via `factory.py` (PR #16 round 2).
+- Character-card loader: fail-closed R9 gate, all loads routed through `load_approved_character_card` (ADR-0015, PR #19). Card still a placeholder (H1).
+- Test isolation: per-session `nimbus_test_*` database (INFRA-1, PR #17). CI redteam job gets a Postgres service (PR #24).
+- Protected-test edits in W2 (H14 Q1 scope only): `tests/eval/locomo/harness.py` (P2.4, named in ADR-0017); `tests/eval/injection/red_team.py` and the approver self-check deleted (P2.5b, red team returns in P4.7).
+
+### Gate numbers (run 2026-10-27 on a fresh worktree of `origin/pivot` bf78d58, Windows 11, `uv sync --extra dev`, compose `postgres` up)
+
+- `pytest` unit 1090 passed, 4 skipped. integration 151 passed, 1 skipped. invariants 100 passed. Non-adversarial total 1341 passed, 5 skipped. Adversarial 62 passed.
+- `ruff check .` clean. `mypy src`: no issues in 93 source files.
+- Coverage (non-adversarial, packages in the W2 list): total 96% (4289 statements, 165 missed). `src/llm` 97.7%, `src/net` 99.2%, `src/core` 100%, `src/gateway` 96.4%, `src/ingest` 97.7%, `src/app` 89.6%, `src/orchestrator` 97.2%, `src/memory` 96.8%.
+- `redteam_min_cases` 100: 62 adversarial tests, NOT MET (corpus is P4.7).
+- Skips are platform or release gates: 3 POSIX permission tests (`test_heartbeat.py`), 1 POSIX-signal test (SIGTERM), 1 R9 release-gate test (needs `NIMBUS_REQUIRE_CARD=1`, which CI does not set yet).
+
+### What the agent learned (W2)
+
+- Spend accounting is a DoS surface, not only a money surface. P2.5a's HIGHs were output-size and spend-cap problems (raw tool output, then NFKC expansion). P1.4b's HIGHs were R5 fail-open paths. Cap output after normalisation, and bill any call that may have been sent (STATE P1.4b, P2.5a).
+- Extract, do not copy. P2.3 round 1 had a second copy of the guard that drifted (64%, 2 HIGH). A shared `CallAccountant` fixed it (PR #16 round 2). The direct-construction fallback in `src/llm/embeddings_api.py` still builds its own accountant (open, LOW).
+- Shared dev DB incident: a session-scoped fixture ran `create_all`/`drop_all` on the shared `nimbus` database, so concurrent runs dropped each other's tables (`relation "session" does not exist`). PR #17 reproduced it: two concurrent full runs gave 890 passed, and 835 passed with 55 errors. Fixed by a per-session DB.
+- CI gap: the redteam job had no Postgres service, but the adversarial memory tests need one (PR #24). Declare the service in every job that touches the DB.
+- Orchestrator-caused regression: removing LangGraph also dropped httpx from the pre-commit mypy environment. httpx is now listed there explicitly (STATE P2.5b).
+- Stale `__pycache__` breaks tests that assert a directory is gone: they check disk, not git. Use `git ls-files` (STATE P2.1b). Gate runs happen in a fresh worktree.
+- "Wired together" code kept producing fail-open edges. P2.1b round 1: healthcheck accepted future-dated and non-finite beats (fixed; each mutant then failed a test, PR #26). P2.2 round 2 HIGH-1: unbounded follow-on attempts (PR #22). P2.4 round 1 H2: a back-dated correction closed old facts retroactively (PR #23).
+- Dates drift between STATE and GitHub: P2.5b is 2026-10-27 in STATE, `mergedAt` 2026-10-26T18:40Z. INFRA-1 (#17) and the CI fix (#24) have no STATE rows. Use `gh pr view` as the source.
+- Review rounds (STATE): #14 2, #15 3 (round 3 orchestrator-approved), #16 2, #19 2 plus pre-merge fixes, #20 2, #23 2, #26 2. Round counts for #17, #18, #21, #22, #24 and #25 are not recorded.
+- Gate review found the memory path was never wired end to end. Recall ran and returned nothing, and every test passed, because each component was tested alone. Test the composed path (write, then recall) before calling a feature built.
+- Not recorded, no repo artifact: the auto-mode classifier denied a `git rm` that a human ran, and usage-limit interruptions were resumed with SendMessage. Both were reported by the orchestrator and are not verified here.
+
+### Superseded or closed in this file (W2)
+
+- W1 follow-up rows closed or partly closed in place: legacy approver (INV-5), `graph.py` `type: ignore`, scrubber wording, INV-1 parts 4 and 5, flag/audit store wiring, MED-1, MED-2 (hits), reconcile store protocol, `model_id`, `invalidate` on unknown id, dependency removals (arq only; the AGE claim in the NOTICE row was wrong and is corrected there).
+- W1 "Architecture decisions" lines for ADR-0012 and ADR-0014 annotated as code-removed.
+- ADR-0006 (executed; line 27 wording corrected), ADR-0012 (executed with the heartbeat deviation), ADR-0014 (executed; `ToolOutput` location).
+
+### Open follow-ups (W2; owner)
+
+| Follow-up | Owner | Source |
+|---|---|---|
+| Poison min-age (≥10 min) is in the P2.1b PRR inputs; fixed user notice "could not process message at HH:MM" is not evidenced | P2.1b verify, PRR | P2.1a M1 |
+| Gateway protocol docstring: redeliveries bounded; consumer acks before pulling next | unassigned (doc) | P2.1a M2 |
+| Poison audit ambiguous (`processed_at` set + `event_id` NULL). Record poisoned ids in `system_flag telegram.poisoned`; fix ADR-0016 wording | unassigned | P2.1a L1 |
+| Poison tests: counter cleanup, hot-loop guard, timeouts | unassigned | P2.1a L2 |
+| `begin()` re-checks `processed_at` after the lock | unassigned | P2.1a L3 |
+| 429 retry bypasses `RateLimiter.acquire` | unassigned | P2.1a L4 |
+| `answer_callback` 200-limit counts code points, not UTF-16; sanitize keeps lone surrogates | unassigned | P2.1a L5 |
+| Gateway integration tests use `create_all`, not migrations (triggers unexercised) | unassigned | P2.1a L6 |
+| Residual silent-loss window (ADR-0016) belongs in the PRR reliability section | P6.8 PRR | P2.1a |
+| Reply delivery is at-most-once | P6.8 PRR | P2.1b |
+| Poison update blocks the queue ≥10 min by design | P6.8 PRR | P2.1b |
+| Literal secrets <8 chars are never redacted; default DB password `nimbus` means production needs a long password | P6.1 runbook | P2.1b |
+| Model output not canary-checked before Telegram or history | P4.4 | P2.1b |
+| Docker `stop_grace_period` ≥20 s; HEALTHCHECK as the service user, with a writable state dir or `APP_HEARTBEAT_PATH` | P6.1 | P2.1b |
+| Stuck send in `_apologise` is detected only after the 8-slot turn queue fills | unassigned (PRR) | P2.1b |
+| Telegram outage reads as unhealthy | PRR decision | P2.1b |
+| Heartbeat dir check should refuse group-writable; validate empty `APP_HEARTBEAT_PATH` up front (LOW) | unassigned | P2.1b |
+| `card.py` scan gaps: require `dev_mode=True` guarded by `card_dev_mode_from_env()`, or pin the card.py hash | P2.6 / security (unassigned) | P2.1b |
+| Tests for system and tool messages kept out of history; Runtime `on_progress` | unassigned | P2.1b |
+| 3 POSIX permission tests and the SIGTERM test skip on Windows; confirm CI ubuntu runs them | orchestrator | P2.1b |
+| `meta.file_id` must stay out of model-visible text (not re-verified) | P2.2 owner | P2.2 |
+| Stale `SessionBundle` docstring in `src/memory/schemas/session.py` (still present) | unassigned | P2.2 |
+| No real transcription provider (Transcriber Protocol, fake and UnavailableTranscriber only) | P5/P3 decision | P2.2 |
+| Extractor data framing is prompt-only until DataBlock | P3.0 | P2.2 |
+| Direct-construction `ApiEmbedder` fallback builds its own `CallAccountant` (`embeddings_api.py:118`); the factory path is shared | unassigned (LOW) | P2.3 |
+| Per-slice token cap (300k tokens) | unassigned | P2.3 |
+| Document loop capture and the `asyncio.Lock` limit of sync `embed_batch` | unassigned (doc) | P2.3 |
+| arm64 embed latency NOT MEASURED | H6 | P2.3 |
+| API embed model name and price are placeholders | P5.5 price table | P2.3 |
+| Qwen3 query/document instruction prefix not applied (`embed(kind=)` missing) | P2.3 owner (open) | P2.3, ADR-0017 |
+| Edge promotion has no store method; reuse `_PROMOTE_SQL` or a DB trigger | P4.6 | P2.4 |
+| Promote approvals: `tool=memory`, `action=promote`, payload `{item_id}`, written by the creator | P3.2 / P4.6 | P2.4 |
+| Retract of a successor does not reopen the old fact | P5.2 | P2.4 |
+| `record_event` with the same key but different source or confidence merges silently | unassigned | P2.4 |
+| `verify_memory_index` swallows every `Exception`. **[CLOSED W2: `src/app/runtime.py:183` catches `(SQLAlchemyError, OSError, TimeoutError)` and logs the type]** | unassigned | P2.4 |
+| `promoted_at` column (proxy: `pending_action.consumed_at`) | unassigned | P2.4 |
+| Deploy runbook: pre-check duplicate `promoted_approval_id` before migration `c4e8a1d92b37` | P6.x runbook | P2.4 |
+| Per-conversation filter needs an indexed session column (migration) | schema task (unassigned) | P2.4 |
+| Real-embedder LoCoMo re-baseline NOT MEASURED | H6 or H3 | P2.4, ADR-0018 |
+| `context.py:80` trusts `MemoryRecall` to honour the limit; 1200-char memory cap untested | unassigned (LOW) | P2.5a |
+| DataBlock is the interim home for tool output until P3.0 | P3.0 | P2.5a |
+| INV-5 scanner is a name tripwire (misses `getattr`, `attrgetter`, `.parsed.approved`, shim `.complete()`); needs a structural test | P3.1 | P2.5b |
+| `test_policy_interface_takes_only_a_proposed_call` must change to `decide(call, ctx)` | P3.1 | P2.5b |
+| `object_schema` lacks `maxLength` (a 5 MB title is accepted) | unassigned | P2.5b |
+| Reminders are stored before they are scheduled | P3.3 | P2.5b |
+| `src/personality/agent_character.py` still imports the `src.llm.client` shim (line 40); retire the shim | unassigned | P2.5b |
+| Red-team corpus removed with `red_team.py`; nothing enforces `redteam_min_cases` 100 | P4.7 | P2.5b |
+| Protected `tests/eval/invariants/test_inv1_single_egress_point.py:341` comment still names P2.3 as owner of part 5 (stale) | next H14-scope edit | W2 gate |
+| CI job for `base=main` must set `NIMBUS_REQUIRE_CARD=1` (not in `.github/` yet) | orchestrator, final PR (P7.4) | P2.6 |
+| Embedder env-write exemption is AST-shaped; obfuscated `dev_mode` indirection (`functools.partial`) not caught (LOW) | P2.6 / security (unassigned) | P2.6 |
+| Character card: `human-authored: true` marker missing; 2 placeholder lines | H1 | P2.6 |
+| `.github/CODEOWNERS` and branch protection for `personality/**`, the R9 test, and `.claude/hooks/**` | H22 | P2.6 |
+| `src/workers/` holds only `.gitkeep`; fill at P3.3 or remove | P3.3 | W2 gate |
+| PR #26 changed 62 files, over the soft cap of 40 (`quality/thresholds.yaml`); not a pure deletion | process: split next time | W2 gate |
+| `docs/pivot/STATE.md` lacks rows for INFRA-1 (#17) and the CI fix (#24) | orchestrator | W2 gate |
+| Files below 95% in the W2 coverage run: `src/llm/adapter.py` 90%; `src/app` `fakes.py` 67%, `cli.py` 84%, `heartbeat.py` 89%, `pipeline.py` 90%, `runtime.py` 92%, `__main__.py` 0%; `src/memory/schemas/vector.py` 68%, `embedder.py` 93%, `store.py` 94%; `src/orchestrator/context.py` 93% | unassigned | W2 gate |
+| Memory write path is not wired. No production caller of `record_event`, `add_chunks` or `write_semantic`; ingest writes only `event` rows (`src/ingest/repository.py:63`); `SessionScopedRecall` (`src/app/recall.py`) always returns nothing; `src/memory/extractor.py` has no importer. TARGET_DESIGN §4.1 step 7 (post-turn `memory_extract` job) has no STATE row. Covers the record_event → chunk → memory_extract path | P3.3 (job runner) | W2 gate review MED-1 |
+| Spend cap default 200 INR with no upper bound (`src/llm/settings.py:58`); `quality/thresholds.yaml` `cost.hard_daily_cap_inr` is 100 | P5.5 before any real key; P6.4 | W2 gate review MED-3 |
+| Chat `*` price is a placeholder, 250/1000 INR per Mtok (`src/llm/settings.py:35`), not tied to a provider | P5.5 | W2 gate review MED-3 |
+| `run_app` builds `GuardedLLM` with no `alert` hook (`src/app/runtime.py:346-352`; factory default is None), so R5 "alerts the user" is not wired. Reservation held in memory only | P6.4 | W2 gate review MED-3 |
+| Kill switch is the `system_flag` row `llm_kill_switch` (`src/llm/guard.py:73`). `/panic` is not built (`KILLED` enum only): engaging it is manual SQL | unassigned (proposed P6.4) | W2 gate review MED-3 |
+| R4 latent: `VLLMClient()` with no `guarded=` builds a second `GuardedLLM` on in-memory stores (`src/llm/client.py:93`, `src/llm/factory.py:25`). Its only caller, `check_friction_llm` (`src/personality/agent_character.py:432`), has no caller | P5.3 (or delete the shim) | W2 gate review |
+| R10: `run_app` passes no stances or traits to `Orchestrator` (`src/app/runtime.py:363-369`) | P5.2 | W2 gate review |
+| Tests that assert "directory deleted" check disk, not git: `tests/unit/app/test_no_fastapi.py:37` and `tests/eval/invariants/test_inv1_single_egress_point.py:473` (protected). Stale `__pycache__` breaks them; fix with `git ls-files` | unassigned (test hygiene) | W2 gate review LOW-5 |
+| NOTICE cleanup: Parakeet (14-18), pyannote (24-27), Apache AGE (line 99) | orchestrator, before W3 ends | W2 gate review drift check |
+| `apscheduler` (`pyproject.toml`; NOTICE line 82) is still a core dependency. Its removal must be named on the P3.3 row in STATE | P3.3 (orchestrator adds the STATE line) | W2 gate review |
+
+### Human items at W2 gate
+
+- H1 (character card): open. `human-authored: true` count 0, 2 placeholder lines. R9 release test skipped in CI.
+- H2 (Telegram token, staging bot, allowlisted user ID): open. Blocks the live gateway test (P6.5).
+- H3 (model key, billing enabled): open. Blocks live LLM use, the API-embedder run and the P5.4 bake-off.
+- H6 (Oracle VM): open. Blocks arm64 embed latency, the real LoCoMo baseline and P6.x.
+- H12 (`.claude/settings.json`): open. The main checkout still shows it modified.
+- H16 (Gmail scope, ADR-0007): open. Blocks P3.4 and P3.6.
+- H17 (Q3/Q4/Q5 defaults): defaults applied unless you object.
+- H18 (ADR-0010, quarantine every untrusted field): open. Blocks P3.0, and through it P3.1 and P3.2.
+- H19 and H21 (`.env.example` lines, orphaned Qdrant and Redis containers): open, by hand.
+- H22 (CODEOWNERS and branch protection): open.
+- Waiver (human decision): the superuser app DB role (HIGH, until P6.1/P6.2) must be waived explicitly or fixed before any live run with production credentials. No waiver is recorded here.
+- Real price table and a daily cap of at most 100 INR (human supplies the provider price) before any staging run with a real key.
+- Resolved: H14 (2026-10-25), H15 (Docker running). H20 is superseded by H14.
