@@ -1,0 +1,7 @@
+{
+  "access_token": "ya29.FAKEFIXTUREACCESSTOKEN000000000000000000",
+  "expires_in": 3599,
+  "refresh_token": "1//0gFAKEFIXTUREREFRESHTOKEN0000000000000000",
+  "scope": "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.readonly",
+  "token_type": "Bearer"
+}

@@ -196,7 +196,11 @@ async def test_unlisted_method_denied(method: Any) -> None:
 async def test_allowlisted_service_reaches_its_host_over_https(service: Service) -> None:
     transport = RecordingTransport()
     async with EgressClient(make_settings(), transport=transport) as client:
-        resp = await client.request(service, "GET", "/ok")
+        # oauth2.googleapis.com only serves POST /token and /revoke (ADR-0019).
+        if service is Service.GOOGLE_OAUTH:
+            resp = await client.request(service, "POST", "/token")
+        else:
+            resp = await client.request(service, "GET", "/ok")
     assert resp.status_code == 200
     (req,) = transport.calls
     assert req.url.scheme == "https"
