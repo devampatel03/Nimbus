@@ -49,11 +49,11 @@ class Commitment(Base):
         PGUUID(as_uuid=True), ForeignKey("session.id"), nullable=True
     )
 
-    # P1.2c provenance (R7/R8). `lane` has no default (P3.3): every writer states it.
+    # P1.2c provenance (R7/R8). Server defaults remain until the lane-default removal (task/P3.3b-lane-default); writers already pass `lane` explicitly.
     source_event_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("event.id"), nullable=True
     )
-    lane: Mapped[str] = mapped_column(nullable=False)  # explicit; no default (P3.3)
+    lane: Mapped[str] = mapped_column(nullable=False, server_default=text("'trusted'"))
     promoted: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
     promoted_approval_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("pending_action.id"), nullable=True

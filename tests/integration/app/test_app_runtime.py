@@ -76,7 +76,8 @@ async def test_message_flows_end_to_end_and_event_is_acked_before_the_model_runs
                 done = await s.scalar(
                     select(InboundRow.processed_at).where(InboundRow.update_id == BASE + 1)
                 )
-            seen_at_model_call.append((bool(ev), done is not None))
+            if req.response_schema is None:  # the turn, not background extraction
+                seen_at_model_call.append((bool(ev), done is not None))
             return await super().complete(req)
 
     cfg = make_cfg(tmp_path)
