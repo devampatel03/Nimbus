@@ -329,3 +329,22 @@ class JobQueue:
             .returning(Job.id)
         )
         return res.scalar_one_or_none() is not None
+
+    async def cancel_by_payload_in(
+        self, session: AsyncSession, kind: str, field: str, value: str
+    ) -> int:
+        """Cancel every live job of `kind` whose payload `field` equals `value`
+        (caller's transaction). Returns how many were cancelled."""
+        res = await session.execute(
+            update(Job)
+            .where(
+                Job.kind == kind,
+                Job.payload[field].astext == value,
+                Job.status.in_(("pending", "running")),
+            )
+            .values(
+                status="cancelled", locked_by=None, locked_at=None, updated_at=self._clock.now()
+            )
+            .returning(Job.id)
+        )
+        return len(res.all())
