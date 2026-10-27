@@ -127,10 +127,13 @@ def test_model_calls_only_from_known_callers() -> None:
                 callers.add(rel)
     # extractor: writes unreviewed rows. agent_character: advisory friction text.
     # Neither output can reach a Policy or grant anything (checked by the scan above).
+    # lanes/quarantine (P3.0): QUARANTINE lane, no tools; output is schema-validated
+    # untrusted DATA (INV-6) and sets taint, so it can only tighten policy.
     allowed = {
         "src/orchestrator/loop.py",
         "src/memory/extractor.py",
         "src/personality/agent_character.py",
+        "src/lanes/quarantine.py",
     }
     assert callers <= allowed, callers
 

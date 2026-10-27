@@ -10,17 +10,22 @@ tool name and arguments but never a verdict, risk class or approval flag.
 This module imports no LLM code. Fail closed: unknown tool, unexposed tool,
 policy error, or any non-`allow` verdict means the tool does not run.
 
-P3.1 swaps `DenyAllWritesPolicy` for the real policy engine.
+P3.0: the caller passes the turn's taint (ADR-0010) as a boolean fact computed
+by code from code-declared flags (`ToolOutput.untrusted`, memory lanes), never
+from model output. It is logged and recorded on each `DispatchResult`. P3.1
+swaps `DenyAllWritesPolicy` for the real policy engine and feeds the fact into
+`decide` (tainted WRITE_INTERNAL -> require_approval).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
+from src.lanes.data import UntrustedText
 from src.llm.types import ToolSpec
 
 log = logging.getLogger(__name__)
@@ -32,6 +37,8 @@ MAX_TOOL_OUTPUT_CHARS = 4000
 TRUNCATION_MARKER = "\n[truncated]"
 MAX_TOOL_ERROR_CHARS = 200
 CALL_CAP_MESSAGE = "Denied: too many tool calls in this turn."
+# Each external item costs one quarantine call; bound them per tool output.
+MAX_EXTERNAL_ITEMS = 5
 
 
 class Risk(StrEnum):
@@ -49,7 +56,12 @@ class ToolError(Exception):
 class ToolOutput:
     text: str
     # Untrusted unless a tool explicitly opts out; rendered as a DataBlock.
+    # `text` is for Nimbus-local text: it is data-framed, not quarantined.
     untrusted: bool = True
+    # Externally authored free text (email bodies, invite descriptions, page
+    # content). Each item is quarantined by the loop (ADR-0010 interim
+    # default: every item, no bypass) or withheld. Never rendered raw.
+    external: tuple[UntrustedText, ...] = ()
 
 
 class LoopTool(Protocol):
@@ -102,6 +114,9 @@ class DispatchResult:
     content: str
     untrusted: bool = False
     rule_id: str = ""
+    tainted: bool = False  # the turn's taint when this call was decided
+    external: tuple[UntrustedText, ...] = ()  # at most MAX_EXTERNAL_ITEMS
+    external_dropped: int = 0  # over the cap, or not UntrustedText (fail closed)
 
 
 def safe_name(name: str) -> str:
@@ -115,16 +130,23 @@ class Dispatcher:
         self._policy = policy
 
     async def dispatch(
-        self, name: str, args: Mapping[str, Any], *, exposed: frozenset[str]
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        *,
+        exposed: frozenset[str],
+        tainted: bool = False,
     ) -> DispatchResult:
+        tainted = tainted is not False  # fail closed: only an explicit False is clean
         result = await self._decide_and_run(name, args, exposed)
         log.info(
-            "dispatch decision tool=%s verdict=%s rule_id=%s",
+            "dispatch decision tool=%s verdict=%s rule_id=%s tainted=%s",
             safe_name(name),
             "deny" if result.status == "denied" else "allow",
             result.rule_id,
+            "yes" if tainted else "no",
         )
-        return result
+        return replace(result, tainted=tainted)
 
     async def _decide_and_run(
         self, name: str, args: Mapping[str, Any], exposed: frozenset[str]
@@ -148,6 +170,12 @@ class Dispatcher:
             out = await tool.run(args)
             text = "" if out.text is None else str(out.text)
             untrusted = bool(out.untrusted)
+            raw_external = out.external if isinstance(out.external, tuple) else ()
+            valid = tuple(u for u in raw_external if isinstance(u, UntrustedText))
+            external = valid[:MAX_EXTERNAL_ITEMS]
+            dropped = len(raw_external) - len(external)
+            if not isinstance(out.external, tuple) and out.external:
+                dropped += 1
         except ToolError as e:
             # Error text may echo external content: capped and treated as DATA.
             msg = str(e)[:MAX_TOOL_ERROR_CHARS]
@@ -159,4 +187,12 @@ class Dispatcher:
             return DispatchResult(name, "error", "Tool error: failed.", rule_id=decision.rule_id)
         if len(text) > MAX_TOOL_OUTPUT_CHARS:
             text = text[:MAX_TOOL_OUTPUT_CHARS] + TRUNCATION_MARKER
-        return DispatchResult(name, "ok", text, untrusted=untrusted, rule_id=decision.rule_id)
+        return DispatchResult(
+            name,
+            "ok",
+            text,
+            untrusted=untrusted,
+            rule_id=decision.rule_id,
+            external=external,
+            external_dropped=dropped,
+        )
