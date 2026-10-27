@@ -155,10 +155,27 @@ def deny_google_batch(service: Service, method: str, path: str) -> str | None:
     return None
 
 
+# oauth2.googleapis.com is used for exactly two calls: the token endpoint
+# (code exchange and refresh) and token revocation (ADR-0019, P3.4). Anything
+# else on that host (tokeninfo, userinfo, device flow, ...) has no caller.
+_GOOGLE_OAUTH_PATHS = frozenset({"/token", "/revoke"})
+
+
+def deny_google_oauth_unexpected(service: Service, method: str, path: str) -> str | None:
+    if service is not Service.GOOGLE_OAUTH:
+        return None
+    if path not in _GOOGLE_OAUTH_PATHS:
+        return "google_oauth_path"
+    if method != "POST":
+        return "google_oauth_method"
+    return None
+
+
 DEFAULT_DENY_RULES: tuple[DenyRule, ...] = (
     deny_gmail_send,
     deny_gmail_settings_write,
     deny_google_batch,
+    deny_google_oauth_unexpected,
 )
 
 
