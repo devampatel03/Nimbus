@@ -10,14 +10,18 @@ tool name and arguments but never a verdict, risk class or approval flag.
 This module imports no LLM code. Fail closed: unknown tool, unexposed tool,
 policy error, or any non-`allow` verdict means the tool does not run.
 
-P3.1 swaps `DenyAllWritesPolicy` for the real policy engine.
+P3.0: the caller passes the turn's taint (ADR-0010) as a boolean fact computed
+by code from code-declared flags (`ToolOutput.untrusted`, memory lanes), never
+from model output. It is logged and recorded on each `DispatchResult`. P3.1
+swaps `DenyAllWritesPolicy` for the real policy engine and feeds the fact into
+`decide` (tainted WRITE_INTERNAL -> require_approval).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
@@ -102,6 +106,7 @@ class DispatchResult:
     content: str
     untrusted: bool = False
     rule_id: str = ""
+    tainted: bool = False  # the turn's taint when this call was decided
 
 
 def safe_name(name: str) -> str:
@@ -115,16 +120,23 @@ class Dispatcher:
         self._policy = policy
 
     async def dispatch(
-        self, name: str, args: Mapping[str, Any], *, exposed: frozenset[str]
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        *,
+        exposed: frozenset[str],
+        tainted: bool = False,
     ) -> DispatchResult:
+        tainted = tainted is not False  # fail closed: only an explicit False is clean
         result = await self._decide_and_run(name, args, exposed)
         log.info(
-            "dispatch decision tool=%s verdict=%s rule_id=%s",
+            "dispatch decision tool=%s verdict=%s rule_id=%s tainted=%s",
             safe_name(name),
             "deny" if result.status == "denied" else "allow",
             result.rule_id,
+            "yes" if tainted else "no",
         )
-        return result
+        return replace(result, tainted=tainted)
 
     async def _decide_and_run(
         self, name: str, args: Mapping[str, Any], exposed: frozenset[str]
