@@ -195,11 +195,11 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADRs `docs/decisions/0001-0015`, task
 
 | Follow-up | Owner | Source |
 |---|---|---|
-| Legacy `lane='trusted'` server default still on memory writers; drop when touched | P2.2 | P1.2c |
+| Legacy `lane='trusted'` server default still on memory writers; drop when touched. **[Re-owned W2: P2.2 is finished. Default still live at `src/memory/schemas/graph.py:100`, `commitment.py:56`, `decision.py:51`]** | P3.3 (memory write path) | P1.2c |
 | App DB role `nimbus` is a superuser (can disable triggers). Use a non-superuser app role. HIGH until P6.1/P6.2 | P6.1/P6.2 | P1.2c |
-| Trigger gap: jsonb numeric-scale rewrite (LOW) | unassigned, proposed P2.2 | P1.2c |
-| Source_event_id is immutable on legacy tables; backfill needs a trigger-drop migration | unassigned, proposed P2.2 | P1.2c |
-| R8: FK proves the approval row exists, not that it was consumed | P3.1/P3.2 | P1.2c |
+| Trigger gap: jsonb numeric-scale rewrite (LOW). **[Re-owned W2]** | P4.6 | P1.2c |
+| Source_event_id is immutable on legacy tables; backfill needs a trigger-drop migration. **[Re-owned W2]** | P4.6 | P1.2c |
+| R8: FK proves the approval row exists, not that it was consumed. **[PARTLY CLOSED W2: the chunk path checks consumed status in `store.promote` and migration `c4e8a1d92b37`; graph-edge path and a DB-level check remain]** | P4.6 (was P3.1/P3.2) | P1.2c |
 | Key decoder accepts mixed std/urlsafe base64 and edge whitespace (LOW) | unassigned, proposed P6.1 | P1.2c |
 | `compare_metadata` ignores CHECK constraints and server defaults | unassigned | P1.2b |
 | Store creates a synthetic event per chunk; ingest must pass the real `event_id` (MED-1). **[CLOSED W2: event-linked chunks, P2.4 PR #23, ADR-0017]** | P2.2 | P1.3b |
@@ -224,7 +224,7 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADRs `docs/decisions/0001-0015`, task
 | INV-1 part 5 (`HF_HUB_OFFLINE=1` set and asserted for the local embedder). **[CLOSED W2: `src/memory/embedder.py`, PR #16. The INV-1 file comment still names P2.3 as owner: stale, protected file]** | P2.3 | P1.4c/P1.5 |
 | Stale scrubber wording in `tasks.py`, `reminders.py`, `state.py` and API routes; `ToolIntent` fixtures; `test_graph.py` weak assertion (STATE cites line 139). **[CLOSED W2 P2.5b, PR #25: no scrubber wording left in `src/tools`, `src/app`, `src/orchestrator`; `test_graph.py` and ToolIntent deleted]** | P2.5b | P1.4c |
 | `.env.example` CLOUD_EGRESS_*, GEMINI_MODEL, VLLM, QDRANT and REDIS dead lines | human (agents cannot read `.env.*`), H19/H21 | P1.0, P1.3b, P1.4c |
-| NOTICE lists Apache AGE (line 102), Parakeet-TDT 0.6B v2 (lines 14-18) and pyannote-segmentation-3.0 (lines 24-27); none are in the dependency set. Remove, unless a live model uses them. **[PARTLY CLOSED W2: AGE and arq entries gone; Parakeet and pyannote still in NOTICE at the W2 gate]** | orchestrator, before W2 | this gate |
+| NOTICE lists Apache AGE (line 102), Parakeet-TDT 0.6B v2 (lines 14-18) and pyannote-segmentation-3.0 (lines 24-27); none are in the dependency set. Remove, unless a live model uses them. **[PARTLY CLOSED W2: arq is gone. Corrected at W2 gate review: Apache AGE (NOTICE line 99), Parakeet (14-18) and pyannote (24-27) are still in NOTICE; apscheduler (line 82) is still a core dependency until P3.3]** | orchestrator, before W3 ends | this gate |
 | Dependency removals: fastapi, uvicorn, pyjwt → P2.1b; langgraph → P2.5b; apscheduler → P3.3 (ADR-0008; TARGET_DESIGN:55 lists it as dropped, but the P3.3 row does not name the removal, so reconcile); sentence-transformers → P2.3 becomes an optional `[local-embed]` extra (ADR-0013), not a removal. **[PARTLY CLOSED W2: fastapi, uvicorn, pyjwt, langgraph absent from pyproject and uv.lock; sentence-transformers is the optional extra (PR #18); apscheduler still a core dependency, P3.3]** | P2.1b, P2.5b, P3.3, P2.3 | this gate |
 | `arm64` buildx image not run under emulation; pin digest | P6.1 (H15 partial) | P1.2a |
 | ADR-0001 and ADR-0014 wording amendments | orchestrator, wave gate (not done in W1) | P1.2c |
@@ -280,11 +280,12 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 - "Wired together" code kept producing fail-open edges. P2.1b round 1: healthcheck accepted future-dated and non-finite beats (fixed; each mutant then failed a test, PR #26). P2.2 round 2 HIGH-1: unbounded follow-on attempts (PR #22). P2.4 round 1 H2: a back-dated correction closed old facts retroactively (PR #23).
 - Dates drift between STATE and GitHub: P2.5b is 2026-10-27 in STATE, `mergedAt` 2026-10-26T18:40Z. INFRA-1 (#17) and the CI fix (#24) have no STATE rows. Use `gh pr view` as the source.
 - Review rounds (STATE): #14 2, #15 3 (round 3 orchestrator-approved), #16 2, #19 2 plus pre-merge fixes, #20 2, #23 2, #26 2. Round counts for #17, #18, #21, #22, #24 and #25 are not recorded.
+- Gate review found the memory path was never wired end to end. Recall ran and returned nothing, and every test passed, because each component was tested alone. Test the composed path (write, then recall) before calling a feature built.
 - Not recorded, no repo artifact: the auto-mode classifier denied a `git rm` that a human ran, and usage-limit interruptions were resumed with SendMessage. Both were reported by the orchestrator and are not verified here.
 
 ### Superseded or closed in this file (W2)
 
-- W1 follow-up rows closed or partly closed in place: legacy approver (INV-5), `graph.py` `type: ignore`, scrubber wording, INV-1 parts 4 and 5, flag/audit store wiring, MED-1, MED-2 (hits), reconcile store protocol, `model_id`, `invalidate` on unknown id, dependency removals, NOTICE (AGE and arq).
+- W1 follow-up rows closed or partly closed in place: legacy approver (INV-5), `graph.py` `type: ignore`, scrubber wording, INV-1 parts 4 and 5, flag/audit store wiring, MED-1, MED-2 (hits), reconcile store protocol, `model_id`, `invalidate` on unknown id, dependency removals (arq only; the AGE claim in the NOTICE row was wrong and is corrected there).
 - W1 "Architecture decisions" lines for ADR-0012 and ADR-0014 annotated as code-removed.
 - ADR-0006 (executed; line 27 wording corrected), ADR-0012 (executed with the heartbeat deviation), ADR-0014 (executed; `ToolOutput` location).
 
@@ -326,7 +327,7 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 | Promote approvals: `tool=memory`, `action=promote`, payload `{item_id}`, written by the creator | P3.2 / P4.6 | P2.4 |
 | Retract of a successor does not reopen the old fact | P5.2 | P2.4 |
 | `record_event` with the same key but different source or confidence merges silently | unassigned | P2.4 |
-| `verify_memory_index` swallows every `Exception`: narrow it and log the type | unassigned | P2.4 |
+| `verify_memory_index` swallows every `Exception`. **[CLOSED W2: `src/app/runtime.py:183` catches `(SQLAlchemyError, OSError, TimeoutError)` and logs the type]** | unassigned | P2.4 |
 | `promoted_at` column (proxy: `pending_action.consumed_at`) | unassigned | P2.4 |
 | Deploy runbook: pre-check duplicate `promoted_approval_id` before migration `c4e8a1d92b37` | P6.x runbook | P2.4 |
 | Per-conversation filter needs an indexed session column (migration) | schema task (unassigned) | P2.4 |
@@ -339,7 +340,7 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 | Reminders are stored before they are scheduled | P3.3 | P2.5b |
 | `src/personality/agent_character.py` still imports the `src.llm.client` shim (line 40); retire the shim | unassigned | P2.5b |
 | Red-team corpus removed with `red_team.py`; nothing enforces `redteam_min_cases` 100 | P4.7 | P2.5b |
-| Protected `tests/eval/invariants/test_inv1_single_egress_point.py` comment still names P2.3 as owner of part 5 (stale) | next H14-scope edit | W2 gate |
+| Protected `tests/eval/invariants/test_inv1_single_egress_point.py:341` comment still names P2.3 as owner of part 5 (stale) | next H14-scope edit | W2 gate |
 | CI job for `base=main` must set `NIMBUS_REQUIRE_CARD=1` (not in `.github/` yet) | orchestrator, final PR (P7.4) | P2.6 |
 | Embedder env-write exemption is AST-shaped; obfuscated `dev_mode` indirection (`functools.partial`) not caught (LOW) | P2.6 / security (unassigned) | P2.6 |
 | Character card: `human-authored: true` marker missing; 2 placeholder lines | H1 | P2.6 |
@@ -348,6 +349,16 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 | PR #26 changed 62 files, over the soft cap of 40 (`quality/thresholds.yaml`); not a pure deletion | process: split next time | W2 gate |
 | `docs/pivot/STATE.md` lacks rows for INFRA-1 (#17) and the CI fix (#24) | orchestrator | W2 gate |
 | Files below 95% in the W2 coverage run: `src/llm/adapter.py` 90%; `src/app` `fakes.py` 67%, `cli.py` 84%, `heartbeat.py` 89%, `pipeline.py` 90%, `runtime.py` 92%, `__main__.py` 0%; `src/memory/schemas/vector.py` 68%, `embedder.py` 93%, `store.py` 94%; `src/orchestrator/context.py` 93% | unassigned | W2 gate |
+| Memory write path is not wired. No production caller of `record_event`, `add_chunks` or `write_semantic`; ingest writes only `event` rows (`src/ingest/repository.py:63`); `SessionScopedRecall` (`src/app/recall.py`) always returns nothing; `src/memory/extractor.py` has no importer. TARGET_DESIGN §4.1 step 7 (post-turn `memory_extract` job) has no STATE row. Covers the record_event → chunk → memory_extract path | P3.3 (job runner) | W2 gate review MED-1 |
+| Spend cap default 200 INR with no upper bound (`src/llm/settings.py:58`); `quality/thresholds.yaml` `cost.hard_daily_cap_inr` is 100 | P5.5 before any real key; P6.4 | W2 gate review MED-3 |
+| Chat `*` price is a placeholder, 250/1000 INR per Mtok (`src/llm/settings.py:35`), not tied to a provider | P5.5 | W2 gate review MED-3 |
+| `run_app` builds `GuardedLLM` with no `alert` hook (`src/app/runtime.py:346-352`; factory default is None), so R5 "alerts the user" is not wired. Reservation held in memory only | P6.4 | W2 gate review MED-3 |
+| Kill switch is the `system_flag` row `llm_kill_switch` (`src/llm/guard.py:73`). `/panic` is not built (`KILLED` enum only): engaging it is manual SQL | unassigned (proposed P6.4) | W2 gate review MED-3 |
+| R4 latent: `VLLMClient()` with no `guarded=` builds a second `GuardedLLM` on in-memory stores (`src/llm/client.py:93`, `src/llm/factory.py:25`). Its only caller, `check_friction_llm` (`src/personality/agent_character.py:432`), has no caller | P5.3 (or delete the shim) | W2 gate review |
+| R10: `run_app` passes no stances or traits to `Orchestrator` (`src/app/runtime.py:363-369`) | P5.2 | W2 gate review |
+| Tests that assert "directory deleted" check disk, not git: `tests/unit/app/test_no_fastapi.py:37` and `tests/eval/invariants/test_inv1_single_egress_point.py:473` (protected). Stale `__pycache__` breaks them; fix with `git ls-files` | unassigned (test hygiene) | W2 gate review LOW-5 |
+| NOTICE cleanup: Parakeet (14-18), pyannote (24-27), Apache AGE (line 99) | orchestrator, before W3 ends | W2 gate review drift check |
+| `apscheduler` (`pyproject.toml`; NOTICE line 82) is still a core dependency. Its removal must be named on the P3.3 row in STATE | P3.3 (orchestrator adds the STATE line) | W2 gate review |
 
 ### Human items at W2 gate
 
@@ -361,4 +372,6 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 - H18 (ADR-0010, quarantine every untrusted field): open. Blocks P3.0, and through it P3.1 and P3.2.
 - H19 and H21 (`.env.example` lines, orphaned Qdrant and Redis containers): open, by hand.
 - H22 (CODEOWNERS and branch protection): open.
+- Waiver (human decision): the superuser app DB role (HIGH, until P6.1/P6.2) must be waived explicitly or fixed before any live run with production credentials. No waiver is recorded here.
+- Real price table and a daily cap of at most 100 INR (human supplies the provider price) before any staging run with a real key.
 - Resolved: H14 (2026-10-25), H15 (Docker running). H20 is superseded by H14.

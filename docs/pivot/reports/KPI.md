@@ -62,7 +62,9 @@ Files below 95%: `src/llm/adapter.py` 90%; `src/app/__main__.py` 0% (one-line sh
 | `untrusted_auto_promotion` | 0 | chunk promote binding tested; no code creates approvals, no runtime count | tests pass |
 | `locomo_min_accuracy_provisional` | 0.70 | NOT MEASURED with a real embedder (stub 5.58%, 2 of 10 samples; ADR-0018) | **not measured** |
 | `locomo_target_accuracy` | 0.85 | NOT MEASURED | **not measured** |
-| `daily_spend_cap_enforced` | true | R5 guard tests pass (`tests/unit/llm`); no live spend | tests pass |
+| `daily_spend_cap_enforced` | true | R5 guard tests pass (`tests/unit/llm`). **Not met at production defaults:** cap default 200 INR with no upper bound (`src/llm/settings.py:58`) vs `cost.hard_daily_cap_inr` 100; `*` price is a placeholder 250/1000 INR per Mtok (`settings.py:35`); no alert hook wired (`src/app/runtime.py:346-352`); held reservation in memory only | **partly met: tests pass, production wiring gaps (WAVE_W2 §5)** |
+| Long-term memory written by the running app | `git grep` for callers of `record_event`, `add_chunks`, `write_semantic` in `src/` (excluding definitions): 0 | 0 production callers; `SessionScopedRecall` always returns empty | **not met** (P3.3) |
+| Kill switch operator control | `git grep -i panic -- src`: only the `KILLED` enum value | `llm_kill_switch` is a `system_flag` row (`src/llm/guard.py:73`); `/panic` not built; engaging is manual SQL | tests pass; no operator control |
 | `tool_exposure_per_turn_max` | 12 | exposure cap tests pass (`src/orchestrator/exposure.py`) | tests pass |
 | `no_lost_updates_after_restart` | true | replay and restart tests pass (P2.1a, P2.1b e2e); no live run | tests pass |
 | `runtime.*` (p95 reply, reminder delivery, restart recovery seconds, soak hours) | — | no live app or VM | n/a |

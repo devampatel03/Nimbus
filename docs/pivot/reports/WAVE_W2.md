@@ -64,7 +64,7 @@ Test count change: non-adversarial 694 (W1) → 1341 (W2). Adversarial 53 → 62
 
 ## 4. Documentation changes in this PR
 
-- `CLAUDE.md`: rewritten to the W2 state. Process rules, the "Never do" list and the rules for agents are kept. Invariants: INV-5 has its regression test and the legacy-approver violation is closed; the superuser DB role stays HIGH; R8 and R12 are updated; ADR numbering says next: 0019. Size 9,570 → 9,963 bytes (limit about 10 KB). The diff is in section 9.
+- `CLAUDE.md`: rewritten to the W2 state. Process rules, the "Never do" list and the rules for agents are kept. Invariants: INV-5 has its regression test and the legacy-approver violation is closed; the superuser DB role stays HIGH; R8 and R12 are updated; ADR numbering says next: 0019. Size 9,570 → 10,000 bytes (limit about 10 KB; it was 10,009 before the trims in this revision). The diff is in section 11.
 - `MEMORY.md`: append-only. New "Pivot W2" section (decisions, gate numbers, lessons, superseded list, open follow-up table with owners, human items). W1 rows marked `[CLOSED W2]` or `[PARTLY CLOSED W2]` in place. Nothing deleted.
 - `docs/pivot/reports/KPI.md`: W2 section added on top. The W1 section is kept below as history.
 - `docs/decisions/0006`, `0012`, `0014`: `Executed` lines and deviations added (minimal in-place annotations; Decision text unchanged).
@@ -78,15 +78,21 @@ Test count change: non-adversarial 694 (W1) → 1341 (W2). Adversarial 53 → 62
 3. **INV-6 and R8 quarantine are not built.** P3.0 is blocked by H18, and P3.1 and P3.2 depend on P3.0. No code creates promote approvals.
 4. **Reliability (PRR inputs, P2.1b).** Reply delivery is at-most-once. A poison update blocks the queue for at least 10 minutes by design. ADR-0016 leaves a residual silent-loss window. The held spend reservation is in-memory and is lost on restart.
 5. **Secrets.** Literal secrets shorter than 8 characters are never redacted. The default DB password `nimbus` means production needs a long one. Model output is not canary-checked before it reaches Telegram or history (P4.4).
-6. **Superuser app DB role** (HIGH until P6.1/P6.2). Unchanged.
+6. **Superuser app DB role: HIGH (INV-3, R7) until P6.1/P6.2.** Unchanged. There is no waiver. No live run with production credentials until it is waived or fixed (§9, §10).
 7. **Embedding and retrieval quality unmeasured.** arm64 latency is NOT MEASURED. The Qwen3 query prefix is not applied. The real LoCoMo baseline is NOT MEASURED, so the 0.70 gate has never been tested with a semantic embedder.
 8. **Red-team coverage.** 62 adversarial tests against a 100-case target. `red_team.py` was deleted in P2.5b, and nothing enforces `redteam_min_cases` yet.
 9. **Character card.** Still a placeholder. The R9 release gate does not run in CI.
 10. **Egress is app-level only.** No nftables or container egress control (P4.5), and no post-DNS private-IP check.
 11. **Coverage gaps.** `src/app/cli.py` 84%, `fakes.py` 67%, `heartbeat.py` 89%, `src/memory/schemas/vector.py` 68%.
 12. **Process.** PR #26 changed 62 files, above the soft cap of 40. STATE dates drifted from GitHub. INFRA-1 and PR #24 have no STATE rows. Three ADRs carry wording the code no longer matches (ADR-0012 heartbeat, ADR-0014 `ToolOutput` location, ADR-0016 poison audit).
-13. **NOTICE** still lists Parakeet-TDT and pyannote entries. Neither model is in the dependency set.
-14. **Dependency.** `apscheduler` is still a core dependency. Its removal is in P3.3, and the P3.3 row does not say so.
+13. **NOTICE** still lists Parakeet-TDT (lines 14-18), pyannote (lines 24-27) and Apache AGE (line 99). None is in the dependency set. An earlier draft of this report and of MEMORY.md said the AGE entry was gone. That was wrong and is corrected. Cleanup is an orchestrator item.
+14. **Dependency.** `apscheduler` is still a core dependency (NOTICE line 82). Its removal belongs to P3.3, and the STATE P3.3 row must name it (orchestrator).
+15. **Memory write path not wired (gate review MED-1).** No production caller of `record_event`, `add_chunks` or `write_semantic` exists; the only callers are the definitions in `src/memory/manager.py`. Ingest writes only `event` rows (`src/ingest/repository.py:63`). `SessionScopedRecall` (`src/app/recall.py`) reads an empty store. `src/memory/extractor.py` is not imported. The post-turn `memory_extract` job (TARGET_DESIGN §4.1 step 7) has no STATE row. The live bot remembers only the 20-message in-process window (`src/app/pipeline.py`). Owner: P3.3 (job runner, including the record_event → chunk → memory_extract path).
+16. **Spend cap not production-ready (gate review MED-3).** The default daily cap is 200 INR with no upper bound (`src/llm/settings.py:58`), against `cost.hard_daily_cap_inr` 100 in `quality/thresholds.yaml`. The `*` price is a placeholder, 250/1000 INR per Mtok (`settings.py:35`). `run_app` builds `GuardedLLM` with no `alert` hook (`src/app/runtime.py:346-352`), so R5 "alerts the user" is not wired. The held reservation is in memory only. Owners: P5.5 (price table, cap), P6.4 (alert).
+17. **Kill switch has no operator control.** The switch is the `system_flag` row `llm_kill_switch` (`src/llm/guard.py:73`). `/panic` is not built (only the `KILLED` enum value exists). Engaging it is manual SQL. Owner: unassigned, proposed P6.4.
+18. **R4 latent bypass.** `VLLMClient()` with no `guarded=` builds a second `GuardedLLM` on in-memory stores (`src/llm/client.py:93`, `src/llm/factory.py:25`). Its only caller, `check_friction_llm` (`src/personality/agent_character.py:432`), has no caller in `src/`. It is dead code today. Owner: P5.3, or delete the shim.
+19. **R10 not wired.** `run_app` passes no stances or traits to `Orchestrator` (`src/app/runtime.py:363-369`). Owner: P5.2 (trait model), P5.3.
+20. **Test hygiene (LOW-5).** Two tests assert "directory deleted" on disk, not in git: `tests/unit/app/test_no_fastapi.py:37` and `tests/eval/invariants/test_inv1_single_egress_point.py:473` (protected, so not edited here). A stale `__pycache__` breaks them. Fix: check `git ls-files`. Owner: unassigned.
 
 ## 6. Open follow-ups
 
@@ -104,6 +110,8 @@ The full table, with an owner and a source for each row, is in `MEMORY.md` under
 - **H18** ADR-0010, quarantine every untrusted field: open. Blocks P3.0, and through it P3.1 and P3.2.
 - **H19 and H21**: `.env.example` lines and the orphaned Qdrant and Redis containers. By hand. Agents cannot read `.env.*`.
 - **H22** CODEOWNERS and branch protection for `personality/**`, the R9 test and `.claude/hooks/**`: open.
+- **Waiver (human decision):** the superuser app DB role (HIGH, INV-3/R7) must be waived explicitly or fixed before any live run with production credentials. No waiver is recorded in this PR.
+- **Price table and cap (human):** the real provider price table and a daily cap of at most 100 INR before any staging run with a real key.
 - **Orchestrator (not human):** NOTICE cleanup; `NIMBUS_REQUIRE_CARD=1` in the CI job for `base=main` (final PR, P7.4); add STATE rows for INFRA-1 and PR #24.
 - **Resolved:** H14 (protected-test batch approval, 2026-10-25), H15 (Docker running). H20 is superseded by H14.
 
@@ -117,26 +125,54 @@ The full table, with an owner and a source for each row, is in `MEMORY.md` under
 - No live model or provider was called. No runtime SLO (reply time, reminder delivery, restart, soak) was measured.
 - The LoCoMo number is a stub with 2 of 10 samples. It says nothing about retrieval quality with a real embedder.
 - Replies are at-most-once. Updates older than Telegram's retention are lost, and the poison budget can drop a legitimate update (ADR-0016).
+- Long-term memory is not written by the running app. The bot's memory is the last 20 messages of the current process; nothing is recalled from earlier conversations (§5.15).
+- The spend cap is not a production guarantee: default 200 INR, placeholder price, no alert, in-memory reservation (§5.16). Kill switch engagement is manual SQL (§5.17).
+- Telegram and the model provider see plaintext. The model output is not canary-checked before it reaches Telegram (P4.4).
 
-## 9. Next wave (W3)
+## 9. Definition of Done (wave, SDLC §8)
 
-Batch order follows `docs/pivot/reports/TARGET_DESIGN.md` §9 and the dependencies in STATE. Only the dependencies were re-checked here.
+| Item | Status | Evidence |
+|---|---|---|
+| All W2 task rows merged | MET | PRs #14–#26 merged (GitHub `mergedAt`, §1) |
+| Each task: acceptance, tests, gates, reviewer approved | MET, with an exception | Review rounds in §1. P2.2 and P2.4 are merged, but the memory write path (§5.15) was in no W2 row |
+| Wave report | MET on merge of this PR | this file |
+| KPIs recorded | MET | `docs/pivot/reports/KPI.md`. NOT MET and NOT MEASURED rows are stated, not hidden |
+| No open HIGH risk | **NOT MET** | Superuser app DB role (INV-3, R7) until P6.1/P6.2. Needs an explicit human waiver or deferral. Until then: **no live run with production credentials** |
+| Checkpoint committed | PENDING | Orchestrator `chore(state)` checkpoint and the W2 rows in STATE |
+| Project-level (PRR, UAT, soak) | n/a at W2 | P6.x |
 
-- **Ready now (dependencies merged):** P3.3 scheduler job runner, reminders and tasks persisted (deps P2.5b, P2.1b); P3.4 Google OAuth loopback flow and encrypted token store (dep P1.4a; live use needs H4).
-- **Blocked:** P3.0 lanes and quarantine (H18, ADR-0010). Through it, P3.1 policy, P3.2 approvals, P3.9 commitments, P3.7 Notion (also P1.4a) and P3.8 Drive. P3.5 calendar needs P3.4 and P3.2. P3.6 Gmail needs H16.
-- **Human items before W3 can finish:** H18 (security chain), H16 (Gmail), H4 and H5 for live tools.
-- Before the W5 evals: H1 (card), H3 (model key), H6 (VM).
+Reviewer verdict on PR #27: APPROVE, 90%, with the doc fixes in this revision (memory path, spend cap, DoD, corrections) applied before merge.
 
-## 10. CLAUDE.md diff (this PR)
+Worst case with real credentials, derived from the code (the reviewer's full text was not available to this author, so this is not a quote):
+- The app DB role is a superuser. A bug, or a path that reaches SQL, can edit or delete rows in the append-only tables and disable the triggers (INV-3, R7).
+- The spend cap is 200 INR per day with no alert. At the placeholder price, the loss can reach twice the 100 INR threshold before anyone is told.
+- Model output is not canary-checked (P4.4), so anything the model writes reaches Telegram unchecked. Telegram and the provider see plaintext in any case (§8).
+- `/panic` does not exist. Stopping the spend or the replies means manual SQL on `llm_kill_switch`.
+
+## 10. Next wave (W3): GO with conditions
+
+Gate verdict: **GO with conditions.** Batch dependencies were checked against STATE. The batch order from `docs/pivot/reports/TARGET_DESIGN.md` §9 was not re-verified beyond those dependencies.
+
+1. **Waiver first.** A human waiver of the superuser-role HIGH (INV-3, R7) is required before any live run with production credentials. The fix (P6.1/P6.2) is the alternative.
+2. **Start only unblocked work.**
+   - P3.3 scheduler and job runner, with the memory write path (`record_event` → chunk → `memory_extract`), the `lane` server default removal (`graph.py:100`, `commitment.py:56`, `decision.py:51`), and the apscheduler removal named on the STATE P3.3 row.
+   - P3.4 Google OAuth code and token store. No live credentials until H4.
+3. **Blocked.** P3.0, P3.1, P3.2, P3.7, P3.8 and P3.9 wait on H18 (ADR-0010). P3.6 waits on H16. P3.5 needs P3.4 and P3.2, so it waits as well.
+4. **Before any staging run with a real key:** set the real price table, set a daily cap of at most 100 INR, and wire the alert hook.
+
+Human items for W3: H18 (security chain), H16 (Gmail), H4 and H5 (live tools). Before the W5 evals: H1 (card), H3 (model key), H6 (VM).
+
+## 11. CLAUDE.md diff (this PR)
 
 The diff against `origin/pivot` for `CLAUDE.md` (generated from the final file):
 
 ```diff
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 5ab683c..4fe7aea 100644
+index 5ab683c..dec1584 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -9,47 +9,50 @@ Read `docs/AGENT_OPERATING_MANUAL.md` and `docs/pivot/02_ORCHESTRATION_PROTOCOL.
+@@ -8,57 +8,59 @@ Read `docs/AGENT_OPERATING_MANUAL.md` and `docs/pivot/02_ORCHESTRATION_PROTOCOL.
+ 
  **Privacy stance (Brief §1, §8):** Telegram, Oracle and the model provider can each see plaintext. We bound leak and injection risk by architecture, not by trusting filters. Never claim more privacy than this.
  
 -## Architecture (quick reference, pivot W1 state)
@@ -157,19 +193,18 @@ index 5ab683c..4fe7aea 100644
 +## Architecture (quick reference, pivot W2 state)
 +
 +- **Channel:** `src/gateway/` Telegram long polling, outbound only, allowlisted user ID (R1–R3). Offset advances on ack, at-least-once, bounded redelivery; consumer dedupes on `telegram:<update_id>` (ADR-0016).
-+- **Process:** `src/app/` is the single process: gateway, worker (ingest, recovery) and scheduler loops, supervised. Heartbeat file read by `healthcheck` (ADR-0012). Log scrubbing installed first (R12).
++- **Process:** `src/app/`, one process, three supervised loops: gateway (`Ingestor.run`, turn queue), worker (`recover_pending`, job seam, no jobs), scheduler (stub). Heartbeat file read by `healthcheck` (ADR-0012). Log scrubbing first (R12). No long-term memory writes yet (`memory_extract` is P3.3).
 +- **Postgres 16 + pgvector:** `infra/docker/postgres/`, `migrations/` (Alembic, head `c4e8a1d92b37`), `src/db/`, ORM in `src/memory/schemas/`. Append-only triggers on fact and event tables (R7, INV-3).
-+- **`src/llm` — the only LLM SDK importer (R4, R5).** Guard order: kill switch → scrub (`scrub.py`) → spend cap (`CallAccountant`, shared by `GuardedLLM` and `ApiEmbedder`) → audit row (`llm_audit`) → provider call.
++- **`src/llm` — the only LLM SDK importer (R4, R5).** Guard order: kill switch → scrub → spend cap (`CallAccountant`, shared with `ApiEmbedder`) → audit row → provider call.
 +- **`src/net` — the only network transport importer (R13).** Default-deny host allowlist, `Service` enum in `src/net/policy.py` (ADR-0004).
-+- **`src/core/logging.py`:** `install_log_scrubbing` (INV-7). Module settings in `src/<module>/settings.py` (`docs/pivot/SETTINGS_PATTERN.md`).
-+- **`src/personality/`:** card loader `load_approved_character_card` (R9 gate, ADR-0015). Every card load goes through it.
-+- **`src/memory/`:** `store.py` episodic chunks (ADR-0017: `record_event`, `add_chunks`, `search` with `as_of`/`known_at`, `promote`); `graph.py` bi-temporal facts (supersede only); `embedder.py` (local Qwen3-Embedding-0.6B, provisional, ADR-0013).
++- **`src/core/logging.py`:** `install_log_scrubbing` (INV-7). Module settings: `src/<module>/settings.py` (`docs/pivot/SETTINGS_PATTERN.md`).
++- **`src/personality/`:** every card load goes through `load_approved_character_card` (R9, ADR-0015).
++- **`src/memory/`:** `store.py` episodic chunks (ADR-0017); `graph.py` bi-temporal facts (supersede only); `embedder.py` (local Qwen3, provisional, ADR-0013).
 +- **`src/orchestrator/`:** plain async tool loop (`loop.py`, ≤12 tools, caps; ADR-0006). `dispatch.py` holds `DenyAllWritesPolicy`: every write is denied until the real policy (P3.1, ADR-0009).
 +- **`src/tools/`:** Tool protocol v2 (`base.py`) and the auto-discovery registry (`registry.py`, the only allow-listed dynamic import). Calendar, Gmail (drafts only; ADR-0007 Proposed, H16) and Drive: W3 (ADR-0005).
-+- **`src/contracts/`:** Event, Transcript, MemoryQuery/Result, UserProfileSlice, ProactiveCandidate (ADR-0014).
-+- **Removed in W2, do not reintroduce:** `src/api/`, FastAPI, uvicorn, pyjwt (ADR-0012, P2.1b); LangGraph, `graph.py`, `approver.py` (ADR-0006, P2.5b).
++- **Removed in W2, do not reintroduce:** `src/api/`, FastAPI, uvicorn, pyjwt (ADR-0012); LangGraph, `graph.py`, `approver.py` (ADR-0006). Contracts: Event, Transcript, MemoryQuery, UserProfileSlice (ADR-0014).
 +- **Retired, do not reintroduce:** Redis, Qdrant, Apache AGE, local vLLM/Ollama, STT/TTS/diarization, Flutter, `src/security/`, `execute_external`, Gmail send, Gemini-as-executor, intent-builder tools.
-+- **Tests:** `tests/unit/`, `tests/integration/` (real Postgres), `tests/eval/` (protected, rule 4), `tests/adversarial/`, `tests/fakes/`, `tests/fixtures/`.
++- **Tests:** `tests/` unit, integration (real Postgres), `eval/` (protected, rule 4), adversarial, fakes, fixtures.
  
  ## Commands
  
@@ -179,10 +214,9 @@ index 5ab683c..4fe7aea 100644
 -- `uv run pytest tests/adversarial` — CI red-team job.
 +- `uv sync --extra dev` — always with `--extra dev`; plain `uv sync` removes the dev tools. `--extra local-embed` only where the local embedder runs.
 +- `docker compose up -d` — starts `postgres` only.
-+- `uv run python -m src.app` — runs the bot. Needs Telegram and LLM settings from the environment. `APP_ENV=development` enables fake backends for local runs only (refused in production).
++- `uv run python -m src.app` — runs the bot. Needs Telegram and LLM settings from the environment. Fake backends need both `APP_FAKE_BACKENDS=true` and `APP_ENV=development`; anything else is refused.
 +- `uv run python -m src.app healthcheck` — exit 0 healthy, 1 unhealthy (stale, missing or malformed heartbeat). `run` exits 2 on startup refused, 3 on embedding migration required, 4 on a fatal loop error.
-+- `uv run pytest --ignore=tests/adversarial` — CI test job (needs Postgres up). Each session creates and drops its own `nimbus_test_<epoch>_<pid>_<uuid8>` database (INFRA-1, PR #17); stale ones older than 6 h are dropped at start.
-+- `uv run pytest tests/adversarial` — CI red-team job (needs Postgres).
++- `uv run pytest --ignore=tests/adversarial` (CI test job) and `uv run pytest tests/adversarial` (red team); both need Postgres up. Each session creates and drops its own `nimbus_test_<epoch>_<pid>_<uuid8>` DB (INFRA-1, PR #17); stale ones older than 6 h are dropped at start.
  - `uv run ruff check .` and `uv run mypy src` — CI lint and types.
 -- **Deploy:** not built yet (P6.1 arm64 Dockerfile with weights baked in, P6.x runbooks). Never deploy from a task branch.
 +- **Deploy:** not built yet (P6.1 arm64 Dockerfile, P6.x runbooks). Never deploy from a task branch.
@@ -191,45 +225,52 @@ index 5ab683c..4fe7aea 100644
  
 -**Pivot (Nimbus Lite): W1 foundation gate done (2026-10-25). W2 next**: Telegram gateway and app entrypoint (P2.1a/b), ingest (P2.2), embedder (P2.3), retrieval (P2.4), orchestrator loop (P2.5a/b), character-card loader (P2.6).
 -Task table: `docs/pivot/STATE.md`. W1 numbers and open items: `docs/pivot/reports/WAVE_W1.md`.
-+**Pivot (Nimbus Lite): W2 built and gated (2026-10-27, `docs/pivot/reports/WAVE_W2.md`). W3 next:** lanes and quarantine (P3.0, blocked on H18), policy (P3.1), approvals (P3.2), scheduler (P3.3), tools (P3.4–P3.8).
++**Pivot (Nimbus Lite): W2 built (2026-10-27). Gate pending merge of the gate docs (`docs/pivot/reports/WAVE_W2.md`, GO with conditions).** No live run with production credentials until the superuser-role HIGH below is waived or fixed. W3 next: scheduler and memory write path (P3.3), Google OAuth code (P3.4, live use after H4); lanes (P3.0, blocked on H18) and everything after it wait.
 +Task table: `docs/pivot/STATE.md`.
  
  ## Invariants (Brief §4, as implemented; tested in CI, never violate)
  
 -- **INV-1 (reframed):** exactly one module calls an LLM (`src/llm`), and only `src/net` imports a network transport. Enforced by `tests/unit/llm/test_llm_import_lint.py` and `tests/eval/invariants/test_inv1_single_egress_point.py` (import scan, fails closed on non-literal dynamic imports; allow-list is `src/net/`→httpx and `src/tools/registry.py`→dynamic-import; `Service.LLM` is referenced only under `src/llm` and `src/net/policy.py`). Not built yet: the runtime zero-transport check (part 4) and the `HF_HUB_OFFLINE=1` assertion (part 5, P2.3).
-+- **INV-1 (reframed):** exactly one module calls an LLM (`src/llm`), and only `src/net` imports a network transport. Enforced by `tests/unit/llm/test_llm_import_lint.py` and `tests/eval/invariants/test_inv1_single_egress_point.py` (import scan, fails closed on dynamic imports; known gaps in its docstring). Zero-transport check: `tests/unit/llm/test_llm_guard_r4.py`. `HF_HUB_OFFLINE=1` enforced in `src/memory/embedder.py`.
++- **INV-1 (reframed):** only `src/llm` calls an LLM and only `src/net` imports a transport. Enforced by `tests/unit/llm/test_llm_import_lint.py` and `tests/eval/invariants/test_inv1_single_egress_point.py` (import scan, fails closed on dynamic imports). Zero-transport: `tests/unit/llm/test_llm_guard_r4.py`. `HF_HUB_OFFLINE=1` in `src/memory/embedder.py`.
  - **INV-2: RETIRED** (was: no memory in egress payload / local-only inference). Number never reused.
  - **INV-3:** graph facts are append-only; supersession only. `tests/eval/invariants/test_inv3_graph_facts_immutable.py` (AST scan) plus DB triggers.
  - **INV-4: RETIRED** (was: Mode A never blocks on network; mode A/B removed).
 -- **INV-5 (new):** policy decisions are deterministic code; no LLM output grants a permission. Not built yet (P3.1) **Currently violated** by the legacy approver until P2.5b (see Known violations below).
 -- **INV-6 (new):** untrusted text enters the trusted lane only as schema-validated, delimited DATA. Not built yet (P3.0; blocked on H18 / ADR-0010).
 -- **INV-7 (new):** no secret or token value in logs, prompts, memory, audit rows or error messages. Covered by the log filter, `src/llm/scrub.py` and hidden settings values (`tests/eval/invariants/test_inv7_no_secrets.py`). DB canary sweep and obfuscation cases: P4.4.
-+- **INV-5:** policy decisions are deterministic code; no LLM output grants a permission. Regression: `tests/unit/orchestrator/test_inv5_no_llm_permission.py` (AST scan). Until P3.1 the policy is `DenyAllWritesPolicy`, so no write runs. The scanner is a name tripwire; P3.1 adds a structural test.
++- **INV-5:** no LLM output grants a permission (deterministic policy). Regression: `tests/unit/orchestrator/test_inv5_no_llm_permission.py`. Until P3.1, `DenyAllWritesPolicy` denies all writes. The scanner is a name tripwire.
 +- **INV-6:** untrusted text enters the trusted lane only as schema-validated, delimited DATA. Not built (P3.0; blocked on H18 / ADR-0010). Tool output defaults to `untrusted=True`; framing is prompt-only until P3.0.
-+- **INV-7:** no secret or token value in logs, prompts, memory, audit rows or error messages. Covered by the log filter, `src/llm/scrub.py`, hidden settings values and `hide_parameters` (`tests/eval/invariants/test_inv7_no_secrets.py`). DB canary sweep: P4.4.
++- **INV-7:** no secret or token value in logs, prompts, memory, audit rows or errors. Covered by the log filter, `src/llm/scrub.py`, hidden settings and `hide_parameters` (`tests/eval/invariants/test_inv7_no_secrets.py`). Canary sweep: P4.4.
  - **R7 (provenance; was repo INV-5):** every derived memory row has non-null provenance (`tests/eval/invariants/test_r7_memory_provenance.py`).
 -- **R8 (untrusted memory never auto-promoted):** not built (P3.0, P4.6).
-+- **R8 (untrusted memory never auto-promoted):** enforced for chunk promotion only: a consumed approval for `tool=memory, action=promote, item_id`, single use (migration `c4e8a1d92b37`). Graph-edge promotion has no store method (P4.6). No code creates approvals; quarantine (P3.0) and review queue (P4.6) are not built.
++- **R8 (untrusted memory never auto-promoted):** enforced for chunk promotion only (consumed approval `tool=memory, action=promote, item_id`, single use, migration `c4e8a1d92b37`). Graph-edge promotion: P4.6. No code creates approvals; quarantine (P3.0) is not built.
 +- **R12 (no secrets in logs):** met at the entrypoint: `src/app/runtime.py` calls `install_log_scrubbing(cfg.secrets)` before anything else logs (P2.1b).
  - **Known violations, with severity:**
 -  - **HIGH, until W2 (INV-5):** legacy `src/orchestrator/approver.py` `_llm_judge` (lines 162-193) returns `approved` taken from model output. It is reached from `src/orchestrator/graph.py:220` (`review_async`) and built through `GraphDependencies` in `src/api/main.py`. No entrypoint runs it yet. Interim fix: `DenyAllWritesPolicy` (P2.5a). Removal: P2.5b. Real policy: P3.1.
-   - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. Fix: non-superuser app role.
+-  - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. Fix: non-superuser app role.
++  - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. Fix: non-superuser app role. Waiver needed before any live run with production credentials.
++  - **Open, not HIGH (WAVE_W2 §5):** spend cap default 200 INR, no upper bound (threshold 100); `*` price is a placeholder; no alert hook; kill switch is a `system_flag` row, no `/panic`. Before any staging run with a real key: real price table and cap ≤ 100 INR.
  
-@@ -57,7 +60,7 @@ Task table: `docs/pivot/STATE.md`. W1 numbers and open items: `docs/pivot/report
+ ## Conventions
  
  - **TDD:** failing test first. For security guards, prove the test can fail (break the code, or monkeypatch in-test). Never leave a weakened security file on disk.
 -- **Decisions:** architecture changes get an ADR in `docs/decisions/` (next: 0016) and a dated MEMORY.md entry. Thresholds in `quality/thresholds.yaml` change only via ADR plus reviewer sign-off.
 +- **Decisions:** architecture changes get an ADR in `docs/decisions/` (next: 0019) and a dated MEMORY.md entry. Thresholds in `quality/thresholds.yaml` change only via ADR plus reviewer sign-off.
  - **Git:** task branches `task/<id>-<slug>` off `pivot`; PRs target `pivot`. Stage explicit paths only (`git add <path>`), never `git add -A`.
 -- **Windows:** the working tree is CRLF (`core.autocrlf`); check `git diff --stat` before committing. Commit hooks (mypy env build) are slow and memory-heavy here; do not run them in parallel.
-+- **Windows:** the working tree is CRLF (`core.autocrlf`); check `git diff --stat` before committing. Commit hooks (mypy env build) are slow; do not run them in parallel.
++- **Windows:** working tree is CRLF (`core.autocrlf`); check `git diff --stat` before committing. Do not run commit hooks in parallel.
  
  ## Never do
-@@ -77,5 +80,5 @@ Task table: `docs/pivot/STATE.md`. W1 numbers and open items: `docs/pivot/report
+ 
+@@ -75,8 +77,8 @@ Task table: `docs/pivot/STATE.md`. W1 numbers and open items: `docs/pivot/report
+ ## Task tracking
+ 
  - Live table: `docs/pivot/STATE.md` (orchestrator-owned).
- - Pre-pivot T-rows (T0.1–T4.x, Step 11 and the "this session" rows) are SUPERSEDED by the pivot task table. Full text: `git show b9fb56d:CLAUDE.md`.
+-- Pre-pivot T-rows (T0.1–T4.x, Step 11 and the "this session" rows) are SUPERSEDED by the pivot task table. Full text: `git show b9fb56d:CLAUDE.md`.
 -- Pivot status: P0 (PR #1), P1.0 (#4), P1.1 (#3), P1.2a (#2, arm64 not run), P1.2b (#6), P1.2c (#7), P1.3a (#9), P1.3b (#10), P1.4a (#5), P1.4b (#8), P1.4c (#11), P1.5 (#12). W1 gate: see `docs/pivot/reports/WAVE_W1.md`.
-+- Pivot PRs: W1 #1–#13 (`docs/pivot/reports/WAVE_W1.md`); W2 #14–#26 (`docs/pivot/reports/WAVE_W2.md`).
++- Pre-pivot T-rows are SUPERSEDED by the pivot task table (`git show b9fb56d:CLAUDE.md`).
++- Pivot PRs: W1 #1–#13, W2 #14–#27 (`docs/pivot/reports/WAVE_W*.md`).
  
  ## Rules for agents
+ 
 ```
