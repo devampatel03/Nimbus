@@ -19,12 +19,11 @@ the turn receives `tainted=True`; the result reports it for the next turn.
 from __future__ import annotations
 
 import logging
-import secrets
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from src.lanes.data import BlockOrigin, render_data_block
+from src.lanes.data import BlockOrigin, default_nonce, render_data_block
 from src.lanes.quarantine import Quarantine, local_data_block
 from src.lanes.taint import Taint, TaintSource
 from src.llm.protocols import LLMClient
@@ -77,10 +76,6 @@ class TurnResult:
     tokens_used: int = 0
     messages: tuple[ChatMessage, ...] = field(default=())
     tainted: bool = False  # untrusted-derived data entered this turn (ADR-0010)
-
-
-def _random_nonce() -> str:
-    return secrets.token_hex(8)
 
 
 class Orchestrator:
@@ -227,5 +222,5 @@ class Orchestrator:
                 untrusted=True,
             )
             taint.absorb(block)
-            content = render_data_block(block, self._nonce or _random_nonce)
+            content = render_data_block(block, self._nonce or default_nonce)
         return ChatMessage(role="tool", content=content, tool_call_id=call.id)

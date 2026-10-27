@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import string
 import unicodedata
 from collections.abc import Callable
 from enum import StrEnum
@@ -249,8 +250,14 @@ def _mint_block(
     return block
 
 
+_NONCE_ALPHABET: Final = string.ascii_lowercase
+
+
 def default_nonce() -> str:
-    return secrets.token_hex(8)
+    """16 random lowercase letters (~75 bits). Letters only: a hex nonce can
+    hold a 12-digit run that `src.llm.scrub` redacts (Aadhaar/card shapes),
+    which would break the block terminator the model sees."""
+    return "".join(secrets.choice(_NONCE_ALPHABET) for _ in range(16))
 
 
 def render_data_block(block: DataBlock, nonce_factory: Callable[[], str] = default_nonce) -> str:

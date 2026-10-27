@@ -229,3 +229,52 @@ def test_fold_and_neutralise_are_idempotent() -> None:
     assert neutralise(neutralise(s)) == neutralise(s)
     assert "\u200b" not in fold(s) and "\u202e" not in fold(s)
     assert "\n" in fold("a\nb") and "\t" in fold("a\tb")
+
+
+def test_default_nonce_survives_the_llm_scrubber() -> None:
+    """Regression (found by the adversarial suite): a hex nonce sometimes holds
+    a 12-digit run that `src.llm.scrub` redacts as an Aadhaar number, which
+    breaks the block terminator the model sees. Nonces are letters only."""
+    import re
+
+    from src.lanes.data import default_nonce
+    from src.llm.scrub import Scrubber
+
+    scrubber = Scrubber()
+    block = _block("x")
+    for _ in range(5000):
+        n = default_nonce()
+        assert re.fullmatch(r"[a-z]{16}", n), n
+        rendered = render_data_block(block, lambda n=n: n)
+        assert scrubber.scrub(rendered).text == rendered
+
+
+async def test_loop_default_nonce_is_letters_only() -> None:
+    import re
+    from collections.abc import Mapping
+
+    from src.llm.fake import FakeLLM
+    from src.llm.types import ProviderResponse, ToolCallRequest, ToolSpec, Usage
+    from src.orchestrator.dispatch import DenyAllWritesPolicy, Risk, ToolOutput
+    from src.orchestrator.loop import Orchestrator
+    from tests.fakes.llm import build_env
+
+    class Reader:
+        spec = ToolSpec(name="read_doc", description="d")
+        risk = Risk.READ
+
+        async def run(self, args: Mapping[str, Any]) -> ToolOutput:
+            return ToolOutput("body")
+
+    call = ProviderResponse(
+        text=None,
+        tool_calls=(ToolCallRequest(id="c", name="read_doc", arguments={}),),
+        usage=Usage(tokens_in=1, tokens_out=1),
+    )
+    fake = FakeLLM([call, "ok"])
+    o = Orchestrator(
+        build_env(provider=fake).llm, [Reader()], DenyAllWritesPolicy(), character_card="c"
+    )
+    await o.run_turn("read_doc")
+    tool_msg = next(m for m in fake.requests[1].messages if m.role == "tool").content or ""
+    assert re.match(r"<<<DATA label=tool\.read_doc nonce=[a-z]{16}>>>", tool_msg), tool_msg[:80]
