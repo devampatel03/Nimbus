@@ -57,6 +57,11 @@ class AppSettings(BaseSettings):
     recover_interval_s: float = Field(default=60.0, gt=0, le=3600)
     recover_limit: int = Field(default=20, ge=1, le=200)
     scheduler_tick_s: float = Field(default=30.0, gt=0, le=3600)
+    # Job runner poll (ADR-0008: 5 s). Reminder delivery latency is this plus the
+    # send time, so it must stay well inside R11's 60 s.
+    job_poll_s: float = Field(default=5.0, gt=0, le=30)
+    job_lease_s: float = Field(default=300.0, gt=10, le=3600)
+    job_batch: int = Field(default=20, ge=1, le=200)
 
     # Turn pipeline.
     turn_queue_size: int = Field(default=8, ge=1, le=100)

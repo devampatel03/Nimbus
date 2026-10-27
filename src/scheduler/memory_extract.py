@@ -36,12 +36,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, exists, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.contracts.transcript import Segment, Transcript
+from src.core.clock import Clock
 from src.llm.protocols import LLMClient
 from src.llm.scrub import redact_secrets
 from src.llm.types import LLMRefused, LLMResponseError
@@ -57,6 +58,7 @@ from src.memory.extractor import (
 from src.memory.manager import MemoryManager
 from src.memory.schemas.event import Event as EventRow
 from src.memory.schemas.memory_chunk import MemoryChunk
+from src.memory.schemas.ops import Job
 from src.memory.store import ChunkIn
 from src.scheduler.jobs import JobQueue
 from src.scheduler.runner import JobContext, PermanentJobError
@@ -210,3 +212,46 @@ class MemoryExtractHandler:
         if numbered:
             await self._write(event_id, numbered)
         log.info("memory_extract done chunks=%d", 1 + len(numbered))
+
+
+class MemoryExtractSweeper:
+    """The `Scheduler` seam (`tick()`): a backstop for the post-turn enqueue. It
+    enqueues `memory_extract` for every trusted user text / voice-transcript
+    event of the last `lookback` that has no job yet (a crash between the turn and
+    the enqueue, and voice transcripts, which start no turn). Untrusted events
+    are never selected. Idempotent: the job's dedupe key is the event id."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        queue: JobQueue,
+        clock: Clock,
+        *,
+        lookback: timedelta = timedelta(days=2),
+        limit: int = 50,
+    ) -> None:
+        self._sf = session_factory
+        self._q = queue
+        self._clock = clock
+        self._lookback = lookback
+        self._limit = limit
+
+    async def tick(self) -> None:
+        since = self._clock.now() - self._lookback
+        async with self._sf() as session, session.begin():
+            missing = await session.scalars(
+                select(EventRow.id)
+                .where(
+                    EventRow.lane == "trusted",
+                    EventRow.kind.in_(sorted(EXTRACTABLE_KINDS)),
+                    EventRow.created_at >= since,
+                    func.char_length(func.coalesce(EventRow.body, "")) >= MIN_CHARS,
+                    ~exists().where(
+                        Job.dedupe_key == literal(f"{KIND}:") + cast(EventRow.id, String)
+                    ),
+                )
+                .order_by(EventRow.created_at)
+                .limit(self._limit)
+            )
+            for event_id in list(missing):
+                await enqueue_memory_extract(self._q, session, event_id)
