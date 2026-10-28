@@ -79,7 +79,6 @@ cryptography            Apache-2.0 OR BSD-3-Clause (confirmed via installed pack
 httpx                   BSD 3-Clause License
 openai                  Apache-2.0 (confirmed via installed package metadata)
 httpx2                  BSD-3-Clause (confirmed via installed package metadata; transitive of openai>=3)
-apscheduler             MIT License
 
 Development-only dependencies (not distributed with the product):
 
