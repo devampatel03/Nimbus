@@ -124,7 +124,12 @@ class ExtractionWorker(ABC, Generic[T]):
     async def extract(self, transcript: Transcript, *, source_event_id: UUID) -> list[T]: ...
 
     async def _call_model(
-        self, transcript: Transcript, system: str, *, schema: type[_SchemaT]
+        self,
+        transcript: Transcript,
+        system: str,
+        *,
+        schema: type[_SchemaT],
+        max_output_tokens: int = 800,
     ) -> _SchemaT:
         """Structured-output call through the guarded client only (INV-1)."""
         lane = Lane.QUARANTINE if transcript.untrusted else Lane.SYSTEM
@@ -135,6 +140,7 @@ class ExtractionWorker(ABC, Generic[T]):
                 messages=_messages(system, transcript),
                 response_schema=schema,
                 temperature=0.0,
+                max_output_tokens=max_output_tokens,
             )
         )
         if not isinstance(result.parsed, schema):
@@ -243,3 +249,46 @@ class DecisionExtractor(ExtractionWorker[ExtractedDecision]):
         del source_event_id
         batch = await self._call_model(transcript, _DECISION_SYSTEM_PROMPT, schema=_DecisionBatch)
         return _in_range(list(batch.decisions), transcript)
+
+
+# One call for everything worth remembering from one short user message (R5: the
+# per-message cost is one input pass and a small, capped output).
+_COMBINED_SYSTEM_PROMPT = (
+    "From this short message by the user, extract only what is worth remembering "
+    "long-term, in three lists. relations: factual statements about the user's "
+    "world as subject_name, predicate, and exactly one of object_name/object_literal, "
+    "plus valid_from (ISO 8601; use {created_at} if no time is stated). commitments: "
+    "things the user said they will do (description, owner_label or null, due_at or "
+    "null). decisions: conclusions the user reached (decision_text, reasoning). Every "
+    "item needs source_segment_index (0) and confidence (0.0-1.0). At most 3 items per "
+    "list; use empty lists when there is nothing. Respond only via the given JSON schema."
+)
+COMBINED_MAX_OUTPUT_TOKENS = 300
+_COMBINED_MAX_ITEMS = 5
+
+
+class _CombinedBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    relations: list[ExtractedRelation] = Field(default_factory=list, max_length=_COMBINED_MAX_ITEMS)
+    commitments: list[ExtractedCommitment] = Field(
+        default_factory=list, max_length=_COMBINED_MAX_ITEMS
+    )
+    decisions: list[ExtractedDecision] = Field(default_factory=list, max_length=_COMBINED_MAX_ITEMS)
+
+
+class CombinedExtractor(ExtractionWorker[BaseModel]):
+    """Relations, commitments and decisions in ONE guarded call with a small output
+    cap. Returns the items flat, in that order (relations, commitments, decisions)."""
+
+    async def extract(self, transcript: Transcript, *, source_event_id: UUID) -> list[BaseModel]:
+        del source_event_id
+        batch = await self._call_model(
+            transcript,
+            _COMBINED_SYSTEM_PROMPT.format(created_at=transcript.created_at.isoformat()),
+            schema=_CombinedBatch,
+            max_output_tokens=COMBINED_MAX_OUTPUT_TOKENS,
+        )
+        items: list[BaseModel] = []
+        for group in (batch.relations, batch.commitments, batch.decisions):
+            items.extend(_in_range(list(group), transcript))
+        return items

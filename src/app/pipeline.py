@@ -30,9 +30,10 @@ import asyncio
 import logging
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
+from src.core.turn_context import turn_event
 from src.gateway.protocols import Gateway
 from src.gateway.types import (
     ApprovalCard,
@@ -139,8 +140,10 @@ class TurnWorker:
         history_messages: int,
         turn_timeout_s: float = 180.0,
         on_progress: Callable[[], None] | None = None,
+        on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
     ) -> None:
         self._progress = on_progress
+        self._on_turn_done = on_turn_done
         self._gw = gateway
         self._orch = orchestrator
         self._queue = queue
@@ -174,6 +177,16 @@ class TurnWorker:
         except Exception as exc:  # noqa: BLE001
             log.warning("turn apology failed err=%s", type(exc).__name__)
 
+    async def _turn_done(self, item: PendingTurn) -> None:
+        """Post-turn hook (memory extraction). Only the user's own text event gets
+        here with an `event_id`; the hook must never break the turn."""
+        if self._on_turn_done is None or item.event_id is None:
+            return
+        try:
+            await self._on_turn_done(item.event_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("post-turn hook failed err=%s", type(exc).__name__)
+
     async def _handle(self, item: PendingTurn) -> None:
         u = item.update
         if u.kind is UpdateKind.CALLBACK:
@@ -184,12 +197,14 @@ class TurnWorker:
         text, _ = clean_text(u.text or "", max_chars=MAX_TURN_TEXT_CHARS)
         if not text.strip():
             return
-        result = await self._orch.run_turn(
-            text,
-            history=self._history.get(),
-            turn_id=uuid.uuid4(),
-            carried_taint=self._carry.carried,
-        )
+        with turn_event(item.event_id):  # tools stamp what they create with this event (M5)
+            result = await self._orch.run_turn(
+                text,
+                history=self._history.get(),
+                turn_id=uuid.uuid4(),
+                carried_taint=self._carry.carried,
+            )
+        await self._turn_done(item)
         kept = _remember(text, result)
         if kept is not None:
             self._history.replace([*self._history.get(), *kept])

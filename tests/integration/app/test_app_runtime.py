@@ -28,6 +28,7 @@ from src.memory.schemas.ops import LLMAudit
 from src.memory.store import PgVectorMemoryStore
 from tests.integration.app.harness import (
     TOKEN,
+    ChatOnly,
     EchoProvider,
     PacedTelegram,
     backends_for,
@@ -75,7 +76,8 @@ async def test_message_flows_end_to_end_and_event_is_acked_before_the_model_runs
                 done = await s.scalar(
                     select(InboundRow.processed_at).where(InboundRow.update_id == BASE + 1)
                 )
-            seen_at_model_call.append((bool(ev), done is not None))
+            if req.response_schema is None:  # the turn, not background extraction
+                seen_at_model_call.append((bool(ev), done is not None))
             return await super().complete(req)
 
     cfg = make_cfg(tmp_path)
@@ -159,16 +161,16 @@ async def test_worker_and_scheduler_loops_tick_and_heartbeat(
         return await real(self, limit)
 
     monkeypatch.setattr(Ingestor, "recover_pending", counting)
-    from src.app.seams import NoopScheduler
+    from src.scheduler.memory_extract import MemoryExtractSweeper
 
     ticks = {"n": 0}
-    real_tick = NoopScheduler.tick
+    real_tick = MemoryExtractSweeper.tick
 
-    async def tick(self: NoopScheduler) -> None:
+    async def tick(self: MemoryExtractSweeper) -> None:
         ticks["n"] += 1
         await real_tick(self)
 
-    monkeypatch.setattr(NoopScheduler, "tick", tick)
+    monkeypatch.setattr(MemoryExtractSweeper, "tick", tick)
     fake = PacedTelegram()
     cfg = make_cfg(tmp_path)
     await run_until(cfg, backends_for(fake), lambda: recovered["n"] >= 3 and ticks["n"] >= 3)
@@ -254,7 +256,7 @@ async def test_model_requested_write_is_denied_by_the_interim_policy(tmp_path: P
     )
     fake = PacedTelegram()
     fake.push(message(BASE + 40, "create a task: buy milk"))
-    await run_until(make_cfg(tmp_path), backends_for(fake, llm), lambda: bool(fake.sent))
+    await run_until(make_cfg(tmp_path), backends_for(fake, ChatOnly(llm)), lambda: bool(fake.sent))
     assert fake.replies() == ["I could not create that."]
     tool_msgs = [m for m in llm.requests[1].messages if m.role == "tool"]
     assert tool_msgs and (tool_msgs[0].content or "").startswith("Denied")

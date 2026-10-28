@@ -48,6 +48,7 @@ async def edge(
         ingested_at=ing,
         source_session=sess.id,
         confidence=0.9,
+        lane="trusted",
     )
     db.add(e)
     await db.flush()
@@ -164,6 +165,7 @@ async def test_current_read_uses_now_not_just_open_valid_to(db_session: AsyncSes
         valid_from=now - timedelta(days=100),
         source_session=sess.id,
         confidence=0.9,
+        lane="trusted",
     )
     await repo.supersede(
         a,
@@ -171,6 +173,7 @@ async def test_current_read_uses_now_not_just_open_valid_to(db_session: AsyncSes
         object_literal="Mumbai",
         valid_from=now + timedelta(days=30),
         confidence=0.9,
+        lane="trusted",
     )
     mgr = MemoryManager(pg_session=db_session, embedder=EMB)
     assert await lives(mgr, "Soon") == {"Pune"}
@@ -192,8 +195,11 @@ async def test_supersede_with_earlier_valid_from_yields_empty_interval(
         valid_from=d(5),
         source_session=sess.id,
         confidence=0.9,
+        lane="trusted",
     )
-    b = await repo.supersede(a, object_id=None, object_literal="B", valid_from=d(2), confidence=0.9)
+    b = await repo.supersede(
+        a, object_id=None, object_literal="B", valid_from=d(2), confidence=0.9, lane="trusted"
+    )
     assert a.valid_to == a.valid_from == d(5)
     assert a.superseded_by == b.id
     mgr = MemoryManager(pg_session=db_session, embedder=EMB)
@@ -214,7 +220,10 @@ async def test_supersede_keeps_t29_semantics_for_forward_supersession(
         valid_from=d(1),
         source_session=sess.id,
         confidence=0.9,
+        lane="trusted",
     )
-    b = await repo.supersede(a, object_id=None, object_literal="B", valid_from=d(4), confidence=0.9)
+    b = await repo.supersede(
+        a, object_id=None, object_literal="B", valid_from=d(4), confidence=0.9, lane="trusted"
+    )
     assert (a.valid_to, a.object_literal, a.valid_from) == (d(4), "A", d(1))
     assert b.valid_to is None

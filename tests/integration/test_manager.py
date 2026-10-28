@@ -78,6 +78,7 @@ async def test_write_semantic_inserts_then_supersedes(db_session: AsyncSession) 
                 valid_from=now,
                 source_session=session_id,
                 confidence=0.9,
+                lane="trusted",
             )
         ]
     )
@@ -93,6 +94,7 @@ async def test_write_semantic_inserts_then_supersedes(db_session: AsyncSession) 
                 valid_from=now,
                 source_session=session_id,
                 confidence=0.95,
+                lane="trusted",
             )
         ]
     )
@@ -123,6 +125,7 @@ async def test_write_semantic_is_idempotent_for_an_unchanged_fact(db_session: As
         valid_from=now,
         source_session=session_id,
         confidence=0.9,
+        lane="trusted",
     )
 
     [edge_first] = await manager.write_semantic([fact])
@@ -152,6 +155,7 @@ async def test_query_semantic_returns_graph_fact_for_active_entity(
                 valid_from=now,
                 source_session=session_id,
                 confidence=0.8,
+                lane="trusted",
             )
         ]
     )

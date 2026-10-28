@@ -14,11 +14,11 @@ from typing import Any
 
 import httpx
 
+from src.app.fakes import DevProvider
 from src.app.runtime import AppConfig, BackendFactory, Backends, Beat, SessionFactory, run_app
 from src.app.settings import AppSettings
 from src.gateway.store import UpdateStore
 from src.gateway.telegram import TelegramGateway
-from src.llm.fake import FakeLLM
 from src.llm.protocols import Provider
 from src.llm.types import ChatRequest, ProviderResponse, Usage
 from src.memory.manager import DeterministicStubEmbedder
@@ -27,6 +27,22 @@ from tests.unit.gateway.fake_telegram import FakeTelegram, make_egress, make_set
 
 CURRENT_DSN = ""  # set per test by conftest: the module's scratch database
 TOKEN = "123456789:AAH_fake_token_for_tests_only_0123456789"
+
+
+class ChatOnly:
+    """Wrap a scripted provider so background structured-output calls (memory
+    extraction, P3.3) answer `{}` and do not consume the script meant for turns."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.name = inner.name
+        self.model = inner.model
+
+    async def complete(self, req: ChatRequest) -> ProviderResponse:
+        if req.response_schema is not None:
+            return ProviderResponse(text="{}", usage=Usage(tokens_in=20, tokens_out=2))
+        result: ProviderResponse = await self.inner.complete(req)
+        return result
 
 
 class PacedTelegram(FakeTelegram):
@@ -47,11 +63,19 @@ class EchoProvider:
     name = "echo"
     model = "echo-model"
 
-    def __init__(self) -> None:
+    def __init__(self, extract_delay_s: float = 0.0) -> None:
+        self.extract_delay_s = extract_delay_s
         self.calls = 0
+        self.extract_calls = 0
         self.requests: list[ChatRequest] = []
 
     async def complete(self, req: ChatRequest) -> ProviderResponse:
+        if req.response_schema is not None:
+            # Background memory extraction (P3.3): not a conversational turn.
+            self.extract_calls += 1
+            if self.extract_delay_s:
+                await asyncio.sleep(self.extract_delay_s)
+            return ProviderResponse(text="{}", usage=Usage(tokens_in=20, tokens_out=2))
         self.calls += 1
         self.requests.append(req)
         last_user = next(m.content for m in reversed(req.messages) if m.role == "user")
@@ -66,6 +90,7 @@ def make_cfg(tmp_path: Path, **app: Any) -> AppConfig:
         "backoff_max_s": 0.05,
         "recover_interval_s": 0.05,
         "scheduler_tick_s": 0.05,
+        "job_poll_s": 0.05,
         "heartbeat_stale_s": 3.0,
         "shutdown_grace_s": 5.0,
     }
@@ -96,7 +121,7 @@ def backends_for(fake: FakeTelegram, provider: Provider | None = None) -> Backen
         gw = TelegramGateway(cfg.gateway, egress, UpdateStore(sf), sleep=_tiny_sleep, on_poll=beat)
         return Backends(
             gateway=gw,
-            provider=provider or FakeLLM(default="fake reply"),
+            provider=provider or DevProvider(),
             embedder=DeterministicStubEmbedder(),
             closers=[gw.aclose, egress.aclose],
         )
