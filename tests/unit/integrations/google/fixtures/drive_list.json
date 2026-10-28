@@ -1,0 +1,6 @@
+{"files": [
+ {"id": "1FakeDocFakeDocFakeDoc00000001", "name": "Q3 budget notes", "mimeType": "application/vnd.google-apps.document", "modifiedTime": "2026-10-20T08:15:00.000Z", "owners": [{"displayName": "Test Owner", "emailAddress": "owner@example.invalid"}]},
+ {"id": "1FakePdfFakePdfFakePdf00000002", "name": "scan.pdf", "mimeType": "application/pdf", "size": "482113", "modifiedTime": "2026-10-19T10:00:00.000Z", "owners": [{"displayName": "Test Owner"}]},
+ {"id": "../../drive/v3/about", "name": "bad id entry", "mimeType": "text/plain"},
+ {"id": "1FakeTxtFakeTxtFakeTxt00000003", "name": "notes.txt", "mimeType": "text/plain", "size": "120", "modifiedTime": "2026-10-18T10:00:00Z"}
+]}

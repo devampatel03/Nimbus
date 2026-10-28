@@ -61,4 +61,4 @@ def test_real_integrations_package_discovers_only_local_tools() -> None:
     # P1.4c (M9): the calendar/gmail/drive intent builders are deleted; Google
     # tools return as real integrations in P3.x.
     registry = ToolRegistry()
-    assert set(registry.names()) == {"tasks", "reminders"}
+    assert set(registry.names()) == {"tasks", "reminders", "drive"}

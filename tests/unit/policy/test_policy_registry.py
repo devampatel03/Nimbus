@@ -14,6 +14,7 @@ from src.policy import LOCAL_SCOPES, TOOL_RULES, PolicyConfig, PolicyEngine, Ris
 from src.policy.registry import DELETE_PER_HOUR, READ_PER_HOUR, WRITE_PER_HOUR
 from src.tools.registry import ToolRegistry
 
+GOOGLE_SCOPES = frozenset({"drive"})
 FETCH_LIKE = re.compile(r"fetch|http|url|browse|web|scrape|curl|download|request", re.IGNORECASE)
 
 
@@ -52,8 +53,11 @@ def test_no_mail_send_tool_and_the_engine_denies_one_if_added() -> None:
 
 def test_every_rule_has_a_local_scope_and_a_sane_limit() -> None:
     for name, rule in TOOL_RULES.items():
-        assert rule.scope in LOCAL_SCOPES, name
-        assert rule.external_service is False, name
+        if rule.scope in GOOGLE_SCOPES:
+            assert rule.external_service is True, name
+        else:
+            assert rule.scope in LOCAL_SCOPES, name
+            assert rule.external_service is False, name
         assert rule.max_calls_per_hour in {READ_PER_HOUR, WRITE_PER_HOUR, DELETE_PER_HOUR}
         want = READ_PER_HOUR if rule.risk is Risk.READ else WRITE_PER_HOUR
         if rule.destructive:
@@ -76,3 +80,14 @@ def test_only_deletes_are_destructive() -> None:
 def test_registry_is_read_only() -> None:
     with pytest.raises(TypeError):
         TOOL_RULES["x"] = ToolRule(Risk.READ, "tasks", 1)  # type: ignore[index]
+
+
+def test_drive_tools_are_read_only_external_and_not_a_local_scope() -> None:
+    for name in ("drive_search", "drive_read"):
+        rule = TOOL_RULES[name]
+        assert (rule.risk, rule.scope, rule.destructive) == (Risk.READ, "drive", False)
+        assert rule.external_service is True
+    assert "drive" not in LOCAL_SCOPES
+    assert not [
+        n for n in TOOL_RULES if n.startswith("drive_") and TOOL_RULES[n].risk is not Risk.READ
+    ]

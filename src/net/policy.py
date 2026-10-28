@@ -171,11 +171,25 @@ def deny_google_oauth_unexpected(service: Service, method: str, path: str) -> st
     return None
 
 
+# Drive is read-only in Nimbus (P3.8, scope drive.readonly). Any non-read method
+# on a Drive API path (create, update, delete, permissions/share, copy, watch,
+# uploads) is refused at the choke point as defence in depth. This only
+# tightens R13: no host or Service is added (ADR-0019).
+_DRIVE_API_RE = re.compile(r"^(?:/resumable)?(?:/upload)?/drive/v\d+[a-z0-9]*")
+
+
+def deny_drive_write(service: Service, method: str, path: str) -> str | None:
+    if method not in ("GET", "HEAD") and _DRIVE_API_RE.search(path):
+        return "drive_write"
+    return None
+
+
 DEFAULT_DENY_RULES: tuple[DenyRule, ...] = (
     deny_gmail_send,
     deny_gmail_settings_write,
     deny_google_batch,
     deny_google_oauth_unexpected,
+    deny_drive_write,
 )
 
 

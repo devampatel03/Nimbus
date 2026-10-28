@@ -384,3 +384,9 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 - `policy_audit` table (migration `f3a9c1d7e5b2`, append-only). Every dispatch decision and approval event is recorded; an unaudited decision does not run (closes P3.1 LOW-6).
 - R8: `request_memory_promotion` writes `memory`/`promote`/`{"item_id"}`; it was proven end to end against `PgVectorMemoryStore.promote`. Nothing calls it from chat yet.
 - Approvals are OFF unless `APPROVAL_HMAC_KEY` is set (HUMAN_TODO H24). `PENDING_IDEMPOTENCY` is unchanged: creates stay denied.
+
+### 2026-10-29 — P3.8 Drive read-only (task/P3.8-drive)
+
+- `DriveReader` (`src/integrations/google/drive_api.py`) has search/metadata/read_text only; scope `drive.readonly`. Tools `drive_search` and `drive_read` (READ, scope `drive`, external) are gated on a bound group and hidden unless `drive` is in the Orchestrator `scopes_enabled` (default local only). Not wired into the runtime yet (HUMAN_TODO H25).
+- Default net deny rule `deny_drive_write` (any non-GET/HEAD on `/drive/v<N>*`, `/upload/...`, `/resumable/upload/...`); no new host or Service; recorded as an addendum to ADR-0019 (R13 tightened).
+- Names, owners and content leave only as `UntrustedText` in `ToolOutput.external`; search sends one item per file (max 5, up to 5 quarantine calls) so a name cannot forge another entry; `ToolOutput.text` holds only ids and validated metadata.
