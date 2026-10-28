@@ -291,21 +291,26 @@ class Dispatcher:
     ) -> DispatchResult:
         tainted = tainted is not False  # fail closed: only an explicit False is clean
         tool = self._tools.get(name) if isinstance(name, str) else None
+        is_exposed = tool is not None and name in exposed
         if tool is not None:
             # Optional offline hook (P3.5): e.g. turn an opaque handle into the real
             # id so the policy, card and stored payload all see the real value.
             resolver = getattr(tool, "resolve_args", None)
             if callable(resolver):
+                rejected: DispatchResult | None = None
                 try:
                     args = await resolver(args)
                 except ToolError as e:
                     msg = str(e)[:MAX_TOOL_ERROR_CHARS]
-                    return DispatchResult(
+                    rejected = DispatchResult(
                         name, "error", f"Tool error: {msg}", untrusted=True, rule_id="tool.args"
                     )
                 except Exception:  # noqa: BLE001 - fail closed
-                    return DispatchResult(name, "error", "Tool error: failed.", rule_id="tool.args")
-        is_exposed = tool is not None and name in exposed
+                    rejected = DispatchResult(
+                        name, "error", "Tool error: failed.", rule_id="tool.args"
+                    )
+                if rejected is not None:
+                    return await self._reject_args(name, tool, args, rejected, is_exposed, tainted)
         call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
         ctx = await self._safe_context(tool, name, is_exposed, tainted)
         decision = self._decide(call, ctx)
@@ -313,6 +318,37 @@ class Dispatcher:
         if res.needs_approval and decision is not None and self._approvals is not None:
             res = await self._ask(name, args, decision, tainted, res)
         return replace(res, tainted=tainted)
+
+    async def _reject_args(
+        self,
+        name: str,
+        tool: LoopTool,
+        args: Mapping[str, Any],
+        rejected: DispatchResult,
+        is_exposed: bool,
+        tainted: bool,
+    ) -> DispatchResult:
+        """A `resolve_args` refusal is audited (LOW-7), and a mode/scope/exposure
+        denial still takes precedence: the policy decides on the unresolved call
+        first, and only a call it would have let through gets `tool.args`."""
+        call = ProposedCall(tool=name, args=args, risk=tool.risk)
+        decision = self._decide(call, await self._safe_context(tool, name, is_exposed, tainted))
+        if decision is None or decision.verdict == "deny" or not is_exposed:
+            res = await self._conclude(name, tool, args, decision, False, tainted, "decided")
+            return replace(res, tainted=tainted)
+        await self._record(
+            AuditRecord(
+                kind="decision",
+                event="args_rejected",
+                tool=safe_name(name),
+                rule_id="tool.args",
+                outcome="error",
+                tainted=tainted,
+                step_up=False,
+                executed=False,
+            )
+        )
+        return replace(rejected, tainted=tainted)
 
     async def execute_approved(self, approval: ConsumedApproval) -> DispatchResult:
         """Run a call the user approved. `approval` must be a sealed

@@ -51,7 +51,7 @@ def _call(name: str, args: dict[str, Any], cid: str = "c1") -> ProviderResponse:
 async def _run(main: FakeLLM) -> tuple[Any, RecordingTransport]:
     body = json.loads(FIX.read_text(encoding="utf-8"))
     transport = RecordingTransport(lambda _r: httpx.Response(200, json=body))
-    group = GoogleCalendarTool()
+    group = GoogleCalendarTool("ab12")
     client = CalendarClient(EgressClient(make_settings(), transport=transport), StubAuth())
     group.bind(client, FakeClock(NOW))  # type: ignore[arg-type]
     quarantine_llm = CompromisedFakeLLM(default=json.dumps({"summary": "a meeting"}))
@@ -71,7 +71,7 @@ async def test_compromised_model_obeying_the_invite_cannot_write() -> None:
     main = FakeLLM(
         [
             _call("calendar_list", {}),
-            _call("calendar_delete", {"event_id": "h1_3"}, "c2"),
+            _call("calendar_delete", {"event_id": "hab121_3"}, "c2"),
             _call("calendar_create", {"title": "x", "start": "2026-11-01T09:00:00+05:30"}, "c3"),
             "done",
         ]

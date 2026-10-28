@@ -56,6 +56,7 @@ from src.net.policy import (
     apply_deny_rules,
     check_headers,
     check_method,
+    check_query,
     normalise_path,
 )
 from src.net.settings import HARD_MAX_RESPONSE_BYTES, HARD_MAX_TOTAL_TIMEOUT_S, NetSettings
@@ -110,6 +111,16 @@ class EgressResponse:
         return jsonlib.loads(self.content)
 
 
+def _param_pairs(params: QueryParams | None) -> list[tuple[str, object]]:
+    pairs: list[tuple[str, object]] = []
+    for key, value in (params or {}).items():
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            pairs.extend((key, v) for v in value)
+        else:
+            pairs.append((key, value))
+    return pairs
+
+
 def _split_raw_path(url: httpx.URL) -> str:
     return url.raw_path.decode("ascii", errors="replace").split("?", 1)[0]
 
@@ -141,6 +152,7 @@ class _GuardTransport(httpx.AsyncBaseTransport):
             raise EgressDenied("host_header_mismatch", service=service.value, method=method)
         check_method(method, service=service)
         normalised = normalise_path(_split_raw_path(url), service=service, method=method)
+        check_query(url.params.multi_items(), service=service, method=method)
         apply_deny_rules(self._rules, service=service, method=method, normalised_path=normalised)
         return await self._inner.handle_async_request(request)
 
@@ -223,6 +235,7 @@ class EgressClient:
         verb = check_method(method, service=service)
         normalised = normalise_path(path, service=service, method=verb)
         check_headers(headers, service=service, method=verb)
+        check_query(_param_pairs(params), service=service, method=verb)
         apply_deny_rules(self._rules, service=service, method=verb, normalised_path=normalised)
         if json is not None and content is not None:
             raise EgressDenied("ambiguous_body", service=service.value, method=verb)

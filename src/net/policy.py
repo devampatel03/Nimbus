@@ -279,6 +279,26 @@ def check_headers(headers: Mapping[str, str] | None, *, service: Service, method
             raise EgressDenied("bad_header_value", service=service.value, method=method)
 
 
+# Google query parameters that make Google contact third parties or create
+# side effects (LOW-9): notifications to attendees, Meet conference creation.
+# Denied on every Google service; `sendUpdates` is allowed only as `none`.
+_GOOGLE_SERVICES = frozenset({Service.GOOGLE_APIS, Service.GMAIL})
+_DENIED_QUERY_KEYS = frozenset({"sendnotifications", "conferencedataversion"})
+
+
+def check_query(pairs: Iterable[tuple[object, object]], *, service: Service, method: str) -> None:
+    """Refuse (before any I/O) Google query parameters that send invitations or
+    create conferences. `pairs` is every (key, value) the request will carry."""
+    if service not in _GOOGLE_SERVICES:
+        return
+    for key, value in pairs:
+        lowered = str(key).lower()
+        if lowered in _DENIED_QUERY_KEYS:
+            raise EgressDenied("google_query_param", service=service.value, method=method)
+        if lowered == "sendupdates" and str(value).lower() != "none":
+            raise EgressDenied("google_query_param", service=service.value, method=method)
+
+
 def apply_deny_rules(
     rules: Iterable[DenyRule], *, service: Service, method: str, normalised_path: str
 ) -> None:

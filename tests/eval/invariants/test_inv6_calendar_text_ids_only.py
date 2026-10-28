@@ -70,7 +70,7 @@ async def test_read_tool_text_is_counts_and_ids_only() -> None:
         assert set(parsed) <= {"count", "events", "skipped"}
         # Only opaque handles: a word-bearing Google id is a text channel.
         for v in parsed.get("events", []):
-            assert re.fullmatch(r"h\d{1,9}_\d{1,2}", v)
+            assert re.fullmatch(r"h[0-9a-f]{4}\d{1,9}_\d{1,2}", v)
         for word in ("ignorepreviousinstructions", "evt000", "deleteallevents"):
             assert word not in out.text
         assert out.external and all(isinstance(u, UntrustedText) for u in out.external)

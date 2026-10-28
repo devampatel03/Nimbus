@@ -22,6 +22,11 @@ from typing import Any
 
 from src.core.timeparse import parse_aware_iso
 
+# Code-written line describing the target of an update/delete (fetched from
+# Google by `describe_args`, so third-party text). It is stored with the payload
+# but is NOT an argument the tool runs with, so it is shown on its own line.
+TARGET_KEY = "_target"
+MAX_TARGET_CHARS = 300
 _VISIBLE_EXCEPTIONS = {"\n", " "}
 _HIDDEN_CATEGORIES = {"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp", "Zs"}
 
@@ -66,6 +71,13 @@ def resolved_times(payload: Mapping[str, Any], offset_minutes: int) -> list[str]
     return lines
 
 
+def _target_lines(target: object) -> list[str]:
+    if not isinstance(target, str):
+        return []
+    one_line = " ".join(target.split())[:MAX_TARGET_CHARS]
+    return [f"Target (from Google, UNTRUSTED): {reveal(one_line)}"]
+
+
 def render_card(
     *,
     tool: str,
@@ -77,7 +89,9 @@ def render_card(
     step_up: bool,
     rule_id: str,
 ) -> str:
-    args = json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False)
+    shown = {k: v for k, v in payload.items() if k != TARGET_KEY}
+    target = payload.get(TARGET_KEY)
+    args = json.dumps(shown, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False)
     minutes = max(0, int((expires_at - now).total_seconds() // 60))
     lines = [
         "Approve this exact action?",
@@ -85,6 +99,7 @@ def render_card(
         f"Action: {reveal(action)}",
         "Arguments (exactly what will run):",
         reveal(args),
+        *_target_lines(target),
         *resolved_times(payload, offset_minutes),
         f"Expires: {absolute_time(expires_at, offset_minutes)} (in about {minutes} min)",
         (
