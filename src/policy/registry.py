@@ -39,8 +39,10 @@ class ToolRule:
     external_service: bool = False
 
 
-def _rule(risk: Risk, scope: str, limit: int, *, destructive: bool = False) -> ToolRule:
-    return ToolRule(risk, scope, limit, destructive=destructive)
+def _rule(
+    risk: Risk, scope: str, limit: int, *, destructive: bool = False, external: bool = False
+) -> ToolRule:
+    return ToolRule(risk, scope, limit, destructive=destructive, external_service=external)
 
 
 _R, _W = Risk.READ, Risk.WRITE_INTERNAL
@@ -62,6 +64,10 @@ TOOL_RULES: Mapping[str, ToolRule] = MappingProxyType(
         "reminders_delete": _rule(_W, "reminders", DELETE_PER_HOUR, destructive=True),
         "reminders_get": _rule(_R, "reminders", READ_PER_HOUR),
         "reminders_list": _rule(_R, "reminders", READ_PER_HOUR),
+        # Google Drive, read only (src/tools/integrations/drive_read.py, P3.8).
+        # Scope "drive" is not local: enabled only from the OAuth token store.
+        "drive_search": _rule(_R, "drive", READ_PER_HOUR, external=True),
+        "drive_read": _rule(_R, "drive", READ_PER_HOUR, external=True),
     }
 )
 

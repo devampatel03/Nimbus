@@ -34,6 +34,8 @@ EXPECTED_RISKS: dict[str, Risk] = {
     "reminders_delete": Risk.WRITE_INTERNAL,
     "reminders_get": Risk.READ,
     "reminders_list": Risk.READ,
+    "drive_search": Risk.READ,
+    "drive_read": Risk.READ,
 }
 
 

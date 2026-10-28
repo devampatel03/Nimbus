@@ -28,3 +28,6 @@ The existing rules only restricted *which paths are denied* (Gmail send/import/i
 ## Alternatives
 - **Leave the host open to all paths.** Rejected: unnecessary reach, and Google fronts several APIs behind shared front ends.
 - **Allow-list `accounts.google.com` so the script can fetch discovery documents.** Rejected: not needed, and the consent URL is constructed locally.
+
+## Addendum (P3.8, Drive read-only)
+Drive uses `www.googleapis.com` (`Service.GOOGLE_APIS`) at `/drive/v3/...`; no host or `Service` is added. R13 is tightened: default deny rule `deny_drive_write` refuses every method except GET/HEAD on `/drive/v<N>/...` and `/upload/drive/v<N>/...` (reason `drive_write`), on all services, after path decoding and lowercasing. Scope is `drive.readonly` (Q4/H17), already in the P3.4 base set.
