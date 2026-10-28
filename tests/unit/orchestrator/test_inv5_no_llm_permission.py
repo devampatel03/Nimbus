@@ -8,8 +8,9 @@ Static scan of `src/`:
      the code-produced `Decision.verdict`;
   2. no code reads such an attribute/key off a model-output-looking object or
      passes one as a keyword;
-  3. `Policy.decide` takes exactly one `ProposedCall`, whose fields are exactly
-     (tool, args, risk);
+  3. `Policy.decide` takes exactly (`ProposedCall`, `PolicyContext`): the call's
+     fields are exactly (tool, args, risk) and the context's fields are exactly
+     the pinned code-derived facts (P3.1; stricter than the old one-arg form);
   4. model calls (`.chat/.structured`) happen only in the loop, the memory
      extractor (unreviewed rows) and the friction check (advisory text).
 The scan root is a parameter so the mutation proof can aim it at a throwaway tree.
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from src.orchestrator.dispatch import Decision, Policy, ProposedCall
+from src.policy import Decision, Policy, PolicyContext, PolicyMode, ProposedCall, Risk
 
 SRC = Path(__file__).resolve().parents[3] / "src"
 GRANT_NAMES = {
@@ -40,8 +41,23 @@ GRANT_NAMES = {
     "permission",
     "verdict",
 }
-# The only place a grant-shaped field may exist: the code-produced Decision.
-ALLOWED_DECLARATIONS = {("src/orchestrator/dispatch.py", "verdict")}
+# The only place a grant-shaped field may exist: the code-produced Decision
+# (moved from src/orchestrator/dispatch.py to src/policy/types.py in P3.1).
+ALLOWED_DECLARATIONS = {("src/policy/types.py", "verdict")}
+# Every PolicyContext field is a fact computed by code (dispatcher, guard,
+# counters, P3.2 consumed approvals), never a value read from model output.
+CTX_FIELDS = {
+    "exposed": "bool",
+    "tainted": "bool",
+    "mode": "PolicyMode",
+    "scopes_enabled": "frozenset[str]",
+    "calls_last_hour": "int",
+    "external_recipient": "bool",
+    "destructive": "bool",
+    "quiet_hours": "bool",
+    "user_confirmed": "bool",
+    "step_up_confirmed": "bool",
+}
 MODEL_OUTPUT_NAMES = {"res", "resp", "response", "result", "out", "output", "completion", "reply"}
 
 
@@ -106,10 +122,45 @@ def test_src_has_no_llm_granted_permission() -> None:
     assert scan(SRC) == []
 
 
-def test_policy_interface_takes_only_a_proposed_call() -> None:
-    assert list(inspect.signature(Policy.decide).parameters) == ["self", "call"]
+def test_policy_interface_takes_a_proposed_call_and_code_derived_context() -> None:
+    sig = inspect.signature(Policy.decide)
+    assert list(sig.parameters) == ["self", "call", "ctx"]
+    assert sig.parameters["call"].annotation == "ProposedCall"
+    assert sig.parameters["ctx"].annotation == "PolicyContext"
     assert [f.name for f in dataclasses.fields(ProposedCall)] == ["tool", "args", "risk"]
-    assert [f.name for f in dataclasses.fields(Decision)] == ["verdict", "rule_id", "reason"]
+    assert {f.name: f.type for f in dataclasses.fields(PolicyContext)} == CTX_FIELDS
+    assert [f.name for f in dataclasses.fields(Decision)] == [
+        "verdict",
+        "rule_id",
+        "reason",
+        "step_up",
+    ]
+    # Approval facts default to "not approved"; everything else must be set.
+    defaults = {
+        f.name: f.default
+        for f in dataclasses.fields(PolicyContext)
+        if f.default is not dataclasses.MISSING
+    }
+    assert defaults == {"user_confirmed": False, "step_up_confirmed": False}
+    assert PolicyContext.__dataclass_params__.frozen  # type: ignore[attr-defined]
+
+
+def test_policy_context_cannot_be_built_from_model_shaped_extras() -> None:
+    base = {
+        "exposed": True,
+        "tainted": False,
+        "mode": PolicyMode.NORMAL,
+        "scopes_enabled": frozenset(),
+        "calls_last_hour": 0,
+        "external_recipient": False,
+        "destructive": False,
+        "quiet_hours": False,
+    }
+    with pytest.raises(TypeError):
+        PolicyContext(**base, approved=True)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        PolicyContext(True, False)  # type: ignore[misc]  # keyword-only
+    assert ProposedCall("t", {}, Risk.READ).risk is Risk.READ
 
 
 def test_model_calls_only_from_known_callers() -> None:
