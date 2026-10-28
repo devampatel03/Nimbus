@@ -51,10 +51,10 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
-from sqlalchemy import String, and_, cast, exists, func, literal, or_, select
+from sqlalchemy import Integer, String, and_, cast, exists, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.contracts.transcript import Segment, Transcript
@@ -90,6 +90,7 @@ MAX_SPEND_SHARE = 0.30  # extraction pauses once the day's spend passes this sha
 MAX_ENQUEUE_PER_MIN = 10
 SWEEP_LOOKBACK = timedelta(days=2)
 RETRY_DEAD_AFTER = timedelta(hours=1)
+MAX_REVIVALS = 3  # the sweeper revives a transiently-dead job at most this often
 PURGE_AFTER = timedelta(days=14)  # finished jobs older than this are deleted (> SWEEP_LOOKBACK)
 PURGE_EVERY = timedelta(hours=1)
 # Dead for these reasons will not get better by itself: never re-enqueued.
@@ -198,6 +199,7 @@ async def enqueue_memory_extract(
     *,
     run_at: datetime | None = None,
     rearm: bool = False,
+    revivals: int = 0,
 ) -> bool:
     """Enqueue in the caller's transaction. True if newly created. `rearm` also
     revives a finished (e.g. dead) job under the same key."""
@@ -205,7 +207,7 @@ async def enqueue_memory_extract(
         session,
         KIND,
         dedupe_key=dedupe_key(event_id),
-        payload={"event_id": str(event_id)},
+        payload={"event_id": str(event_id), "revivals": revivals},
         run_at=run_at,
         source_event_id=event_id,
         max_attempts=8,
@@ -326,7 +328,7 @@ class MemoryExtractHandler:
             if extracted:
                 return  # an earlier run finished the extraction: no second model spend
             transcript = Transcript(
-                segments=[Segment(text=body)],
+                segments=[Segment(text=_clip(body))],  # bounded input: cost is capped (R5)
                 source_model="user_text",
                 untrusted=False,
                 created_at=ev.occurred_at,
@@ -425,6 +427,8 @@ class MemoryExtractSweeper:
                 Job.status == "dead",
                 or_(
                     Job.last_error.in_(PERMANENT_ERRORS),
+                    cast(func.coalesce(Job.payload["revivals"].astext, "0"), Integer)
+                    >= MAX_REVIVALS,
                     Job.updated_at > now - self._retry_after,
                 ),
             ),
@@ -444,6 +448,14 @@ class MemoryExtractSweeper:
                     .limit(allowed)
                 )
             )
+            found = await session.execute(
+                select(Job.dedupe_key, Job.payload).where(
+                    Job.dedupe_key.in_([dedupe_key(e) for e in missing])
+                )
+            )
+            old: dict[str, dict[str, Any]] = {k: dict(v) for k, v in found.tuples().all()}
             for event_id in missing:
-                await enqueue_memory_extract(self._q, session, event_id, rearm=True)
+                prior = old.get(dedupe_key(event_id))
+                count = int(prior.get("revivals", 0)) + 1 if prior is not None else 0
+                await enqueue_memory_extract(self._q, session, event_id, rearm=True, revivals=count)
         self._tokens -= len(missing)

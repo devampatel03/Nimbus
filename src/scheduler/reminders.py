@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.core.clock import Clock
 from src.core.timeparse import format_ist
 from src.gateway.protocols import Gateway
+from src.memory.schemas.event import Event as EventRow
 from src.memory.schemas.scheduling import Reminder
 from src.scheduler.jobs import JobQueue
 from src.scheduler.runner import JobContext
@@ -67,6 +68,15 @@ class ReminderStore:
             run_at=r.remind_at,
             source_event_id=r.source_event_id,
         )
+
+    async def event_time(self, event_id: uuid.UUID) -> datetime | None:
+        """When the user's message happened (UTC): the stable anchor for relative
+        phrases, so replaying a turn resolves to the same absolute time."""
+        async with self._sf() as session:
+            at: datetime | None = await session.scalar(
+                select(EventRow.occurred_at).where(EventRow.id == event_id)
+            )
+            return at
 
     async def create(
         self, title: str, remind_at: datetime, *, source_event_id: uuid.UUID | None = None

@@ -169,6 +169,14 @@ async def test_trusted_event_is_extracted_and_written_against_the_real_event(sf:
     assert req.purpose is Purpose.MEMORY_EXTRACT and req.max_output_tokens <= 300
 
 
+async def test_extractor_input_is_clipped(sf: SF) -> None:
+    eid = await make_event(sf, "remember this long note " * 2000)
+    llm = ScriptedLLM()
+    await handler(sf, llm).handle(ctx(eid))
+    sent = sum(len(m.content or "") for m in llm.requests[0].messages)
+    assert sent < 4000, sent  # prompt + at most MAX_CHUNK_CHARS of the message
+
+
 async def test_replay_is_idempotent_and_does_not_call_the_model_again(sf: SF) -> None:
     eid = await make_event(sf)
     llm = ScriptedLLM()
@@ -346,7 +354,7 @@ async def test_enqueue_is_idempotent_and_uses_the_event_as_source(sf: SF) -> Non
         assert await enqueue_memory_extract(q, s, eid) is False
     async with sf() as s:
         job = (await s.execute(select(Job).where(Job.source_event_id == eid))).scalar_one()
-    assert job.kind == KIND and job.payload == {"event_id": str(eid)}
+    assert job.kind == KIND and job.payload == {"event_id": str(eid), "revivals": 0}
 
 
 async def test_through_the_runner_end_to_end_with_a_crash(sf: SF) -> None:

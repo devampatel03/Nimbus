@@ -204,6 +204,33 @@ async def test_boot_recovery_releases_running_rows_and_frees_one_attempt(
     assert (await row(sf, "o1")).attempts == 2
 
 
+async def test_a_job_that_kills_the_process_dies_after_max_attempts(
+    sf: SF, clock: FakeClock
+) -> None:
+    """HIGH-1: crash-loop boots must not run a poison job forever."""
+    await JobQueue(sf, clock).enqueue("t", dedupe_key="poison", run_at=clock.now(), max_attempts=3)
+    runs = 0
+    for boot in range(10):
+        q = JobQueue(sf, clock, worker_id=f"boot{boot}")
+        await q.recover_orphans()
+        got = await q.claim(kinds=frozenset({"t"}), limit=1)
+        runs += len(got.jobs)  # the handler "kills the process" here: never finishes
+    j = await row(sf, "poison")
+    assert j.status == "dead" and j.last_error == "CrashLoop"
+    assert runs <= 3 + 1, runs
+
+
+async def test_pending_row_at_max_attempts_is_dead_lettered_not_claimed(
+    sf: SF, clock: FakeClock
+) -> None:
+    q = JobQueue(sf, clock)
+    await q.enqueue("t", dedupe_key="spent", run_at=clock.now(), max_attempts=2)
+    async with sf() as s, s.begin():
+        await s.execute(text("UPDATE job SET attempts = 2 WHERE dedupe_key='spent'"))
+    got = await q.claim(kinds=frozenset({"t"}), limit=5)
+    assert got.jobs == [] and (await row(sf, "spent")).status == "dead"
+
+
 class Gw:
     def __init__(self) -> None:
         self.sent: list[str] = []

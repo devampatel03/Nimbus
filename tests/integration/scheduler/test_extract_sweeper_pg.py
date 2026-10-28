@@ -144,3 +144,21 @@ async def test_a_job_that_died_permanently_is_not_retried_by_the_sweeper(sf: SF)
     await sweeper.tick()
     async with sf() as s:
         assert (await s.scalar(select(Job.status).where(Job.source_event_id == eid))) == "dead"
+
+
+async def test_sweeper_revives_a_transiently_dead_job_at_most_three_times(sf: SF) -> None:
+    clock = FakeClock(base(6))
+    sweeper = MemoryExtractSweeper(sf, JobQueue(sf, clock), clock)
+    eid = await ev(sf, at=base(6), lane="trusted")
+    await sweeper.tick()
+    revived = 0
+    for _ in range(8):
+        await _kill(sf, eid, "LLMProviderError", clock.now())
+        clock.advance(hours=2)
+        await sweeper.tick()
+        async with sf() as s:
+            status = await s.scalar(select(Job.status).where(Job.source_event_id == eid))
+        revived += status == "pending"
+    assert revived == 3
+    async with sf() as s:
+        assert (await s.scalar(select(Job.status).where(Job.source_event_id == eid))) == "dead"

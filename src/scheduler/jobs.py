@@ -198,9 +198,11 @@ class JobQueue:
                 select(Job.id)
                 .where(
                     Job.kind.in_(kind_list),
-                    Job.status == "running",
-                    Job.locked_at <= expired,
                     Job.attempts >= Job.max_attempts,
+                    or_(
+                        and_(Job.status == "running", Job.locked_at <= expired),
+                        and_(Job.status == "pending", Job.run_at <= now),  # never run a spent job
+                    ),
                 )
                 .with_for_update(skip_locked=True)
             )
@@ -379,6 +381,24 @@ class JobQueue:
         'Interrupted') does, so a job that kills the process cannot loop forever.
         Call once, before the runner loops start."""
         async with self._sf() as session, session.begin():
+            now = self._clock.now()
+            # Interrupted again with no attempts left: a crash loop. Dead, not re-run.
+            await session.execute(
+                update(Job)
+                .where(
+                    Job.status == "running",
+                    Job.locked_by != self.worker_id,
+                    Job.last_error == INTERRUPTED,
+                    Job.attempts >= Job.max_attempts,
+                )
+                .values(
+                    status="dead",
+                    last_error="CrashLoop",
+                    locked_by=None,
+                    locked_at=None,
+                    updated_at=now,
+                )
+            )
             res = await session.execute(
                 update(Job)
                 .where(Job.status == "running", Job.locked_by != self.worker_id)

@@ -61,16 +61,20 @@ class RemindersTool(ToolGroup):
             raise ToolError(str(exc)) from None
 
     @staticmethod
-    def _when(args: Mapping[str, Any], clock: Clock) -> ResolvedTime:
+    async def _when(args: Mapping[str, Any], store: ReminderStore, clock: Clock) -> ResolvedTime:
+        """Relative phrases resolve against the stored event's time when there is one
+        (replay-stable, M5); otherwise against the clock."""
+        eid = current_event_id()
+        anchor = (await store.event_time(eid)) if eid is not None else None
         try:
-            return parse_when(args["remind_at"], now=clock.now())
+            return parse_when(args["remind_at"], now=anchor or clock.now())
         except TimeParseError as exc:
             raise ToolError(str(exc)) from None
 
     async def _create(self, args: Mapping[str, Any]) -> ToolOutput:
         store, clock = self._ready()
         title = self._title(args)
-        when = self._when(args, clock)
+        when = await self._when(args, store, clock)
         r = await store.create(title, when.at, source_event_id=current_event_id())
         body = reminder_view(r) | {"confirmation": confirmation_text(when, now=clock.now())}
         return ToolOutput(json.dumps(body))
@@ -79,7 +83,7 @@ class RemindersTool(ToolGroup):
         store, clock = self._ready()
         rid = _id(args["reminder_id"])
         title = self._title(args)
-        when = self._when(args, clock)
+        when = await self._when(args, store, clock)
         r = await store.update(rid, title, when.at)
         if r is None:
             raise ToolError("reminder not found")

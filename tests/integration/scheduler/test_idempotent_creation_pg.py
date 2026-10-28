@@ -79,6 +79,19 @@ async def test_replayed_turn_creates_one_reminder_and_one_job(sf: SF, clock: Fak
     assert r.source_event_id == eid and job.source_event_id == eid
 
 
+async def test_replay_after_the_clock_moved_still_makes_one_reminder(
+    sf: SF, clock: FakeClock
+) -> None:
+    """MED-1: 'in 2 hours' is anchored to the stored event, not to the wall clock."""
+    eid = await make_event(sf)
+    tools = rem_tools(sf, clock)
+    with turn_event(eid):
+        await tools["reminders_create"].run(ARGS)  # type: ignore[attr-defined]
+        clock.advance(seconds=5)
+        await tools["reminders_create"].run(ARGS)  # type: ignore[attr-defined]
+    assert await count(sf, Reminder) == 1 and await count(sf, Job) == 1
+
+
 async def test_different_turns_or_times_are_not_merged(sf: SF, clock: FakeClock) -> None:
     e1, e2 = await make_event(sf), await make_event(sf)
     tools = rem_tools(sf, clock)
