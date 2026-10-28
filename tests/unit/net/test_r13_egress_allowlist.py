@@ -164,7 +164,10 @@ async def test_routing_headers_denied_with_zero_transport_calls(header: str) -> 
     async with EgressClient(make_settings(), transport=transport) as client:
         with pytest.raises(EgressDenied) as exc:
             await client.request(
-                Service.GOOGLE_APIS, "GET", "/calendar/v3", headers={header: "evil.example.com"}
+                Service.GOOGLE_APIS,
+                "GET",
+                "/calendar/v3/calendars/primary/events",
+                headers={header: "evil.example.com"},
             )
     assert exc.value.reason == "forbidden_header"
     assert transport.calls == []

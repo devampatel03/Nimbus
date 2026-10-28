@@ -42,7 +42,7 @@ def test_new_tool_discovered_without_editing_registration_code(tmp_path, monkeyp
         package = importlib.import_module(pkg_name)
         registry = ToolRegistry(package=package)
 
-        assert {"tasks", "reminders"} <= set(registry.names())
+        assert {"tasks", "reminders", "calendar"} <= set(registry.names())
         assert "widget" not in registry.names()
 
         (pkg_dir / "widget.py").write_text(_WIDGET_TOOL_SOURCE, encoding="utf-8")
@@ -57,8 +57,8 @@ def test_new_tool_discovered_without_editing_registration_code(tmp_path, monkeyp
                 del sys.modules[name]
 
 
-def test_real_integrations_package_discovers_only_local_tools() -> None:
+def test_real_integrations_package_discovers_the_known_groups() -> None:
     # P1.4c (M9): the calendar/gmail/drive intent builders are deleted; Google
     # tools return as real integrations in P3.x.
     registry = ToolRegistry()
-    assert set(registry.names()) == {"tasks", "reminders", "drive"}
+    assert set(registry.names()) == {"tasks", "reminders", "drive", "calendar"}

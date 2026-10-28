@@ -46,6 +46,7 @@ def _rule(
 
 
 _R, _W = Risk.READ, Risk.WRITE_INTERNAL
+_WX, _D = Risk.WRITE_EXTERNAL, Risk.DESTRUCTIVE
 
 TOOL_RULES: Mapping[str, ToolRule] = MappingProxyType(
     {
@@ -68,6 +69,13 @@ TOOL_RULES: Mapping[str, ToolRule] = MappingProxyType(
         # Scope "drive" is not local: enabled only from the OAuth token store.
         "drive_search": _rule(_R, "drive", READ_PER_HOUR, external=True),
         "drive_read": _rule(_R, "drive", READ_PER_HOUR, external=True),
+        # Google Calendar (src/tools/integrations/google_calendar.py, P3.5).
+        # Scope "calendar" is NOT in LOCAL_SCOPES: denied until the app enables it.
+        "calendar_list": _rule(_R, "calendar", READ_PER_HOUR, external=True),
+        "calendar_get": _rule(_R, "calendar", READ_PER_HOUR, external=True),
+        "calendar_create": _rule(_WX, "calendar", WRITE_PER_HOUR, external=True),
+        "calendar_update": _rule(_WX, "calendar", WRITE_PER_HOUR, external=True),
+        "calendar_delete": _rule(_D, "calendar", DELETE_PER_HOUR, destructive=True, external=True),
     }
 )
 
