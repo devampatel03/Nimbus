@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 
 from src.gateway.types import (
     ApprovalCard,
@@ -50,6 +50,8 @@ class InMemoryGateway:
         self.sent: list[str] = []
         self.acked: list[tuple[int, uuid.UUID | None]] = []
         self.callbacks: list[tuple[str, str | None]] = []
+        self.cards: list[ApprovalCard] = []
+        self.keypads: list[list[list[tuple[str, str]]]] = []
         self.closed = False
         self._next = 1000
 
@@ -83,6 +85,12 @@ class InMemoryGateway:
 
     async def send_approval(self, card: ApprovalCard) -> MessageRef:
         self.sent.append(card.text)
+        self.cards.append(card)
+        return self._ref()
+
+    async def send_keypad(self, text: str, rows: Sequence[Sequence[tuple[str, str]]]) -> MessageRef:
+        self.sent.append(text)
+        self.keypads.append([list(r) for r in rows])
         return self._ref()
 
     async def close_approval(self, ref: MessageRef, *, outcome: str) -> None:

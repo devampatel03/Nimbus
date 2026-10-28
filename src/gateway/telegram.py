@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import timedelta, timezone
 from typing import Any
 
@@ -243,6 +243,22 @@ class TelegramGateway:
             ]
         }
         return await self._send_one(body, reply_to=None, markup=markup)
+
+    async def send_keypad(self, text: str, rows: Sequence[Sequence[tuple[str, str]]]) -> MessageRef:
+        """A message with an inline keypad (approval step-up). Labels are fixed
+        by the approvals layer; every callback_data is size-checked."""
+        keyboard: list[list[dict[str, str]]] = []
+        for row in rows:
+            buttons: list[dict[str, str]] = []
+            for label, data in row:
+                if not 1 <= len(data.encode("utf-8")) <= _CALLBACK_DATA_MAX_BYTES:
+                    raise ValueError("callback_data must be 1..64 bytes")
+                buttons.append({"text": sanitize(label)[:16], "callback_data": data})
+            keyboard.append(buttons)
+        body = escape_html(sanitize(text))
+        if utf16_len(body) > MAX_MESSAGE_CHARS:
+            raise MessageTooLong("keypad_text_too_long")
+        return await self._send_one(body, reply_to=None, markup={"inline_keyboard": keyboard})
 
     async def close_approval(self, ref: MessageRef, *, outcome: str) -> None:
         await self._limiter.acquire(self._chat)

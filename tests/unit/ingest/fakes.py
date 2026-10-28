@@ -145,6 +145,9 @@ class FakeGateway:
     async def send_approval(self, card: ApprovalCard) -> MessageRef:
         raise NotImplementedError
 
+    async def send_keypad(self, text: str, rows: Any) -> MessageRef:
+        raise NotImplementedError
+
     async def close_approval(self, ref: MessageRef, *, outcome: str) -> None:
         raise NotImplementedError
 

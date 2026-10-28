@@ -12,7 +12,7 @@ not acked is redelivered after a restart or on the next poll."""
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Protocol
 
 from src.gateway.types import ApprovalCard, FileRef, InboundUpdate, MessageRef
@@ -28,6 +28,10 @@ class Gateway(Protocol):
     ) -> list[MessageRef]: ...
 
     async def send_approval(self, card: ApprovalCard) -> MessageRef: ...
+
+    async def send_keypad(
+        self, text: str, rows: Sequence[Sequence[tuple[str, str]]]
+    ) -> MessageRef: ...
 
     async def close_approval(self, ref: MessageRef, *, outcome: str) -> None: ...
 

@@ -15,6 +15,10 @@ the turn's `Taint` is marked whenever untrusted-derived data enters (recalled
 untrusted memory, untrusted tool output, tool errors). Every later dispatch in
 the turn receives `tainted=True`; the result reports it for the next turn.
 
+P3.2: `approvals` (an `ApprovalRequester`) turns a `require_approval` verdict
+into a card for the user; the call still does not run in this turn. `audit`
+persists every decision (`policy_audit`).
+
 P3.1: the caller passes `carried_taint` (ADR-0010 cross-turn window, owned by
 `src.policy.TaintCarry`); a carried turn dispatches every call as tainted.
 `TurnResult.tainted` stays the turn's OWN taint so the carry can expire. The
@@ -44,6 +48,8 @@ from src.llm.types import (
 from src.orchestrator.context import MemoryRecall, build_context
 from src.orchestrator.dispatch import (
     CALL_CAP_MESSAGE,
+    ApprovalRequester,
+    AuditSink,
     Dispatcher,
     DispatchResult,
     LoopTool,
@@ -97,16 +103,25 @@ class Orchestrator:
         always_expose: frozenset[str] = frozenset(),
         nonce_factory: Callable[[], str] | None = None,
         quarantine: Quarantine | None = None,
+        approvals: ApprovalRequester | None = None,
+        audit: AuditSink | None = None,
     ) -> None:
         self._llm = llm
         self._quarantine = quarantine
         self._by_name: Mapping[str, LoopTool] = {t.spec.name: t for t in tools}
-        self._dispatcher = Dispatcher(self._by_name, policy, mode_source=llm.mode)
+        self._dispatcher = Dispatcher(
+            self._by_name, policy, mode_source=llm.mode, approvals=approvals, audit=audit
+        )
         self._card = character_card
         self._recall = recall
         self._cfg = config or LoopConfig()
         self._always = always_expose
         self._nonce = nonce_factory
+
+    @property
+    def dispatcher(self) -> Dispatcher:
+        """For `ApprovalService.bind_executor` only (runs consumed approvals)."""
+        return self._dispatcher
 
     async def run_turn(
         self,

@@ -44,10 +44,14 @@ class InboundUpdate:
     text: str | None = None
     file: FileRef | None = None
     callback_id: str | None = field(default=None, repr=False)
-    callback_data: str | None = None
+    # Approval tokens and step-up keypad digits: never in a repr / log line.
+    callback_data: str | None = field(default=None, repr=False)
     # True when someone other than the user authored the content (forward,
     # Recorder transcript document): ingest must treat it as `untrusted`.
     untrusted: bool = False
+    # Telegram `from.id` (code-derived, set by `parse_update`). The approvals
+    # layer re-checks it against the allowlist and binds it into the MAC.
+    from_user_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

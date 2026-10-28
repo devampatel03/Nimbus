@@ -13,9 +13,21 @@ hour. Model output supplies the tool name and arguments but never a verdict,
 risk class, approval or taint flag. This module imports no LLM client code.
 
 Fail closed: unknown tool, unexposed tool, policy error, and every verdict but
-`allow` mean the tool does not run. `require_approval` is NOT executable until
-P3.2 builds approvals: it is reported as a denial (`approval_unavailable`), and
-this dispatcher never sets `user_confirmed` / `step_up_confirmed`.
+`allow` mean the tool does not run.
+
+Approvals (P3.2, ADR-0009): `dispatch()` (the model's path) NEVER sets
+`user_confirmed` / `step_up_confirmed`. On `require_approval` it hands the call
+to the injected `ApprovalRequester`, which stores it and sends the user a card;
+the call does not run. Without a requester it is reported as a denial
+(`approval_unavailable`). The only way to a confirmed context is
+`execute_approved(approval)`, whose argument is a sealed `ConsumedApproval`
+minted only by `ApprovalStore.consume` after the atomic `pending -> consumed`
+UPDATE. It runs exactly the stored tool and arguments (re-hashed and compared
+first) and asks the policy again, which still denies on kill switch, spend cap,
+rate limit, disabled tool or a missing step-up.
+
+Audit (P3.1 LOW-6): when an `audit` sink is wired, every decision is written
+to `policy_audit` BEFORE the tool runs; if that write fails, nothing runs.
 
 `Risk`, `ProposedCall`, `Decision`, `Policy` and `DenyAllWritesPolicy` live in
 `src.policy` and are re-exported here for existing importers.
@@ -23,6 +35,7 @@ this dispatcher never sets `user_confirmed` / `step_up_confirmed`.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import time
 from collections import deque
@@ -30,6 +43,15 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
+from src.approvals.canonical import PayloadError, payload_sha256
+from src.approvals.types import (
+    TOOL_CALL_ACTION,
+    ApprovalAsk,
+    AskOutcome,
+    AuditRecord,
+    ConsumedApproval,
+    thaw,
+)
 from src.lanes.data import UntrustedText
 from src.llm.types import ToolSpec
 from src.policy import (
@@ -115,6 +137,35 @@ class DispatchResult:
     external_dropped: int = 0  # over the cap, or not UntrustedText (fail closed)
     needs_approval: bool = False  # policy said require_approval (not executed)
     step_up: bool = False  # ... and that approval would need a TOTP step-up
+    approval: str = ""  # AskOutcome value when a requester was asked ("" = none)
+
+
+class ApprovalRequester(Protocol):
+    """Stores a `require_approval` call and asks the user. Never runs it."""
+
+    async def request(self, ask: ApprovalAsk) -> AskOutcome: ...
+
+
+class AuditSink(Protocol):
+    async def audit(self, rec: AuditRecord) -> None: ...
+
+
+_ASK_TEXT: dict[AskOutcome, str] = {
+    AskOutcome.REQUESTED: (
+        "The user was sent an approval card with these exact arguments. The call has NOT "
+        "run; it runs only if the user approves it. Do not repeat the call."
+    ),
+    AskOutcome.DUPLICATE: (
+        "An approval card for this exact call is already waiting for the user. The call "
+        "has NOT run. Do not repeat the call."
+    ),
+    AskOutcome.TOO_MANY: "Denied: too many approvals are already waiting for the user.",
+    AskOutcome.INVALID: "Denied: these arguments cannot be shown to the user for approval.",
+    AskOutcome.FAILED: "Denied: the approval card could not be sent.",
+    AskOutcome.UNAVAILABLE: (
+        "Denied: this action needs an authenticator step-up, which is not configured."
+    ),
+}
 
 
 def safe_name(name: str) -> str:
@@ -167,9 +218,13 @@ class Dispatcher:
         mode_source: ModeSource | None = None,
         scopes_enabled: frozenset[str] = LOCAL_SCOPES,
         counter: ExecutionCounter | None = None,
+        approvals: ApprovalRequester | None = None,
+        audit: AuditSink | None = None,
     ) -> None:
         self._tools = dict(tools)
         self._policy = policy
+        self._approvals = approvals
+        self._audit = audit
         # None = no guard wired (unit tests). Every model call is gated by the
         # guard anyway, so a proposed call exists only if its model call was
         # allowed; production passes the guard's `mode` so a kill switch or
@@ -188,9 +243,18 @@ class Dispatcher:
             return PolicyMode.KILLED
 
     async def _context(
-        self, tool: LoopTool | None, name: str, exposed: bool, tainted: bool
+        self,
+        tool: LoopTool | None,
+        name: str,
+        exposed: bool,
+        tainted: bool,
+        approval: ConsumedApproval | None = None,
     ) -> PolicyContext:
         risk = tool.risk if tool is not None else None
+        # The ONLY source of a confirmed context: a sealed ConsumedApproval
+        # (pinned by tests/eval/invariants/test_inv5_approvals.py).
+        confirmed = isinstance(approval, ConsumedApproval)
+        stepped_up = confirmed and approval is not None and approval.step_up_verified is True
         return PolicyContext(
             exposed=exposed,
             tainted=tainted,
@@ -202,10 +266,20 @@ class Dispatcher:
             external_recipient=risk is Risk.WRITE_EXTERNAL,
             destructive=risk is Risk.DESTRUCTIVE,
             quiet_hours=False,  # reserved for proactive jobs (R11)
-            # Approvals do not exist until P3.2: never confirmed here.
-            user_confirmed=False,
-            step_up_confirmed=False,
+            user_confirmed=confirmed,
+            step_up_confirmed=stepped_up,
         )
+
+    async def _record(self, rec: AuditRecord) -> bool:
+        """True when the decision is durably audited (or no sink is wired)."""
+        if self._audit is None:
+            return True
+        try:
+            await self._audit.audit(rec)
+        except Exception as exc:  # noqa: BLE001 - unaudited decisions never run
+            log.warning("policy audit write failed err=%s", type(exc).__name__)
+            return False
+        return True
 
     async def dispatch(
         self,
@@ -219,19 +293,97 @@ class Dispatcher:
         tool = self._tools.get(name) if isinstance(name, str) else None
         is_exposed = tool is not None and name in exposed
         call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
-        decision: Decision | None
+        ctx = await self._safe_context(tool, name, is_exposed, tainted)
+        decision = self._decide(call, ctx)
+        res = await self._conclude(name, tool, args, decision, is_exposed, tainted, "decided")
+        if res.needs_approval and decision is not None and self._approvals is not None:
+            res = await self._ask(name, args, decision, tainted, res)
+        return replace(res, tainted=tainted)
+
+    async def execute_approved(self, approval: ConsumedApproval) -> DispatchResult:
+        """Run a call the user approved. `approval` must be a sealed
+        `ConsumedApproval` (already consumed in the database). The stored
+        arguments are re-hashed and must match; the policy decides again with
+        `user_confirmed=True` (and `step_up_confirmed` only if the TOTP step-up
+        was verified for this row). Tainted is forced True: the call was
+        proposed by a model and the user's tap does not clean it."""
+        if not isinstance(approval, ConsumedApproval) or approval.action != TOOL_CALL_ACTION:
+            log.warning("execute_approved refused: not a consumed tool-call approval")
+            return DispatchResult("?", "denied", "Denied: not an approval.", rule_id="deny.error")
+        name = approval.tool
+        args = thaw(approval.payload)
         try:
-            decision = self._policy.decide(
-                call, await self._context(tool, name, is_exposed, tainted)
+            again = payload_sha256(name, approval.action, args)
+        except PayloadError:
+            again = ""
+        if not hmac.compare_digest(again.encode(), approval.payload_sha256.encode()):
+            log.error("execute_approved refused: payload hash mismatch tool=%s", safe_name(name))
+            return DispatchResult(
+                name, "denied", "Denied: approval mismatch.", rule_id="deny.approval_mismatch"
             )
+        tool = self._tools.get(name)
+        exists = tool is not None
+        call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
+        ctx = await self._safe_context(tool, name, exists, True, approval)
+        decision = self._decide(call, ctx)
+        res = await self._conclude(
+            name, tool, args, decision, exists, True, "decided_confirmed", approval
+        )
+        return replace(res, tainted=True)
+
+    async def _safe_context(
+        self,
+        tool: LoopTool | None,
+        name: str,
+        exposed: bool,
+        tainted: bool,
+        approval: ConsumedApproval | None = None,
+    ) -> PolicyContext | None:
+        try:
+            return await self._context(tool, name, exposed, tainted, approval)
+        except Exception:  # noqa: BLE001 - fail closed
+            return None
+
+    def _decide(self, call: ProposedCall, ctx: PolicyContext | None) -> Decision | None:
+        if ctx is None:
+            return None
+        try:
+            decision = self._policy.decide(call, ctx)
             if not isinstance(decision, Decision):
                 raise TypeError("policy returned a non-Decision")
         except Exception:  # noqa: BLE001 - fail closed
-            decision = None
+            return None
+        return decision
+
+    async def _conclude(
+        self,
+        name: str,
+        tool: LoopTool | None,
+        args: Mapping[str, Any],
+        decision: Decision | None,
+        is_exposed: bool,
+        tainted: bool,
+        event: str,
+        approval: ConsumedApproval | None = None,
+    ) -> DispatchResult:
         verdict = decision.verdict if decision is not None else "deny"
         rule_id = decision.rule_id if decision is not None else "deny.error"
         step_up = decision is not None and decision.step_up is True
         runnable = verdict == "allow" and is_exposed and tool is not None
+        audited = await self._record(
+            AuditRecord(
+                kind="decision",
+                event=event,
+                tool=safe_name(name),
+                rule_id=safe_name(rule_id),
+                outcome=verdict,
+                tainted=tainted,
+                step_up=step_up,
+                executed=runnable,
+                action_id=approval.action_id if approval is not None else None,
+            )
+        )
+        runnable = runnable and audited
         # One structured line per decision: names and ids only, never arguments.
         log.info(
             "dispatch decision tool=%s verdict=%s rule_id=%s step_up=%s tainted=%s executed=%s",
@@ -243,13 +395,39 @@ class Dispatcher:
             "yes" if runnable else "no",
         )
         if decision is None:
-            res = DispatchResult(name, "denied", "Denied: policy error.", rule_id="deny.error")
-        elif not runnable or tool is None:
-            res = _denied(name, decision, step_up)
-        else:
-            self._counter.record(name)
-            res = await self._run(name, tool, args, rule_id)
-        return replace(res, tainted=tainted)
+            return DispatchResult(name, "denied", "Denied: policy error.", rule_id="deny.error")
+        if not audited:
+            return DispatchResult(
+                name, "denied", "Denied: audit unavailable.", rule_id="deny.audit_unavailable"
+            )
+        if not runnable or tool is None:
+            return _denied(name, decision, step_up)
+        self._counter.record(name)
+        return await self._run(name, tool, args, rule_id)
+
+    async def _ask(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        decision: Decision,
+        tainted: bool,
+        res: DispatchResult,
+    ) -> DispatchResult:
+        requester = self._approvals
+        outcome = AskOutcome.FAILED
+        if requester is not None:
+            ask = ApprovalAsk(
+                tool=name, args=args, step_up=res.step_up, tainted=tainted, rule_id=decision.rule_id
+            )
+            try:
+                got = await requester.request(ask)
+                outcome = got if isinstance(got, AskOutcome) else AskOutcome.FAILED
+            except Exception as exc:  # noqa: BLE001 - fail closed: still not run
+                log.warning(
+                    "approval request failed tool=%s err=%s", safe_name(name), type(exc).__name__
+                )
+        text = f"Approval required by policy ({decision.rule_id}). {_ASK_TEXT[outcome]}"
+        return replace(res, content=text, approval=outcome.value)
 
     async def _run(
         self, name: str, tool: LoopTool, args: Mapping[str, Any], rule_id: str

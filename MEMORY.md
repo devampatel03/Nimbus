@@ -375,3 +375,12 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 - Waiver (human decision): the superuser app DB role (HIGH, until P6.1/P6.2) must be waived explicitly or fixed before any live run with production credentials. No waiver is recorded here.
 - Real price table and a daily cap of at most 100 INR (human supplies the provider price) before any staging run with a real key.
 - Resolved: H14 (2026-10-25), H15 (Docker running). H20 is superseded by H14.
+
+### 2026-10-28 — P3.2 approvals (task/P3.2-approvals)
+
+- New module `src/approvals/` (ADR-0020, implements ADR-0009). `require_approval` now sends an inline card (true stored payload, absolute IST expiry, Approve/Reject). It runs only after the allowlisted user's tap is verified (strict parse, payload re-hash, constant-time HMAC over verb, id, hash, nonce, expiry and user id) and consumed atomically (`pending -> consumed`, committed before the tool runs).
+- INV-5: `user_confirmed` / `step_up_confirmed` come only from a sealed `ConsumedApproval` minted by `ApprovalStore.consume`. The policy decides again on execution. Pinned by the new protected test `tests/eval/invariants/test_inv5_approvals.py`.
+- TOTP step-up: stdlib RFC 6238 instead of `pyotp`, entered on an inline keypad, so a code is never a message, event or memory. Replay guard and a durable lockout, both in `policy_audit`.
+- `policy_audit` table (migration `f3a9c1d7e5b2`, append-only). Every dispatch decision and approval event is recorded; an unaudited decision does not run (closes P3.1 LOW-6).
+- R8: `request_memory_promotion` writes `memory`/`promote`/`{"item_id"}`; it was proven end to end against `PgVectorMemoryStore.promote`. Nothing calls it from chat yet.
+- Approvals are OFF unless `APPROVAL_HMAC_KEY` is set (HUMAN_TODO H24). `PENDING_IDEMPOTENCY` is unchanged: creates stay denied.
