@@ -430,3 +430,31 @@ def test_decision_rejects_an_unknown_verdict() -> None:
 
     with pytest.raises(ValueError):
         Decision("maybe", "r", "x")  # type: ignore[arg-type]
+
+
+def test_catch_all_row_denies_a_synthetic_unhandled_risk() -> None:
+    """LOW-1: `deny.no_rule` is reachable. A risk the effect rows do not know
+    (a future Risk member, simulated by a sentinel in both the call and the
+    registry so every earlier deny row passes) falls through to the catch-all."""
+    sentinel: Any = object()
+    f = engine_mod.Facts(
+        malformed=False,
+        send_mail=False,
+        rule=ToolRule(sentinel, S, max_calls_per_hour=5),
+        risk=sentinel,
+        risk_known=True,
+        risk_missing=False,
+        exposed=True,
+        disabled=False,
+        scope_enabled=True,
+        mode=PolicyMode.NORMAL,
+        calls_last_hour=0,
+        tainted=False,
+        destructive=False,
+        external=False,
+        external_recipient=False,
+        confirmed=True,  # even a confirmed approval cannot lift the catch-all deny
+        step_up_confirmed=True,
+    )
+    d = engine_mod._evaluate(f)
+    assert (d.verdict, d.rule_id, d.step_up) == ("deny", "deny.no_rule", False)

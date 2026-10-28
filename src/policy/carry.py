@@ -14,6 +14,22 @@ those later turns tainted:
   tainted reply has been trimmed when `turns >= history_messages / 2`);
 - a clean turn that was not kept consumes nothing (conservative).
 
+Known limits (residual risk, reviewer MED-1 on PR #31; bounded, not closed):
+
+- NOT transitive. A carried turn reports only its OWN taint, so it does not
+  re-arm the carry (otherwise the carry would never end). A reply written in a
+  carried turn can repeat or paraphrase the injected instruction, and that
+  reply stays in the history window after the original tainted reply has been
+  trimmed and the carry has expired. Later turns then see the steered text as
+  untainted history. Writes still need the model to act on it, and every
+  external effect and destructive action needs approval regardless of taint
+  (ADR-0009); only untainted WRITE_INTERNAL is exposed by this gap.
+- The window is about `ceil(history_messages / 2)` kept turns (minimum 3). It
+  assumes each kept turn adds exactly two messages (user text + final reply,
+  `src.app.pipeline._remember`); if that changes, `carry_turns_for` must too.
+- In-process only: a restart clears the carry, which is consistent only
+  because the history window is in-process too.
+
 Pure and deterministic; the conversation worker owns one instance.
 """
 

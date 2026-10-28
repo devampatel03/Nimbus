@@ -240,3 +240,34 @@ async def test_orchestrator_feeds_the_guard_mode_to_the_dispatcher() -> None:
     o = Orchestrator(ReadOnlyAfterChat(), [w], PolicyEngine(), character_card="c")  # type: ignore[arg-type]
     r = await o.run_turn('tasks_update {"task_id": "1"}')
     assert w.runs == 0 and r.tool_events[0].rule_id == "deny.read_only"
+
+
+@pytest.mark.parametrize("carried", [True, None, 1, "no", object()])
+async def test_non_bool_carried_taint_dispatches_tainted(carried: Any) -> None:
+    """LOW-2: only an explicit False carried_taint is clean (loop.run_turn)."""
+    from src.llm.fake import CompromisedFakeLLM
+    from src.orchestrator.loop import Orchestrator
+    from tests.fakes.llm import build_env
+
+    w = Spy("tasks_update", Risk.WRITE_INTERNAL)
+    o = Orchestrator(
+        build_env(provider=CompromisedFakeLLM()).llm, [w], PolicyEngine(), character_card="c"
+    )
+    r = await o.run_turn('tasks_update {"task_id": "1"}', carried_taint=carried)
+    ev = r.tool_events[0]
+    assert w.runs == 0 and ev.tainted is True
+    assert ev.rule_id == "approval.write_internal_tainted"
+
+
+async def test_explicit_false_carried_taint_is_clean() -> None:
+    from src.llm.fake import CompromisedFakeLLM
+    from src.orchestrator.loop import Orchestrator
+    from tests.fakes.llm import build_env
+
+    w = Spy("tasks_update", Risk.WRITE_INTERNAL)
+    o = Orchestrator(
+        build_env(provider=CompromisedFakeLLM()).llm, [w], PolicyEngine(), character_card="c"
+    )
+    r = await o.run_turn('tasks_update {"task_id": "1"}', carried_taint=False)
+    first = r.tool_events[0]
+    assert w.runs >= 1 and first.tainted is False and first.rule_id == "allow.write_internal"
