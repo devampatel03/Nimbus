@@ -130,3 +130,31 @@ async def test_api_failure_message_has_no_upstream_detail() -> None:
     with pytest.raises(ToolError) as ei:
         await _tools(drive)["drive_read"].run({"file_id": ID_DOC})  # type: ignore[attr-defined]
     assert "ya29" not in str(ei.value)
+
+
+async def test_drive_tools_offered_only_when_bound_and_scope_enabled() -> None:
+    from src.llm.fake import FakeLLM
+    from src.orchestrator.loop import Orchestrator
+    from src.policy import PolicyEngine
+    from tests.fakes.llm import build_env
+
+    async def offered(group: DriveReadTool, **kw: object) -> set[str]:
+        fake = FakeLLM(["ok"])
+        o = Orchestrator(
+            build_env(provider=fake).llm,
+            group.tools(),
+            PolicyEngine(),
+            character_card="c",
+            **kw,  # type: ignore[arg-type]
+        )
+        await o.run_turn("find my drive file")
+        return {t.name for t in fake.requests[0].tools}
+
+    unbound = DriveReadTool()
+    bound = DriveReadTool()
+    bound.bind(FakeDrive({}).reader())
+    names = {"drive_search", "drive_read"}
+    enabled = frozenset({"tasks", "reminders", "drive"})
+    assert await offered(bound) == set()  # default wiring: local scopes only
+    assert await offered(unbound, scopes_enabled=enabled) == set()  # unbound
+    assert await offered(bound, scopes_enabled=enabled) == names

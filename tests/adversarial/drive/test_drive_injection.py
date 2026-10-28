@@ -79,6 +79,7 @@ async def _turn(first: ProviderResponse, main: FakeLLM) -> tuple[Any, list[Decoy
         character_card="c",
         nonce_factory=lambda: "N",
         quarantine=Quarantine(build_env(provider=quarantine_llm).llm),
+        scopes_enabled=frozenset({"tasks", "reminders", "drive"}),
     )
     return await orch.run_turn("read my file"), decoys, quarantine_llm
 

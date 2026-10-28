@@ -116,6 +116,11 @@ class DriveReadTool(ToolGroup):
         return ToolOutput(json.dumps(out), external=(text,))
 
     def tools(self) -> list[LoopTool]:
+        """Offered to the model only while bound (and, via the policy table, only
+        when scope `drive` is enabled)."""
+        return self.gate(self._all_tools(), lambda: self._reader is not None)
+
+    def _all_tools(self) -> list[LoopTool]:
         return [
             FunctionTool(
                 "drive_search",
