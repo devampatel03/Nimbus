@@ -119,6 +119,7 @@ def parse_update(raw: Any, allowed_user_id: int) -> Parsed | None:
                 message_id=mid,
                 callback_id=cb_id,
                 callback_data=data,
+                from_user_id=sender,
             ),
         )
 

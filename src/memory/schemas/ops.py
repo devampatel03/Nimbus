@@ -2,7 +2,7 @@
 # Private, unpublished, proprietary. Do not distribute.
 
 """Operational tables (P1.2c): job, inbound_update, pending_action, llm_audit,
-system_flag. TARGET_DESIGN §2 (Scheduler), §4.5 (approvals), §3 (llm_audit),
+system_flag; policy_audit (P3.2). TARGET_DESIGN §2 (Scheduler), §4.5 (approvals), §3 (llm_audit),
 ADR-0008 (jobs), ADR-0009 (approval token).
 
 - `job`: claimed with `SELECT ... FOR UPDATE SKIP LOCKED` over the partial
@@ -14,6 +14,10 @@ ADR-0008 (jobs), ADR-0009 (approval token).
 - `llm_audit`: append-only; metadata + cost always, redacted payload only as
   `crypto`-encrypted bytes (INV-7), purged to NULL after 14 days.
 - `system_flag`: key/value (kill switch, spend mode, poll offset). Mutable.
+- `policy_audit` (P3.2): append-only; one row per policy decision and per
+  approval lifecycle event. Names, rule ids and fixed codes only: never
+  argument values, tokens or codes (INV-7). Also the durable counter for TOTP
+  failures (lockout) and the last accepted TOTP step (replay guard).
 """
 
 import uuid
@@ -167,3 +171,28 @@ class SystemFlag(Base):
     value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(_TZ, nullable=False, server_default=_NOW)
     updated_by: Mapped[str | None] = mapped_column(nullable=True)
+
+
+class PolicyAudit(Base):
+    __tablename__ = "policy_audit"
+    __table_args__ = (
+        CheckConstraint("kind IN ('decision', 'approval')", name="ck_policy_audit_kind"),
+        Index("idx_policy_audit_event_created", "event", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=_UUID_PK_DEFAULT
+    )
+    created_at: Mapped[datetime] = mapped_column(_TZ, nullable=False, server_default=_NOW)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    event: Mapped[str] = mapped_column(String(32), nullable=False)
+    tool: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rule_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tainted: Mapped[bool | None] = mapped_column(nullable=True)
+    step_up: Mapped[bool | None] = mapped_column(nullable=True)
+    executed: Mapped[bool | None] = mapped_column(nullable=True)
+    # No FK: a forged callback names a row that does not exist, and is audited too.
+    action_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

@@ -21,9 +21,12 @@ Startup order is a security property, so it is fixed:
    the single `GuardedLLM`/`CallAccountant` (R4, R5).
 4. `MemoryManager.verify_index()`: a model/dim change aborts startup.
 5. Loops start. Policy is the deterministic `PolicyEngine` (P3.1, ADR-0009,
-   INV-5) with its production config: `require_approval` never executes until
-   P3.2. Creates stay denied by default (`PENDING_IDEMPOTENCY`) until a
-   separate, reviewed enable task.
+   INV-5) with its production config; creates stay denied by default (`PENDING_IDEMPOTENCY`)
+   until a separate, reviewed enable task.
+   Every decision is written to `policy_audit` before a tool runs (P3.2).
+   Approvals (P3.2) are ON only when `APPROVAL_HMAC_KEY` is set and a Telegram
+   user is configured: `require_approval` then sends a card and runs only after
+   the user's tap is verified and consumed. Otherwise it stays a denial.
 
 The Telegram token is read by `GatewaySettings`; no value is ever logged.
 """
@@ -48,11 +51,14 @@ from config.settings import Settings as DbSettings
 from src.app.card import StartupRefused, load_card
 from src.app.db import build_engine, build_session_factory
 from src.app.heartbeat import Heartbeat, HeartbeatPathError
-from src.app.pipeline import PendingTurn, TurnGateway, TurnWorker
+from src.app.pipeline import CallbackHandler, PendingTurn, TurnGateway, TurnWorker
 from src.app.recall import SessionScopedRecall
 from src.app.seams import JobRunner, NoopJobRunner, NoopScheduler, Scheduler
 from src.app.settings import AppSettings
 from src.app.supervisor import EXIT_FATAL_LOOP, LoopSpec, Supervisor
+from src.approvals.service import ApprovalService
+from src.approvals.settings import ApprovalSettings
+from src.approvals.store import ApprovalStore
 from src.core.clock import SystemClock
 from src.core.logging import install_log_scrubbing
 from src.db.crypto import KEY_ENV_VAR, DataCipher
@@ -73,7 +79,7 @@ from src.memory.embedder import (
     Qwen3Embedder,
 )
 from src.memory.manager import MemoryManager
-from src.memory.store import VectorEmbedder
+from src.memory.store import PgVectorMemoryStore, VectorEmbedder
 from src.net import EgressClient, NetSettings
 from src.orchestrator.loop import Orchestrator
 from src.policy import PolicyEngine
@@ -104,12 +110,19 @@ class AppConfig:
     gateway: GatewaySettings | None
     dsn: str = field(repr=False)  # carries the DB password
     secrets: tuple[str, ...] = field(default=(), repr=False)
+    approvals: ApprovalSettings | None = field(default=None, repr=False)  # None = off
 
     @classmethod
     def from_env(cls) -> AppConfig:
         app = AppSettings()
         gateway = None if app.fake_backends else GatewaySettings()  # type: ignore[call-arg]
-        return cls.build(app=app, gateway=gateway, llm=LLMSettings(), net=NetSettings())
+        return cls.build(
+            app=app,
+            gateway=gateway,
+            llm=LLMSettings(),
+            net=NetSettings(),
+            approvals=ApprovalSettings(),
+        )
 
     @classmethod
     def build(
@@ -121,6 +134,7 @@ class AppConfig:
         net: NetSettings,
         db: DbSettings | None = None,
         dsn: str | None = None,
+        approvals: ApprovalSettings | None = None,
     ) -> AppConfig:
         if dsn is None:
             from config.settings import settings as shared
@@ -139,7 +153,9 @@ class AppConfig:
         data_key = os.environ.get(KEY_ENV_VAR)
         if data_key:
             secrets.append(data_key)
-        return cls(app, llm, net, gateway, dsn, tuple(dict.fromkeys(secrets)))
+        if approvals is not None:
+            secrets.extend(approvals.secret_values())
+        return cls(app, llm, net, gateway, dsn, tuple(dict.fromkeys(secrets)), approvals=approvals)
 
 
 @dataclass
@@ -207,6 +223,37 @@ def bind_scheduling_tools(
     tasks.bind(sf, clock)
 
 
+def build_approvals(
+    cfg: AppConfig, store: ApprovalStore, gateway: Gateway, clock: SystemClock
+) -> ApprovalService | None:
+    """Approvals need the HMAC key AND the one allowlisted Telegram user (the
+    MAC binds the user id). Anything less: off, and `require_approval` stays a
+    denial (fail closed)."""
+    ap = cfg.approvals
+    if ap is None or not ap.enabled or cfg.gateway is None:
+        log.info("approvals off (no APPROVAL_HMAC_KEY or no telegram user)")
+        return None
+    if ap.totp_secret is None:
+        log.warning("approvals on without APPROVAL_TOTP_SECRET: step-up actions cannot be approved")
+    return ApprovalService(store, gateway, ap, user_id=cfg.gateway.allowed_user_id, clock=clock)
+
+
+def memory_promoter(
+    sf: SessionFactory, embedder: VectorEmbedder
+) -> Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]:
+    """R8: promote a chunk with a consumed `memory`/`promote` approval. The
+    store's single SQL statement re-checks the approval (consumed, in time,
+    exact item, single use)."""
+
+    async def promote(item_id: uuid.UUID, approval_id: uuid.UUID) -> None:
+        async with sf() as session, session.begin():
+            await PgVectorMemoryStore(session, embedder=embedder).promote(
+                item_id, approval_id=approval_id
+            )
+
+    return promote
+
+
 def build_embedder(cfg: AppConfig, llm: GuardedLLM) -> EmbedderLike:
     if cfg.app.embedder == "api":
         # Shares GuardedLLM's CallAccountant: one cap, one set of held spend (R5).
@@ -244,6 +291,7 @@ class Runtime:
         reminder_jobs: JobRunner | None = None,
         scheduler: Scheduler | None = None,
         on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
+        callbacks: CallbackHandler | None = None,
     ) -> None:
         self.cfg = cfg
         self.heartbeat = heartbeat
@@ -262,6 +310,7 @@ class Runtime:
             history_messages=cfg.app.history_messages,
             on_progress=lambda: heartbeat.beat("gateway"),
             on_turn_done=on_turn_done,
+            callbacks=callbacks,
         )
         self._beat_every = min(15.0, cfg.app.heartbeat_stale_s / 3)
 
@@ -432,13 +481,20 @@ async def run_app(
             log.info("released %d interrupted job(s) at boot", released)
         registry = ToolRegistry()
         bind_scheduling_tools(registry, parts, sf, clock)
+        approval_store = ApprovalStore(sf)
+        approvals = build_approvals(cfg, approval_store, be.gateway, clock)
         orchestrator = Orchestrator(
             llm,
             registry.loop_tools(),
             PolicyEngine(),
             character_card=card,
             recall=SessionScopedRecall(sf, embedder),
+            approvals=approvals,
+            audit=approval_store,
         )
+        if approvals is not None:
+            approvals.bind_executor(orchestrator.dispatcher)
+            approvals.bind_promoter(memory_promoter(sf, embedder))
         rt = Runtime(
             cfg=cfg,
             gateway=be.gateway,
@@ -451,6 +507,7 @@ async def run_app(
             reminder_jobs=parts.reminder_runner,
             scheduler=parts.sweeper,
             on_turn_done=parts.enqueue_extract_after_turn,
+            callbacks=approvals,
         )
         specs = rt.loops()
         heartbeat.register(*(s.name for s in specs))

@@ -18,6 +18,10 @@ Only the user's own text starts a turn. Forwards / via-bot text
 instruction (INV-6); voice and documents are ingest-only until a transcriber
 exists.
 
+Callbacks (P3.2): an inline-button callback goes to the approvals handler
+(`ApprovalService.handle_callback`), never to the model. Without a handler the
+user is told the action is no longer available.
+
 Cross-turn taint (ADR-0010, P3.1): a tainted turn's reply stays in the history
 window, so the worker keeps a `TaintCarry` and runs later turns with
 `carried_taint=True` until that reply has left the window (at least 3 turns).
@@ -30,8 +34,9 @@ import asyncio
 import logging
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from src.core.turn_context import turn_event
 from src.gateway.protocols import Gateway
@@ -53,6 +58,10 @@ log = logging.getLogger(__name__)
 TURN_FAILED_MESSAGE = "I couldn't answer that just now. Please try again in a moment."
 STALE_CALLBACK_MESSAGE = "That action is no longer available."
 MAX_TURN_TEXT_CHARS = 16_000
+
+
+class CallbackHandler(Protocol):
+    async def handle_callback(self, update: InboundUpdate) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +93,9 @@ class TurnGateway:
 
     async def send_approval(self, card: ApprovalCard) -> MessageRef:
         return await self._inner.send_approval(card)
+
+    async def send_keypad(self, text: str, rows: Sequence[Sequence[tuple[str, str]]]) -> MessageRef:
+        return await self._inner.send_keypad(text, rows)
 
     async def close_approval(self, ref: MessageRef, *, outcome: str) -> None:
         await self._inner.close_approval(ref, outcome=outcome)
@@ -141,7 +153,9 @@ class TurnWorker:
         turn_timeout_s: float = 180.0,
         on_progress: Callable[[], None] | None = None,
         on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
+        callbacks: CallbackHandler | None = None,
     ) -> None:
+        self._callbacks = callbacks
         self._progress = on_progress
         self._on_turn_done = on_turn_done
         self._gw = gateway
@@ -190,8 +204,10 @@ class TurnWorker:
     async def _handle(self, item: PendingTurn) -> None:
         u = item.update
         if u.kind is UpdateKind.CALLBACK:
-            # No approval can be pending before P3.2: say so instead of leaving a spinner.
-            if u.callback_id:
+            # Approval buttons: handled by code (the approvals layer), never the model.
+            if self._callbacks is not None:
+                await self._callbacks.handle_callback(u)
+            elif u.callback_id:
                 await self._gw.answer_callback(u.callback_id, STALE_CALLBACK_MESSAGE)
             return
         text, _ = clean_text(u.text or "", max_chars=MAX_TURN_TEXT_CHARS)

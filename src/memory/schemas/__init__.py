@@ -16,7 +16,14 @@ from src.memory.schemas.decision import Decision
 from src.memory.schemas.event import Event
 from src.memory.schemas.graph import GraphEdge, GraphNode
 from src.memory.schemas.memory_chunk import MemoryChunk
-from src.memory.schemas.ops import InboundUpdate, Job, LLMAudit, PendingAction, SystemFlag
+from src.memory.schemas.ops import (
+    InboundUpdate,
+    Job,
+    LLMAudit,
+    PendingAction,
+    PolicyAudit,
+    SystemFlag,
+)
 from src.memory.schemas.person import Person
 from src.memory.schemas.scheduling import Reminder, Task
 from src.memory.schemas.session import Session
@@ -39,6 +46,7 @@ __all__ = [
     "MemoryChunk",
     "PendingAction",
     "Person",
+    "PolicyAudit",
     "Reminder",
     "Session",
     "SystemFlag",
