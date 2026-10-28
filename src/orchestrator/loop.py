@@ -59,6 +59,7 @@ from src.orchestrator.dispatch import (
 from src.orchestrator.exposure import ExposableTool, names, select_tools
 from src.personality.agent_character import AgentStance
 from src.personality.user_profile import UserTrait
+from src.policy import LOCAL_SCOPES, TOOL_RULES
 
 log = logging.getLogger(__name__)
 
@@ -105,18 +106,41 @@ class Orchestrator:
         quarantine: Quarantine | None = None,
         approvals: ApprovalRequester | None = None,
         audit: AuditSink | None = None,
+        scopes_enabled: frozenset[str] = LOCAL_SCOPES,
     ) -> None:
         self._llm = llm
+        self._scopes = frozenset(scopes_enabled)
         self._quarantine = quarantine
         self._by_name: Mapping[str, LoopTool] = {t.spec.name: t for t in tools}
         self._dispatcher = Dispatcher(
-            self._by_name, policy, mode_source=llm.mode, approvals=approvals, audit=audit
+            self._by_name,
+            policy,
+            mode_source=llm.mode,
+            scopes_enabled=self._scopes,
+            approvals=approvals,
+            audit=audit,
         )
         self._card = character_card
         self._recall = recall
         self._cfg = config or LoopConfig()
         self._always = always_expose
         self._nonce = nonce_factory
+
+    def _offerable(self, tool: LoopTool) -> bool:
+        """Offer only tools that could run: bound, and (when the policy table
+        knows the tool) in an enabled scope. Hidden tools are not exposed, so a
+        call to one is still denied (`deny.unexposed`). Fail closed: an
+        `available()` that raises hides the tool."""
+        rule = TOOL_RULES.get(tool.spec.name)
+        if rule is not None and rule.scope not in self._scopes:
+            return False
+        check = getattr(tool, "available", None)
+        if callable(check):
+            try:
+                return bool(check())
+            except Exception:  # noqa: BLE001 - fail closed
+                return False
+        return True
 
     @property
     def dispatcher(self) -> Dispatcher:
@@ -147,7 +171,11 @@ class Orchestrator:
         )
         taint = ctx.taint
         exposed = select_tools(
-            [ExposableTool(t.spec, t.spec.name in self._always) for t in self._by_name.values()],
+            [
+                ExposableTool(t.spec, t.spec.name in self._always)
+                for t in self._by_name.values()
+                if self._offerable(t)
+            ],
             user_text,
             limit=self._cfg.max_tools,
         )

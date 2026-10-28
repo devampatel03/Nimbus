@@ -110,6 +110,11 @@ class RemindersTool(ToolGroup):
         return ToolOutput(json.dumps({"count": len(rows), "reminders": rows}))
 
     def tools(self) -> list[LoopTool]:
+        return self.gate(
+            self._all_tools(), lambda: self._store is not None and self._clock is not None
+        )
+
+    def _all_tools(self) -> list[LoopTool]:
         w, r = Risk.WRITE_INTERNAL, Risk.READ
         rid = {"reminder_id": "string"}
         when = (
