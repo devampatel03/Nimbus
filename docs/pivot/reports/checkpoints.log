@@ -40,3 +40,9 @@ Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT
 | ID | Title | Agent | Deps | Status | Branch | PR | Notes |
 |----|-------|-------|------|--------|--------|----|-------|
 
+=== checkpoint 2026-10-28T05:44:00Z ===
+branch: pivot
+head:   0646cc3 chore(state): P3.0 and P3.4 merged with follow-ups
+open PRs: #30 task/P3.3-scheduler (round 1 CHANGES_REQUESTED, fix pass interrupted, unpushed local commit 9b7fc1b + uncommitted edits in C:/DEVAM/MY_PROJECTS/Nimbus-P3.3)
+next: finish P3.3, start P3.1 fresh, P3.2, tools; see reports/CHECKPOINT_20261028T0544Z.md
+
