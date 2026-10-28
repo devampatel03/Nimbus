@@ -14,7 +14,7 @@ from src.policy import LOCAL_SCOPES, TOOL_RULES, PolicyConfig, PolicyEngine, Ris
 from src.policy.registry import DELETE_PER_HOUR, READ_PER_HOUR, WRITE_PER_HOUR
 from src.tools.registry import ToolRegistry
 
-GOOGLE_SCOPES = frozenset({"drive"})
+GOOGLE_SCOPES = frozenset({"drive", "calendar"})
 FETCH_LIKE = re.compile(r"fetch|http|url|browse|web|scrape|curl|download|request", re.IGNORECASE)
 
 
@@ -51,7 +51,7 @@ def test_no_mail_send_tool_and_the_engine_denies_one_if_added() -> None:
     assert (d.verdict, d.rule_id) == ("deny", "deny.gmail_send")
 
 
-def test_every_rule_has_a_local_scope_and_a_sane_limit() -> None:
+def test_every_rule_has_a_known_scope_and_a_sane_limit() -> None:
     for name, rule in TOOL_RULES.items():
         if rule.scope in GOOGLE_SCOPES:
             assert rule.external_service is True, name
@@ -65,7 +65,7 @@ def test_every_rule_has_a_local_scope_and_a_sane_limit() -> None:
         assert rule.max_calls_per_hour == want, name
 
 
-@pytest.mark.parametrize("name", ["tasks_delete", "reminders_delete"])
+@pytest.mark.parametrize("name", ["tasks_delete", "reminders_delete", "calendar_delete"])
 def test_deletes_are_marked_destructive(name: str) -> None:
     assert TOOL_RULES[name].destructive is True
 
@@ -74,7 +74,25 @@ def test_only_deletes_are_destructive() -> None:
     assert {n for n, r in TOOL_RULES.items() if r.destructive} == {
         "tasks_delete",
         "reminders_delete",
+        "calendar_delete",
     }
+
+
+def test_calendar_policy_rows_exact() -> None:
+    """The ADR-0009 matrix rows for P3.5: risk, scope, limit, flags."""
+    got = {
+        n: (r.risk, r.scope, r.max_calls_per_hour, r.destructive, r.external_service)
+        for n, r in TOOL_RULES.items()
+        if n.startswith("calendar_")
+    }
+    assert got == {
+        "calendar_list": (Risk.READ, "calendar", READ_PER_HOUR, False, True),
+        "calendar_get": (Risk.READ, "calendar", READ_PER_HOUR, False, True),
+        "calendar_create": (Risk.WRITE_EXTERNAL, "calendar", WRITE_PER_HOUR, False, True),
+        "calendar_update": (Risk.WRITE_EXTERNAL, "calendar", WRITE_PER_HOUR, False, True),
+        "calendar_delete": (Risk.DESTRUCTIVE, "calendar", DELETE_PER_HOUR, True, True),
+    }
+    assert "calendar" not in LOCAL_SCOPES
 
 
 def test_registry_is_read_only() -> None:

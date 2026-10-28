@@ -291,6 +291,20 @@ class Dispatcher:
     ) -> DispatchResult:
         tainted = tainted is not False  # fail closed: only an explicit False is clean
         tool = self._tools.get(name) if isinstance(name, str) else None
+        if tool is not None:
+            # Optional offline hook (P3.5): e.g. turn an opaque handle into the real
+            # id so the policy, card and stored payload all see the real value.
+            resolver = getattr(tool, "resolve_args", None)
+            if callable(resolver):
+                try:
+                    args = await resolver(args)
+                except ToolError as e:
+                    msg = str(e)[:MAX_TOOL_ERROR_CHARS]
+                    return DispatchResult(
+                        name, "error", f"Tool error: {msg}", untrusted=True, rule_id="tool.args"
+                    )
+                except Exception:  # noqa: BLE001 - fail closed
+                    return DispatchResult(name, "error", "Tool error: failed.", rule_id="tool.args")
         is_exposed = tool is not None and name in exposed
         call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
         ctx = await self._safe_context(tool, name, is_exposed, tainted)
@@ -415,6 +429,17 @@ class Dispatcher:
     ) -> DispatchResult:
         requester = self._approvals
         outcome = AskOutcome.FAILED
+        tool = self._tools.get(name)
+        describer = getattr(tool, "describe_args", None)
+        if callable(describer):
+            # Optional online hook, reached only after the policy said
+            # require_approval: lets the card show what the target really is.
+            try:
+                args = await describer(args)
+            except Exception as exc:  # noqa: BLE001 - the card still shows the raw arguments
+                log.warning(
+                    "describe_args failed tool=%s err=%s", safe_name(name), type(exc).__name__
+                )
         if requester is not None:
             ask = ApprovalAsk(
                 tool=name, args=args, step_up=res.step_up, tainted=tainted, rule_id=decision.rule_id

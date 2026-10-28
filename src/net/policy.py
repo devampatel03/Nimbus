@@ -184,12 +184,33 @@ def deny_drive_write(service: Service, method: str, path: str) -> str | None:
     return None
 
 
+# Calendar (P3.5, ADR-0019 addendum): only the primary calendar's events
+# collection and one event by a strict id. quickAdd, import, move, watch,
+# instances, other calendars, ACL and settings all have no caller.
+_CALENDAR_PREFIX_RE = re.compile(r"^/(?:upload/)?calendar(?![a-z0-9_-])")
+_CALENDAR_OK_RE = re.compile(
+    r"/calendar/v3/calendars/primary/events(?:/(?!(?:import|quickadd)$)[a-v0-9]{5,64})?"
+)
+_CALENDAR_METHODS = frozenset({"GET", "POST", "PATCH", "DELETE"})
+
+
+def deny_google_calendar_unexpected(service: Service, method: str, path: str) -> str | None:
+    if not _CALENDAR_PREFIX_RE.search(path):
+        return None
+    if _CALENDAR_OK_RE.fullmatch(path) is None:
+        return "google_calendar_path"
+    if method not in _CALENDAR_METHODS:
+        return "google_calendar_method"
+    return None
+
+
 DEFAULT_DENY_RULES: tuple[DenyRule, ...] = (
     deny_gmail_send,
     deny_gmail_settings_write,
     deny_google_batch,
     deny_google_oauth_unexpected,
     deny_drive_write,
+    deny_google_calendar_unexpected,
 )
 
 
@@ -233,6 +254,11 @@ def normalise_path(path: object, *, service: Service, method: str) -> str:
     if service is Service.GOOGLE_OAUTH and path not in _GOOGLE_OAUTH_PATHS:
         send = deny_gmail_send(service, method, lowered)
         raise deny(send if send is not None else "google_oauth_path")
+    # Calendar: the deny rule sees the lowercased form, where 'quickAdd' or
+    # 'import' would look like a valid [a-v0-9] id. Match the ORIGINAL path,
+    # case-sensitively (ADR-0019 addendum).
+    if _CALENDAR_PREFIX_RE.search(lowered) and _CALENDAR_OK_RE.fullmatch(path) is None:
+        raise deny("google_calendar_path")
     return lowered
 
 

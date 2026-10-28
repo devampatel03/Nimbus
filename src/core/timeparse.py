@@ -102,6 +102,21 @@ def _err(code: str, message: str) -> TimeParseError:
     return TimeParseError(code, message)
 
 
+def parse_aware_iso(raw: object) -> datetime | None:
+    """An ISO-8601 datetime with an explicit UTC offset ('Z' or 'z' = UTC), or
+    None. No guessing: naive, over-long or malformed input is None."""
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > 40:
+        return None
+    text = raw.strip()
+    if text[-1] in "zZ":
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None and dt.utcoffset() is not None else None
+
+
 def format_ist(dt: datetime) -> str:
     """'Wed 28 Oct 2026, 9:00 AM IST'."""
     local = dt.astimezone(IST)

@@ -20,6 +20,8 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from src.core.timeparse import parse_aware_iso
+
 _VISIBLE_EXCEPTIONS = {"\n", " "}
 _HIDDEN_CATEGORIES = {"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp", "Zs"}
 
@@ -49,6 +51,21 @@ def absolute_time(at: datetime, offset_minutes: int) -> str:
     return f"{local.strftime('%d %b %Y, %H:%M:%S')} {tz_label(offset_minutes)}"
 
 
+def resolved_times(payload: Mapping[str, Any], offset_minutes: int) -> list[str]:
+    """For `start` / `end` arguments that are ISO-8601 datetimes with an offset,
+    the same instant in the user's zone, so a calendar card shows the absolute
+    time both as sent and in IST. Computed by code from the payload."""
+    lines: list[str] = []
+    for key in ("start", "end"):
+        raw = payload.get(key)
+        if not isinstance(raw, str) or len(raw) > 40:
+            continue
+        at = parse_aware_iso(raw)
+        if at is not None:
+            lines.append(f"{key.capitalize()}: {reveal(raw)} = {absolute_time(at, offset_minutes)}")
+    return lines
+
+
 def render_card(
     *,
     tool: str,
@@ -68,6 +85,7 @@ def render_card(
         f"Action: {reveal(action)}",
         "Arguments (exactly what will run):",
         reveal(args),
+        *resolved_times(payload, offset_minutes),
         f"Expires: {absolute_time(expires_at, offset_minutes)} (in about {minutes} min)",
         (
             "Step-up: after Approve you must enter your authenticator code."
