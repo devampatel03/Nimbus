@@ -61,6 +61,7 @@ class AppSettings(BaseSettings):
     # send time, so it must stay well inside R11's 60 s.
     job_poll_s: float = Field(default=5.0, gt=0, le=30)
     job_lease_s: float = Field(default=300.0, gt=10, le=3600)
+    extract_pause_s: float = Field(default=2.0, gt=0, le=600)  # between memory_extract batches (R5)
     job_batch: int = Field(default=20, ge=1, le=200)
 
     # Turn pipeline.

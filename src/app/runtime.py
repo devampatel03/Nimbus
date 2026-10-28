@@ -74,6 +74,7 @@ from src.memory.store import VectorEmbedder
 from src.net import EgressClient, NetSettings
 from src.orchestrator.dispatch import DenyAllWritesPolicy
 from src.orchestrator.loop import Orchestrator
+from src.scheduler.memory_extract import LedgerSpendProbe
 from src.scheduler.wiring import SchedulerParts, build_scheduler
 from src.tools.integrations.reminders import RemindersTool
 from src.tools.integrations.tasks import TasksTool
@@ -84,7 +85,6 @@ log = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_CONFIG = 2
 EXIT_MIGRATION_REQUIRED = 3
-MAX_DRAIN_BATCHES = 10
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -238,6 +238,7 @@ class Runtime:
         heartbeat: Heartbeat,
         stop: asyncio.Event,
         jobs: JobRunner | None = None,
+        reminder_jobs: JobRunner | None = None,
         scheduler: Scheduler | None = None,
         on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
     ) -> None:
@@ -245,6 +246,7 @@ class Runtime:
         self.heartbeat = heartbeat
         self.stop = stop
         self._jobs: JobRunner = jobs or NoopJobRunner()
+        self._reminder_jobs: JobRunner = reminder_jobs or NoopJobRunner()
         self._scheduler: Scheduler = scheduler or NoopScheduler()
         self.queue: asyncio.Queue[PendingTurn] = asyncio.Queue(cfg.app.turn_queue_size)
         # Ingest reads through the wrapper, so every ack is followed by a queued turn.
@@ -275,21 +277,37 @@ class Runtime:
         consume = self.ingestor.run
         await _first_done(consume(), self.turns.serve())
 
-    async def worker_loop(self) -> None:
-        """Jobs every `job_poll_s` (R11: reminders within 60 s); ingest recovery on
-        its own, slower cadence. A backlog (catch-up after downtime) is drained in
-        up to `MAX_DRAIN_BATCHES` batches per poll."""
-        clock = asyncio.get_running_loop().time
-        next_recover = 0.0
+    async def _reminder_loop(self) -> None:
+        """Reminder delivery (R11: within 60 s). Its own runner and task: a slow
+        model call in the extraction loop cannot delay it. Claims continuously
+        (a backlog after downtime drains back to back), sleeps `job_poll_s` only
+        when nothing was due, and beats the worker heartbeat every cycle."""
         while not self.stop.is_set():
-            if clock() >= next_recover:
-                await self.ingestor.recover_pending(self.cfg.app.recover_limit)
-                next_recover = clock() + self.cfg.app.recover_interval_s
-            for _ in range(MAX_DRAIN_BATCHES):
-                if not await self._jobs.run_due() or self.stop.is_set():
-                    break
+            ran = await self._reminder_jobs.run_due()
             self.heartbeat.beat("worker")
-            await self._idle("worker", self.cfg.app.job_poll_s)
+            if not ran:
+                await self._idle("worker", self.cfg.app.job_poll_s)
+
+    async def _extract_loop(self) -> None:
+        """Other jobs (memory_extract: spends on the model, R5). Small batches with a
+        pause between them, so a backlog drains at a bounded rate."""
+        while not self.stop.is_set():
+            ran = await self._jobs.run_due()
+            self.heartbeat.beat("worker")
+            pause = self.cfg.app.extract_pause_s if ran else self.cfg.app.job_poll_s
+            await self._idle("worker", pause)
+
+    async def _recover_loop(self) -> None:
+        while not self.stop.is_set():
+            await self.ingestor.recover_pending(self.cfg.app.recover_limit)
+            self.heartbeat.beat("worker")
+            await self._idle("worker", self.cfg.app.recover_interval_s)
+
+    async def worker_loop(self) -> None:
+        """Three independent tasks under one heartbeat name: reminder delivery,
+        other jobs, ingest recovery. If any ends, the others are cancelled and the
+        supervisor restarts the loop (crash isolation stays at loop level)."""
+        await _first_done(self._reminder_loop(), self._extract_loop(), self._recover_loop())
 
     async def scheduler_loop(self) -> None:
         while not self.stop.is_set():
@@ -399,9 +417,16 @@ async def run_app(
             embedder=embedder,
             llm=llm,
             clock=clock,
+            spend=LedgerSpendProbe(audit, cfg.llm.daily_spend_cap_inr, clock),
             lease_s=cfg.app.job_lease_s,
             batch=cfg.app.job_batch,
+            on_progress=lambda: heartbeat.beat("worker"),
         )
+        # Every `running` row at boot belongs to a dead process: release them now
+        # (no attempt burned) so reminders do not wait out the lease (M4).
+        released = await parts.queue.recover_orphans()
+        if released:
+            log.info("released %d interrupted job(s) at boot", released)
         registry = ToolRegistry()
         bind_scheduling_tools(registry, parts, sf, clock)
         orchestrator = Orchestrator(
@@ -419,7 +444,8 @@ async def run_app(
             orchestrator=orchestrator,
             heartbeat=heartbeat,
             stop=stop,
-            jobs=parts.runner,
+            jobs=parts.extract_runner,
+            reminder_jobs=parts.reminder_runner,
             scheduler=parts.sweeper,
             on_turn_done=parts.enqueue_extract_after_turn,
         )

@@ -63,7 +63,8 @@ class EchoProvider:
     name = "echo"
     model = "echo-model"
 
-    def __init__(self) -> None:
+    def __init__(self, extract_delay_s: float = 0.0) -> None:
+        self.extract_delay_s = extract_delay_s
         self.calls = 0
         self.extract_calls = 0
         self.requests: list[ChatRequest] = []
@@ -72,6 +73,8 @@ class EchoProvider:
         if req.response_schema is not None:
             # Background memory extraction (P3.3): not a conversational turn.
             self.extract_calls += 1
+            if self.extract_delay_s:
+                await asyncio.sleep(self.extract_delay_s)
             return ProviderResponse(text="{}", usage=Usage(tokens_in=20, tokens_out=2))
         self.calls += 1
         self.requests.append(req)
