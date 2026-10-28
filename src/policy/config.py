@@ -4,10 +4,10 @@
 """Human-edited policy configuration. The model can never change it.
 
 `PENDING_IDEMPOTENCY` keeps `tasks_create` and `reminders_create` denied in
-production (`deny.tool_disabled`): creation is not yet idempotent and
-`source_event_id` is not populated (P3.3 review finding M5, PR #30). A
-redelivered update or a retried model call would create duplicates. Once the
-M5 fix is merged, enabling them is the one-line change
+production (`deny.tool_disabled`): they stay off by default until a separate
+enable task, which needs its own review. P3.3 has merged, but turning creation
+on is a policy change, not part of it; a redelivered update or a retried model
+call must not create duplicates. Enabling is the one-line change
 `PENDING_IDEMPOTENCY = frozenset()`.
 """
 
