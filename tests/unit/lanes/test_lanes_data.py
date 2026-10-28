@@ -204,7 +204,9 @@ def test_render_rejects_malformed_nonce(bad_nonce: str) -> None:
     out = render_data_block(_block("x"), lambda: bad_nonce)
     first = out.split("\n", 1)[0]
     assert first.startswith("<<<DATA label=m nonce=") and first.endswith(">>>")
-    assert bad_nonce not in first or bad_nonce == ""
+    # the replacement nonce is random: compare the nonce field, not a substring of the line
+    nonce = first[len("<<<DATA label=m nonce=") : -len(">>>")]
+    assert nonce != bad_nonce
 
 
 def test_body_is_capped_after_nfkc_with_marker() -> None:
