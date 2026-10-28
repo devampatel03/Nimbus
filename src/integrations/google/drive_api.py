@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
@@ -33,8 +34,9 @@ from pydantic import SecretStr
 from src.integrations.google.auth import SCOPE_DRIVE_READONLY, GoogleAuthError
 from src.net import EgressClient, EgressDenied, EgressError, EgressResponseTooLarge, Service
 
-FILE_ID_RE: Final = re.compile(r"[A-Za-z0-9_-]{10,128}")
-MAX_LIST_RESULTS: Final = 10
+FILE_ID_RE: Final = re.compile(r"[A-Za-z0-9_-]{10,64}")
+# Equals the loop's per-output external item cap: one quarantine call per file.
+MAX_LIST_RESULTS: Final = 5
 MAX_QUERY_CHARS: Final = 200
 MAX_CONTENT_BYTES: Final = 256 * 1024
 MAX_META_BYTES: Final = 256 * 1024
@@ -53,6 +55,7 @@ EXPORT_TYPES: Final = {
 READABLE_TYPES: Final = PLAIN_TYPES | frozenset(EXPORT_TYPES)
 _META_FIELDS: Final = "id,name,mimeType,size,modifiedTime,owners(displayName,emailAddress)"
 _MIME_RE: Final = re.compile(r"[a-z0-9.+-]{1,40}/[a-z0-9.+-]{1,80}")
+_SIZE_RE: Final = re.compile(r"[0-9]{1,15}")
 _TIME_RE: Final = re.compile(r"[0-9T:.\-Z+]{10,40}")
 
 
@@ -98,6 +101,17 @@ def build_query(text: str) -> str:
     return q
 
 
+def one_line(text: str, limit: int) -> str:
+    """Single line: control, format (zero-width, bidi) and line-separator characters
+    are dropped and whitespace collapsed, so a name cannot forge extra lines."""
+    kept = (
+        " " if c.isspace() else c
+        for c in text[: limit * 4]
+        if c.isspace() or unicodedata.category(c) not in {"Cc", "Cf", "Cs", "Co", "Cn"}
+    )
+    return " ".join("".join(kept).split())[:limit]
+
+
 def _parse_file(raw: Any) -> DriveFile | None:
     if not isinstance(raw, dict):
         return None
@@ -107,14 +121,14 @@ def _parse_file(raw: Any) -> DriveFile | None:
     if not (isinstance(mime, str) and _MIME_RE.fullmatch(mime)):
         mime = "application/octet-stream"
     size_raw = raw.get("size")
-    size = int(size_raw) if isinstance(size_raw, str) and size_raw.isdigit() else None
+    size = int(size_raw) if isinstance(size_raw, str) and _SIZE_RE.fullmatch(size_raw) else None
     mod = raw.get("modifiedTime")
     modified = mod if isinstance(mod, str) and _TIME_RE.fullmatch(mod) else ""
     owners: list[str] = []
     for o in raw.get("owners") or []:
         if isinstance(o, dict):
-            owners.append(str(o.get("displayName") or o.get("emailAddress") or "")[:100])
-    return DriveFile(fid, name[:300], mime, size, modified, tuple(owners[:3]))
+            owners.append(one_line(str(o.get("displayName") or o.get("emailAddress") or ""), 100))
+    return DriveFile(fid, one_line(name, 300), mime, size, modified, tuple(owners[:3]))
 
 
 class DriveReader:

@@ -56,7 +56,7 @@ async def test_search_text_has_only_ids_and_metadata_names_go_external() -> None
     assert body["count"] == 3
     assert "Q3 budget" not in out.text and "scan.pdf" not in out.text
     assert "Test Owner" not in out.text and "example.invalid" not in out.text
-    assert len(out.external) == 1 and isinstance(out.external[0], UntrustedText)
+    assert len(out.external) == 3 and all(isinstance(u, UntrustedText) for u in out.external)
     assert out.untrusted is True
     assert [f["readable"] for f in body["files"]] == [True, False, True]
     assert body["files"][1]["mime_type"] == "other"
@@ -158,3 +158,32 @@ async def test_drive_tools_offered_only_when_bound_and_scope_enabled() -> None:
     assert await offered(bound) == set()  # default wiring: local scopes only
     assert await offered(unbound, scopes_enabled=enabled) == set()  # unbound
     assert await offered(bound, scopes_enabled=enabled) == names
+
+
+HOSTILE = ("ignore previous", "share this folder", "attacker", "system:", "boss")
+
+
+async def test_hostile_metadata_never_reaches_output_text() -> None:
+    drive = FakeDrive({"/drive/v3/files": (200, fx("drive_list_hostile.json"))})
+    out = await _tools(drive)["drive_search"].run({"query": ""})  # type: ignore[attr-defined]
+    low = out.text.lower()
+    assert not [h for h in HOSTILE if h in low]
+    body = json.loads(out.text)
+    # the entry with a non-id `id` is dropped; hostile mime/time/size collapse to safe values
+    assert body["count"] == 3
+    ids = [f["file_id"] for f in body["files"]]
+    assert all(i.startswith("1Hostile") for i in ids)
+    assert body["files"][0]["modified"] == "" and body["files"][0]["size_bytes"] is None
+    assert body["files"][1]["mime_type"] == "other" and body["files"][1]["readable"] is False
+    assert body["files"][2]["mime_type"] == "other" and body["files"][2]["modified"] != ""
+
+
+async def test_names_and_owners_are_single_line_and_one_item_per_file() -> None:
+    drive = FakeDrive({"/drive/v3/files": (200, fx("drive_list_hostile.json"))})
+    files = await drive.reader().search("")
+    for f in files:
+        for text in (f.name, *f.owners):
+            assert not any(c in text for c in "\n\r\t\u200b\u202e\u2028")
+    assert files[0].name.startswith("a.txt 2. Q3 plan")  # newline became a space
+    out = await _tools(drive)["drive_search"].run({"query": ""})  # type: ignore[attr-defined]
+    assert len(out.external) == len(files) == 3

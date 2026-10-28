@@ -97,6 +97,7 @@ async def test_search_of_injected_name_runs_no_write_tool() -> None:
     result, decoys, _ = await _turn(_call("drive_search", {}), main)
     assert [d.ran for d in decoys] == [0, 0, 0, 0]
     assert [e.tool for e in result.tool_events] == ["drive_search"]
+    assert result.tool_events[0].status == "ok" and result.tainted is True
 
 
 async def test_compromised_main_model_proposing_writes_is_denied() -> None:
@@ -119,6 +120,14 @@ async def test_compromised_main_model_proposing_writes_is_denied() -> None:
 async def test_raw_injection_never_reaches_main_model_prompt() -> None:
     main = FakeLLM([_call("drive_read", {"file_id": ID_INJECT}), "ok"])
     _, _, _ = await _turn(_call("drive_read", {}), main)
+    prompt = "\n".join((m.content or "") for r in main.requests for m in r.messages).lower()
+    for p in PAYLOADS:
+        assert p not in prompt
+
+
+async def test_raw_injection_never_reaches_prompt_for_search() -> None:
+    main = FakeLLM([_call("drive_search", {"query": "notes"}), "ok"])
+    await _turn(_call("drive_search", {}), main)
     prompt = "\n".join((m.content or "") for r in main.requests for m in r.messages).lower()
     for p in PAYLOADS:
         assert p not in prompt

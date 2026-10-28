@@ -149,6 +149,10 @@ def test_query_drops_control_chars_and_caps_length() -> None:
         "/drive/v2/files/x/trash",
         "/%64rive/v3/files",
         "/DRIVE/v3/files",
+        "/resumable/upload/drive/v3/files",
+        "/upload/drive/v3beta/files",
+        "/drive/v3beta/files",
+        "/drive/v4/files",
     ],
 )
 async def test_net_refuses_every_drive_write(method: str, path: str) -> None:
@@ -169,3 +173,11 @@ async def test_net_still_allows_drive_get() -> None:
 def test_client_has_no_write_methods() -> None:
     public = {n for n in dir(DriveReader) if not n.startswith("_")}
     assert public == {"search", "metadata", "read_text"}
+
+
+async def test_hostile_mime_and_time_are_normalised_in_the_client() -> None:
+    drive = FakeDrive({"/drive/v3/files": (200, fx("drive_list_hostile.json"))})
+    files = await drive.reader().search("")
+    assert files[1].mime_type == "application/octet-stream"
+    assert files[2].mime_type == "application/octet-stream"
+    assert files[0].modified == "" and files[0].size is None

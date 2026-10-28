@@ -175,7 +175,7 @@ def deny_google_oauth_unexpected(service: Service, method: str, path: str) -> st
 # on a Drive API path (create, update, delete, permissions/share, copy, watch,
 # uploads) is refused at the choke point as defence in depth. This only
 # tightens R13: no host or Service is added (ADR-0019).
-_DRIVE_API_RE = re.compile(r"^(?:/upload)?/drive/v\d+(?![a-z0-9_-])")
+_DRIVE_API_RE = re.compile(r"^(?:/resumable)?(?:/upload)?/drive/v\d+[a-z0-9]*")
 
 
 def deny_drive_write(service: Service, method: str, path: str) -> str | None:

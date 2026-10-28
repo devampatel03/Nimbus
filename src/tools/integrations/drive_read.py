@@ -81,15 +81,17 @@ class DriveReadTool(ToolGroup):
             }
             for i, f in enumerate(files)
         ]
-        lines = [
-            f"{i + 1}. {f.name} (owner: {', '.join(f.owners) or 'unknown'})"
-            for i, f in enumerate(files)
-        ]
-        external: tuple[UntrustedText, ...] = ()
-        if lines:
-            body = "\n".join(lines)[:MAX_EXTERNAL_CHARS]
-            external = (UntrustedText(body, source=SourceKind.DOCUMENT),)
-        out = {"count": len(meta), "files": meta, "names_in_external_item": bool(lines)}
+        # One item per file, in the same order as `files` (n = position): each is
+        # quarantined on its own, so no name can forge another file's entry. Cost:
+        # up to MAX_LIST_RESULTS (5) quarantine calls for one search.
+        external = tuple(
+            UntrustedText(
+                f"{f.name} (owner: {', '.join(f.owners) or 'unknown'})"[:MAX_EXTERNAL_CHARS],
+                source=SourceKind.DOCUMENT,
+            )
+            for f in files
+        )
+        out = {"count": len(meta), "files": meta, "external_items_follow_file_order": True}
         return ToolOutput(json.dumps(out), external=external)
 
     async def _read(self, args: Mapping[str, Any]) -> ToolOutput:
@@ -103,15 +105,16 @@ class DriveReadTool(ToolGroup):
         except DriveError as exc:
             raise _err(exc) from None
         decoded = raw.decode("utf-8", errors="replace")
-        clipped = decoded[:MAX_EXTERNAL_CHARS]
-        text = UntrustedText(f"title: {f.name}\n{clipped}", source=SourceKind.DOCUMENT)
+        whole = f"title: {f.name}\n{decoded}"
+        clipped = whole[:MAX_EXTERNAL_CHARS]  # the WHOLE external string is capped
+        text = UntrustedText(clipped, source=SourceKind.DOCUMENT)
         out = {
             "file_id": f.file_id,
             "mime_type": f.mime_type,
             "size_bytes": f.size,
             "modified": f.modified,
             "chars": len(clipped),
-            "truncated": len(decoded) > len(clipped),
+            "truncated": len(whole) > len(clipped),
         }
         return ToolOutput(json.dumps(out), external=(text,))
 
