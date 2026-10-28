@@ -222,6 +222,16 @@ class ApprovalStore:
             )
             return int(n or 0)
 
+    async def totp_failures_for(self, action_id: uuid.UUID) -> int:
+        """Wrong codes entered for ONE action, ever (per-action budget)."""
+        async with self._sf() as s:
+            n = await s.scalar(
+                select(func.count())
+                .select_from(PolicyAudit)
+                .where(PolicyAudit.event == TOTP_FAILED, PolicyAudit.action_id == action_id)
+            )
+            return int(n or 0)
+
     async def last_totp_step(self) -> int | None:
         async with self._sf() as s:
             return await s.scalar(

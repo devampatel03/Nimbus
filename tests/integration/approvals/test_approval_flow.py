@@ -557,3 +557,26 @@ async def test_memory_promotion_refused_by_store_is_reported_not_retried(h: Harn
     assert len(calls) == 1 and calls[0][0] == item
     audit = await h.rows("SELECT outcome FROM policy_audit WHERE event='exec_failed'")
     assert audit == [("error",)]
+
+
+async def test_totp_attempt_budget_is_per_action_across_fresh_challenges(h: Harness) -> None:
+    """Review MED-1: re-tapping Approve starts a new keypad but must NOT reset
+    the per-action wrong-code budget."""
+    card, aid = await stepup_card(h)
+    for i in range(h.settings.totp_attempts_per_action):
+        assert await h.tap(card.approve_data) == svc.ENTER_CODE, i
+        await h.enter_code(h.wrong_code())
+    assert await h.status(aid) == "rejected"
+    assert await h.tap(card.approve_data) == svc.DONE_ALREADY
+    assert h.tools["tasks_delete"].runs == 0
+
+
+async def test_exhausted_budget_never_reopens_a_pending_row(h: Harness) -> None:
+    from src.approvals.store import TOTP_FAILED
+    from src.approvals.types import AuditRecord
+
+    card, aid = await stepup_card(h)
+    for _ in range(h.settings.totp_attempts_per_action):
+        await h.store.audit(AuditRecord(kind="approval", event=TOTP_FAILED, action_id=aid))
+    assert await h.tap(card.approve_data) == svc.REJECTED
+    assert await h.status(aid) == "rejected" and h.gw.keypads == []

@@ -29,7 +29,8 @@ Callback (`handle_callback`, called by the turn worker for CALLBACK updates):
    `ConsumedApproval` that lets the dispatcher pass `user_confirmed=True`.
 
 TOTP: +-1 step, a code is never accepted twice (last accepted step is in
-`policy_audit`), `totp_attempts_per_action` wrong codes reject the action and
+`policy_audit`), `totp_attempts_per_action` wrong codes for one action (counted
+durably per action id, across Approve taps and restarts) reject it, and
 `totp_lockout_failures` wrong codes in `totp_lockout_window_s` lock step-up
 (counted durably in `policy_audit`, so a restart does not reset it).
 
@@ -119,7 +120,6 @@ class _Challenge:
     keypad_ref: MessageRef | None
     card_ref: MessageRef | None
     digits: str = ""
-    failures: int = 0
 
 
 def _short(action_id: uuid.UUID | None) -> str:
@@ -428,6 +428,13 @@ class ApprovalService:
             await self._audit("totp_locked", action_id=row.action_id, tool=row.tool)
             await self._answer(cb, LOCKED)
             return
+        if await self._store.totp_failures_for(row.action_id) >= self._s.totp_attempts_per_action:
+            # Defensive: the row should already be rejected; never re-open it.
+            await self._store.close(row.action_id, "rejected")
+            await self._audit("rejected_totp", action_id=row.action_id, tool=row.tool)
+            await self._answer(cb, REJECTED)
+            await self._close_card(ref, "rejected")
+            return
         deadline = min(row.expires_at, now + timedelta(seconds=self._s.step_up_window_s))
         tag = secrets.token_hex(4)
         prompt = render_step_up_prompt(
@@ -500,8 +507,9 @@ class ApprovalService:
             # Durable BEFORE the answer: the lockout counts this failure even
             # if the process dies right after.
             await self._audit(TOTP_FAILED, action_id=aid, tool=ch.tool)
-            ch.failures += 1
-            if ch.failures >= self._s.totp_attempts_per_action:
+            # Per ACTION, counted durably (policy_audit): a fresh Approve tap
+            # (new challenge) or a restart does not reset the budget.
+            if await self._store.totp_failures_for(aid) >= self._s.totp_attempts_per_action:
                 await self._store.close(aid, "rejected")
                 await self._audit("rejected_totp", action_id=aid, tool=ch.tool)
                 await self._end_challenge(ch, "rejected")

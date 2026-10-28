@@ -14,8 +14,11 @@ ADR-0009 fixes the matrix and a 64-byte approval token (12-byte id, HMAC over id
 4. **Confirmation source:** the dispatcher sets `user_confirmed` / `step_up_confirmed` only from a sealed `ConsumedApproval`. That object is not a dataclass and cannot be copied. Only `ApprovalStore.consume` mints it. The policy still decides again: the kill switch, spend cap, rate limit and disabled tools all apply. Pinned by `tests/eval/invariants/test_inv5_approvals.py`.
 5. **TOTP step-up:** RFC 6238 on the standard library (SHA1, 6 digits, 30 s, ±1 step), checked against the RFC vectors. It is not `pyotp`: the algorithm is the same and no dependency is added. Digits are entered on an inline keypad (callbacks), so a code is never a message, an event or memory. Limits:
    - a code is accepted only for a step after the last accepted one;
-   - 3 wrong codes reject the action;
-   - 5 wrong codes in 15 minutes lock step-up. The lockout is counted durably in `policy_audit`, so a restart does not reset it.
+   - 3 wrong codes **per action** reject the action. The count comes from `policy_audit` rows (`totp_failed` with that `action_id`), so tapping Approve again (a new keypad) or restarting does not reset it;
+   - 5 wrong codes in 15 minutes, across all actions, lock step-up. This is also counted durably in `policy_audit`.
+8. **Deviations from ADR-0009 (line 31: "TOTP is `pyotp`, ±1 step, and the secret is stored encrypted"):**
+   - *Library:* stdlib RFC 6238 instead of `pyotp`. The algorithm, window and constant-time compare are the same and are checked against the RFC 6238 appendix B vectors. This avoids a new dependency for about 20 lines of code.
+   - *Secret storage:* `APPROVAL_TOTP_SECRET` is a hidden `SecretStr` read from the env (and scrubbed from logs), not a value encrypted in the database. Rationale: the only available key (`DataCipher`, `src/db/crypto.py`) lives in the same env on the same VM. Encrypting the secret would add nothing against a VM compromise, which exposes both the key and the ciphertext; such an attacker can run tools directly anyway. The step-up control is aimed at a different threat: a compromised or unattended Telegram account. A Telegram attacker cannot read the VM env.
 6. **`policy_audit`** (migration `f3a9c1d7e5b2`, append-only, truncate-guarded): one row per policy decision and per approval event. It holds names, rule ids and fixed reason codes only, never values. A decision whose audit write fails does not run.
 7. **R8:** `ApprovalService.request_memory_promotion` writes tool `memory`, action `promote`, payload `{"item_id"}`. This is exactly what `PgVectorMemoryStore.promote` accepts.
 
