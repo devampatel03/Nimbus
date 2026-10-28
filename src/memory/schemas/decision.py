@@ -43,7 +43,7 @@ class Decision(Base):
     outcome: Mapped[str | None] = mapped_column(nullable=True)
     outcome_captured_at: Mapped[datetime | None] = mapped_column(_TZ, nullable=True)
 
-    # P1.2c provenance (R7/R8). Legacy writers omit these; server defaults keep them valid.
+    # P1.2c provenance (R7/R8). Server defaults remain until the lane-default removal (task/P3.3b-lane-default); writers already pass `lane` explicitly.
     source_event_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("event.id"), nullable=True
     )

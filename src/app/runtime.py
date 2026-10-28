@@ -5,9 +5,11 @@
 ADR-0008, ADR-0012).
 
 * gateway loop   -- gateway -> ingest (`Ingestor.run`) -> turn -> reply
-* worker loop    -- `Ingestor.recover_pending()` periodically (it applies its own
-                    retry backoff) and the `JobRunner` seam (P3.3)
-* scheduler loop -- the `Scheduler` seam (P3.3)
+* worker loop    -- the job runner every `job_poll_s` (reminders, memory_extract;
+                    `src.scheduler`, P3.3) and `Ingestor.recover_pending()` every
+                    `recover_interval_s` (it applies its own retry backoff)
+* scheduler loop -- `MemoryExtractSweeper.tick()` (backstop for the post-turn
+                    enqueue)
 
 Startup order is a security property, so it is fixed:
 
@@ -30,6 +32,7 @@ import contextlib
 import logging
 import os
 import signal
+import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -47,6 +50,7 @@ from src.app.recall import SessionScopedRecall
 from src.app.seams import JobRunner, NoopJobRunner, NoopScheduler, Scheduler
 from src.app.settings import AppSettings
 from src.app.supervisor import EXIT_FATAL_LOOP, LoopSpec, Supervisor
+from src.core.clock import SystemClock
 from src.core.logging import install_log_scrubbing
 from src.db.crypto import KEY_ENV_VAR, DataCipher
 from src.gateway.protocols import Gateway
@@ -70,6 +74,10 @@ from src.memory.store import VectorEmbedder
 from src.net import EgressClient, NetSettings
 from src.orchestrator.dispatch import DenyAllWritesPolicy
 from src.orchestrator.loop import Orchestrator
+from src.scheduler.memory_extract import LedgerSpendProbe
+from src.scheduler.wiring import SchedulerParts, build_scheduler
+from src.tools.integrations.reminders import RemindersTool
+from src.tools.integrations.tasks import TasksTool
 from src.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -158,14 +166,13 @@ def real_backends(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
 
 
 def fake_backends(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
-    from src.app.fakes import InMemoryGateway
-    from src.llm.fake import FakeLLM
+    from src.app.fakes import DevProvider, InMemoryGateway
     from src.memory.manager import DeterministicStubEmbedder
 
     gw = InMemoryGateway(on_poll=beat)
     return Backends(
         gateway=gw,
-        provider=FakeLLM(default="fake reply"),
+        provider=DevProvider(),
         embedder=DeterministicStubEmbedder(),
         closers=[gw.aclose],
     )
@@ -182,6 +189,19 @@ async def verify_memory_index(sf: SessionFactory, embedder: BatchEmbedder) -> No
         raise
     except (SQLAlchemyError, OSError, TimeoutError) as exc:
         log.warning("memory index check skipped (database unavailable) err=%s", type(exc).__name__)
+
+
+def bind_scheduling_tools(
+    registry: ToolRegistry, parts: SchedulerParts, sf: SessionFactory, clock: SystemClock
+) -> None:
+    """Give the (argument-less, discovered) reminder and task groups their stores.
+    Unbound, they fail closed."""
+    reminders = registry.get("reminders")
+    tasks = registry.get("tasks")
+    if not isinstance(reminders, RemindersTool) or not isinstance(tasks, TasksTool):
+        raise StartupRefused("scheduling tools missing")
+    reminders.bind(parts.reminders, clock)
+    tasks.bind(sf, clock)
 
 
 def build_embedder(cfg: AppConfig, llm: GuardedLLM) -> EmbedderLike:
@@ -218,12 +238,15 @@ class Runtime:
         heartbeat: Heartbeat,
         stop: asyncio.Event,
         jobs: JobRunner | None = None,
+        reminder_jobs: JobRunner | None = None,
         scheduler: Scheduler | None = None,
+        on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
     ) -> None:
         self.cfg = cfg
         self.heartbeat = heartbeat
         self.stop = stop
         self._jobs: JobRunner = jobs or NoopJobRunner()
+        self._reminder_jobs: JobRunner = reminder_jobs or NoopJobRunner()
         self._scheduler: Scheduler = scheduler or NoopScheduler()
         self.queue: asyncio.Queue[PendingTurn] = asyncio.Queue(cfg.app.turn_queue_size)
         # Ingest reads through the wrapper, so every ack is followed by a queued turn.
@@ -235,6 +258,7 @@ class Runtime:
             self.queue,
             history_messages=cfg.app.history_messages,
             on_progress=lambda: heartbeat.beat("gateway"),
+            on_turn_done=on_turn_done,
         )
         self._beat_every = min(15.0, cfg.app.heartbeat_stale_s / 3)
 
@@ -253,12 +277,37 @@ class Runtime:
         consume = self.ingestor.run
         await _first_done(consume(), self.turns.serve())
 
-    async def worker_loop(self) -> None:
+    async def _reminder_loop(self) -> None:
+        """Reminder delivery (R11: within 60 s). Its own runner and task: a slow
+        model call in the extraction loop cannot delay it. Claims continuously
+        (a backlog after downtime drains back to back), sleeps `job_poll_s` only
+        when nothing was due, and beats the worker heartbeat every cycle."""
+        while not self.stop.is_set():
+            ran = await self._reminder_jobs.run_due()
+            self.heartbeat.beat("worker")
+            if not ran:
+                await self._idle("worker", self.cfg.app.job_poll_s)
+
+    async def _extract_loop(self) -> None:
+        """Other jobs (memory_extract: spends on the model, R5). Small batches with a
+        pause between them, so a backlog drains at a bounded rate."""
+        while not self.stop.is_set():
+            ran = await self._jobs.run_due()
+            self.heartbeat.beat("worker")
+            pause = self.cfg.app.extract_pause_s if ran else self.cfg.app.job_poll_s
+            await self._idle("worker", pause)
+
+    async def _recover_loop(self) -> None:
         while not self.stop.is_set():
             await self.ingestor.recover_pending(self.cfg.app.recover_limit)
-            await self._jobs.run_due()
             self.heartbeat.beat("worker")
             await self._idle("worker", self.cfg.app.recover_interval_s)
+
+    async def worker_loop(self) -> None:
+        """Three independent tasks under one heartbeat name: reminder delivery,
+        other jobs, ingest recovery. If any ends, the others are cancelled and the
+        supervisor restarts the loop (crash isolation stays at loop level)."""
+        await _first_done(self._reminder_loop(), self._extract_loop(), self._recover_loop())
 
     async def scheduler_loop(self) -> None:
         while not self.stop.is_set():
@@ -359,10 +408,30 @@ async def run_app(
             log.critical("startup refused: embedding model changed, migration required")
             return EXIT_MIGRATION_REQUIRED
 
-        # 5. Assemble and run.
+        # 5. Assemble and run. Reminders and tasks are persisted; the job runner
+        # delivers reminders through the gateway (owner chat only, R2).
+        clock = SystemClock()
+        parts = build_scheduler(
+            sf,
+            gateway=be.gateway,
+            embedder=embedder,
+            llm=llm,
+            clock=clock,
+            spend=LedgerSpendProbe(audit, cfg.llm.daily_spend_cap_inr, clock),
+            lease_s=cfg.app.job_lease_s,
+            batch=cfg.app.job_batch,
+            on_progress=lambda: heartbeat.beat("worker"),
+        )
+        # Every `running` row at boot belongs to a dead process: release them now
+        # (no attempt burned) so reminders do not wait out the lease (M4).
+        released = await parts.queue.recover_orphans()
+        if released:
+            log.info("released %d interrupted job(s) at boot", released)
+        registry = ToolRegistry()
+        bind_scheduling_tools(registry, parts, sf, clock)
         orchestrator = Orchestrator(
             llm,
-            ToolRegistry().loop_tools(),
+            registry.loop_tools(),
             DenyAllWritesPolicy(),
             character_card=card,
             recall=SessionScopedRecall(sf, embedder),
@@ -375,6 +444,10 @@ async def run_app(
             orchestrator=orchestrator,
             heartbeat=heartbeat,
             stop=stop,
+            jobs=parts.extract_runner,
+            reminder_jobs=parts.reminder_runner,
+            scheduler=parts.sweeper,
+            on_turn_done=parts.enqueue_extract_after_turn,
         )
         specs = rt.loops()
         heartbeat.register(*(s.name for s in specs))

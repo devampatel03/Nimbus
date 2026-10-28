@@ -153,6 +153,7 @@ async def test_bitemporal_graph_edges_via_manager(db_session: AsyncSession) -> N
             valid_from=vf,
             source_session=sess.id,
             confidence=0.9,
+            lane="trusted",
         )
 
     await mgr.write_semantic([fact("Pune", _t(1))])

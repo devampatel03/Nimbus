@@ -21,6 +21,20 @@ from src.gateway.types import (
     InboundUpdate,
     MessageRef,
 )
+from src.llm.types import ChatRequest, ProviderResponse, Usage
+
+
+class DevProvider:
+    """Model stand-in for `APP_FAKE_BACKENDS`: a canned chat reply, and `{}` for any
+    structured-output call (memory extraction), so the dev process never dead-letters
+    jobs on a non-JSON answer."""
+
+    name = "dev-fake"
+    model = "dev-fake"
+
+    async def complete(self, req: ChatRequest) -> ProviderResponse:
+        text = "{}" if req.response_schema is not None else "fake reply"
+        return ProviderResponse(text=text, usage=Usage(tokens_in=10, tokens_out=3))
 
 
 class InMemoryGateway:

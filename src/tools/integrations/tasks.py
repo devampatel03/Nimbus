@@ -1,16 +1,15 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Internal task store, as `LoopTool`s (Tool protocol v2, P2.5b).
+"""Internal task list as `LoopTool`s (Tool protocol v2), persisted in Postgres
+(P3.3). Tasks are Nimbus-local: no third-party API, no network. One tool per
+action so each carries its own code-declared risk (`tasks_list`/`tasks_get` are
+READ; the rest WRITE_INTERNAL). Outputs are JSON text and untrusted by default:
+a task title can originate from model or external content, so it re-enters the
+prompt only as a DATA block.
 
-Tasks are Nimbus-local: no third-party API, no network, nothing leaves the
-device. One tool per action so each carries its own code-declared risk
-(`tasks_list`/`tasks_get` are READ; the rest WRITE_INTERNAL). Outputs are
-JSON text and untrusted by default: a task title can originate from model or
-external content, so it re-enters the prompt only as a DATA block.
-
-Storage is a process-local dict. Durable, scheduled tasks arrive in P3.3.
-`list_tasks`/`get_task` are plain accessors on the group for in-process readers.
+`ToolRegistry` builds groups with no arguments, so the group starts unbound and
+every tool fails closed until `bind()` (done in `src.app.runtime`).
 """
 
 from __future__ import annotations
@@ -20,56 +19,126 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from src.core.clock import Clock
+from src.core.titles import TitleError, clean_title
+from src.core.turn_context import current_event_id
+from src.memory.schemas.scheduling import Task
 from src.orchestrator.dispatch import LoopTool, Risk, ToolError, ToolOutput
 from src.tools.base import FunctionTool, ToolGroup, object_schema
 
-Task = dict[str, str | bool]
+MAX_LISTED = 200
+
+
+def _view(t: Task) -> dict[str, Any]:
+    return {"task_id": str(t.id), "title": t.title, "done": t.done}
+
+
+def _id(raw: object) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        raise ToolError("task not found") from None
 
 
 class TasksTool(ToolGroup):
     name = "tasks"
 
     def __init__(self) -> None:
-        self._tasks: dict[str, Task] = {}
+        self._sf: async_sessionmaker[AsyncSession] | None = None
+        self._clock: Clock | None = None
 
-    def list_tasks(self) -> list[Task]:
-        return [dict(t) for t in self._tasks.values()]
+    def bind(self, session_factory: async_sessionmaker[AsyncSession], clock: Clock) -> None:
+        self._sf, self._clock = session_factory, clock
 
-    def get_task(self, task_id: str) -> Task | None:
-        task = self._tasks.get(task_id)
-        return dict(task) if task is not None else None
+    def _ready(self) -> tuple[async_sessionmaker[AsyncSession], Clock]:
+        if self._sf is None or self._clock is None:
+            raise ToolError("tasks are unavailable")
+        return self._sf, self._clock
 
-    def _require(self, args: Mapping[str, Any]) -> Task:
-        task = self._tasks.get(args["task_id"])
-        if task is None:
-            raise ToolError("task not found")
-        return task
+    @staticmethod
+    def _title(args: Mapping[str, Any]) -> str:
+        try:
+            return clean_title(args["title"])
+        except TitleError as exc:
+            raise ToolError(str(exc)) from None
 
     async def _create(self, args: Mapping[str, Any]) -> ToolOutput:
-        task_id = str(uuid.uuid4())
-        self._tasks[task_id] = {"task_id": task_id, "title": args["title"], "done": False}
-        return ToolOutput(json.dumps({"task_id": task_id}))
+        sf, clock = self._ready()
+        title = self._title(args)
+        now = clock.now()
+        source = current_event_id()
+        async with sf() as s, s.begin():
+            stmt = pg_insert(Task).values(
+                id=uuid.uuid4(),
+                title=title,
+                done=False,
+                source_event_id=source,
+                created_at=now,
+                updated_at=now,
+            )
+            if source is not None:  # idempotent per turn (M5): the unique index decides
+                stmt = stmt.on_conflict_do_nothing(
+                    index_elements=[Task.source_event_id, Task.title],
+                    index_where=Task.source_event_id.is_not(None),
+                )
+            task_id = await s.scalar(stmt.returning(Task.id))
+            if task_id is None:
+                task_id = await s.scalar(
+                    select(Task.id).where(Task.source_event_id == source, Task.title == title)
+                )
+        return ToolOutput(json.dumps({"task_id": str(task_id)}))
+
+    async def _mutate(self, args: Mapping[str, Any], *, done: bool | None) -> ToolOutput:
+        sf, clock = self._ready()
+        tid = _id(args["task_id"])
+        title = self._title(args) if done is None else None
+        now = clock.now()
+        async with sf() as s, s.begin():
+            t = await s.get(Task, tid, with_for_update=True)
+            if t is None:
+                raise ToolError("task not found")
+            if title is not None:
+                t.title = title
+            if done is not None:
+                t.done = done
+                t.done_at = now if done else None
+            t.updated_at = now
+        return ToolOutput(json.dumps({"task_id": str(tid)}))
 
     async def _update(self, args: Mapping[str, Any]) -> ToolOutput:
-        task = self._require(args)
-        task["title"] = args["title"]
-        return ToolOutput(json.dumps({"task_id": task["task_id"]}))
+        return await self._mutate(args, done=None)
 
     async def _complete(self, args: Mapping[str, Any]) -> ToolOutput:
-        task = self._require(args)
-        task["done"] = True
-        return ToolOutput(json.dumps({"task_id": task["task_id"]}))
+        return await self._mutate(args, done=True)
 
     async def _delete(self, args: Mapping[str, Any]) -> ToolOutput:
-        task = self._require(args)
-        del self._tasks[str(task["task_id"])]
-        return ToolOutput(json.dumps({"task_id": task["task_id"]}))
+        sf, _ = self._ready()
+        tid = _id(args["task_id"])
+        async with sf() as s, s.begin():
+            res = await s.execute(delete(Task).where(Task.id == tid).returning(Task.id))
+            if res.scalar_one_or_none() is None:
+                raise ToolError("task not found")
+        return ToolOutput(json.dumps({"task_id": str(tid)}))
 
     async def _get(self, args: Mapping[str, Any]) -> ToolOutput:
-        return ToolOutput(json.dumps(self._require(args)))
+        sf, _ = self._ready()
+        async with sf() as s:
+            t = await s.get(Task, _id(args["task_id"]))
+        if t is None:
+            raise ToolError("task not found")
+        return ToolOutput(json.dumps(_view(t)))
 
     async def _list(self, args: Mapping[str, Any]) -> ToolOutput:
-        return ToolOutput(json.dumps({"count": len(self._tasks), "tasks": self.list_tasks()}))
+        sf, _ = self._ready()
+        async with sf() as s:
+            rows = list(
+                await s.scalars(select(Task).order_by(Task.created_at, Task.id).limit(MAX_LISTED))
+            )
+        return ToolOutput(json.dumps({"count": len(rows), "tasks": [_view(t) for t in rows]}))
 
     def tools(self) -> list[LoopTool]:
         w, r = Risk.WRITE_INTERNAL, Risk.READ

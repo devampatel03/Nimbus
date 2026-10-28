@@ -84,7 +84,7 @@ def test_single_use_indexes_up_down_up(dsn: str) -> None:
     for name in NEW_INDEXES:
         assert "UNIQUE" in defs[name]
         assert "promoted_approval_id IS NOT NULL" in defs[name]
-    command.downgrade(cfg, "-1")
+    command.downgrade(cfg, "b7d2e9f40a15")  # pragma: allowlist secret  (before c4e8a1d92b37)
     assert not NEW_INDEXES & asyncio.run(_indexdefs(dsn)).keys()
     command.upgrade(cfg, "head")
     assert NEW_INDEXES <= asyncio.run(_indexdefs(dsn)).keys()
