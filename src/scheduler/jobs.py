@@ -130,7 +130,8 @@ class JobQueue:
         """Insert in the caller's transaction (no commit). Returns `(id, created)`.
         An existing `dedupe_key` is left alone, unless `rearm` is set and the job
         is not currently running: then it is reset to pending at the new
-        `run_at` with the new payload (used to re-arm a rescheduled reminder)."""
+        `run_at` with the new payload (used by the memory_extract sweeper to
+        revive a job that died of a transient cause)."""
         now = self._clock.now()
         when = run_at or now
         if when.tzinfo is None:

@@ -25,6 +25,7 @@ from typing import Any
 from src.core.clock import Clock
 from src.core.timeparse import ResolvedTime, TimeParseError, confirmation_text, parse_when
 from src.core.titles import TitleError, clean_title
+from src.core.turn_context import current_event_id
 from src.orchestrator.dispatch import LoopTool, Risk, ToolError, ToolOutput
 from src.scheduler.reminders import ReminderStore, reminder_view
 from src.tools.base import FunctionTool, ToolGroup, object_schema
@@ -70,7 +71,7 @@ class RemindersTool(ToolGroup):
         store, clock = self._ready()
         title = self._title(args)
         when = self._when(args, clock)
-        r = await store.create(title, when.at)
+        r = await store.create(title, when.at, source_event_id=current_event_id())
         body = reminder_view(r) | {"confirmation": confirmation_text(when, now=clock.now())}
         return ToolOutput(json.dumps(body))
 

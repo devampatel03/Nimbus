@@ -20,10 +20,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.clock import Clock
 from src.core.titles import TitleError, clean_title
+from src.core.turn_context import current_event_id
 from src.memory.schemas.scheduling import Task
 from src.orchestrator.dispatch import LoopTool, Risk, ToolError, ToolOutput
 from src.tools.base import FunctionTool, ToolGroup, object_schema
@@ -68,10 +70,27 @@ class TasksTool(ToolGroup):
         sf, clock = self._ready()
         title = self._title(args)
         now = clock.now()
+        source = current_event_id()
         async with sf() as s, s.begin():
-            t = Task(id=uuid.uuid4(), title=title, done=False, created_at=now, updated_at=now)
-            s.add(t)
-        return ToolOutput(json.dumps({"task_id": str(t.id)}))
+            stmt = pg_insert(Task).values(
+                id=uuid.uuid4(),
+                title=title,
+                done=False,
+                source_event_id=source,
+                created_at=now,
+                updated_at=now,
+            )
+            if source is not None:  # idempotent per turn (M5): the unique index decides
+                stmt = stmt.on_conflict_do_nothing(
+                    index_elements=[Task.source_event_id, Task.title],
+                    index_where=Task.source_event_id.is_not(None),
+                )
+            task_id = await s.scalar(stmt.returning(Task.id))
+            if task_id is None:
+                task_id = await s.scalar(
+                    select(Task.id).where(Task.source_event_id == source, Task.title == title)
+                )
+        return ToolOutput(json.dumps({"task_id": str(task_id)}))
 
     async def _mutate(self, args: Mapping[str, Any], *, done: bool | None) -> ToolOutput:
         sf, clock = self._ready()

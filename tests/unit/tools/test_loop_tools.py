@@ -73,3 +73,4 @@ async def test_deny_all_writes_policy_gates_real_tools() -> None:
     # A READ is allowed by policy; the unbound tool then fails closed (no DB here).
     allowed = await d.dispatch("tasks_list", {}, exposed=exposed)
     assert allowed.status == "error"
+    assert allowed.untrusted is True  # tool output stays DATA even when it is an error

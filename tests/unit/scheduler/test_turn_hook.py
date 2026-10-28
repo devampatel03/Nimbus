@@ -80,3 +80,20 @@ async def test_a_raising_hook_does_not_break_the_turn() -> None:
     q.put_nowait(PendingTurn(upd(1), uuid.uuid4()))
     await drain(worker, q)
     assert gw.sent == ["answer"]  # the reply still went out
+
+
+async def test_tools_see_the_turns_event_id_and_only_during_the_turn() -> None:
+    from src.core.turn_context import current_event_id
+
+    seen: list[uuid.UUID | None] = []
+
+    class Spy(Orch):
+        async def run_turn(self, text: str, **kw: Any) -> TurnResult:
+            seen.append(current_event_id())
+            return await super().run_turn(text, **kw)
+
+    worker, q, _ = make(None, Spy())
+    eid = uuid.uuid4()
+    q.put_nowait(PendingTurn(upd(1), eid))
+    await drain(worker, q)
+    assert seen == [eid] and current_event_id() is None

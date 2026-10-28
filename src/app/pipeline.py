@@ -28,6 +28,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
+from src.core.turn_context import turn_event
 from src.gateway.protocols import Gateway
 from src.gateway.types import (
     ApprovalCard,
@@ -188,7 +189,10 @@ class TurnWorker:
         text, _ = clean_text(u.text or "", max_chars=MAX_TURN_TEXT_CHARS)
         if not text.strip():
             return
-        result = await self._orch.run_turn(text, history=self._history.get(), turn_id=uuid.uuid4())
+        with turn_event(item.event_id):  # tools stamp what they create with this event (M5)
+            result = await self._orch.run_turn(
+                text, history=self._history.get(), turn_id=uuid.uuid4()
+            )
         await self._turn_done(item)
         kept = _remember(text, result)
         if kept is not None:

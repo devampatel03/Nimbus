@@ -24,6 +24,12 @@ from src.memory.schemas.graph import GraphEdge
 _INFINITY: ColumnElement[datetime] = literal_column("'infinity'::timestamptz")
 
 
+class CrossLaneSupersedeError(ValueError):
+    """A fact may only supersede a fact of the same lane (R8, INV-6): an untrusted
+    claim must not close out a trusted fact, and a trusted write must not quietly
+    rewrite untrusted history. Contradictions across lanes are surfaced instead."""
+
+
 class GraphRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -72,7 +78,10 @@ class GraphRepository:
     ) -> GraphEdge:
         """Insert a new fact and mark `old_edge` superseded (INV-3): never
         mutates `old_edge.object_id`, `.object_literal` or `.valid_from`.
+        Refuses (`CrossLaneSupersedeError`) when the lanes differ.
         """
+        if old_edge.lane != lane:
+            raise CrossLaneSupersedeError("supersede across lanes is refused")
         new_edge = await self.insert_fact(
             subject_id=old_edge.subject_id,
             predicate=old_edge.predicate,

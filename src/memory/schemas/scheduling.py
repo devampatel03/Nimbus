@@ -30,6 +30,15 @@ class Reminder(Base):
         CheckConstraint("status IN ('pending', 'fired')", name="ck_reminder_status"),
         CheckConstraint("char_length(title) BETWEEN 1 AND 500", name="ck_reminder_title"),
         Index("idx_reminder_status_at", "status", "remind_at"),
+        # One reminder per (turn, title, time): a replayed turn cannot duplicate it (M5).
+        Index(
+            "uq_reminder_source_title_at",
+            "source_event_id",
+            "title",
+            "remind_at",
+            unique=True,
+            postgresql_where=text("source_event_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -52,6 +61,13 @@ class Task(Base):
         CheckConstraint("char_length(title) BETWEEN 1 AND 500", name="ck_task_title"),
         CheckConstraint("(done_at IS NOT NULL) = done", name="ck_task_done_at"),
         Index("idx_task_done_created", "done", "created_at"),
+        Index(
+            "uq_task_source_title",
+            "source_event_id",
+            "title",
+            unique=True,
+            postgresql_where=text("source_event_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

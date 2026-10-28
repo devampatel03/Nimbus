@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.clock import Clock
@@ -70,20 +71,43 @@ class ReminderStore:
     async def create(
         self, title: str, remind_at: datetime, *, source_event_id: uuid.UUID | None = None
     ) -> Reminder:
+        """Store and schedule in one transaction. Idempotent per
+        `(source_event_id, title, remind_at)`: a replayed turn returns the
+        existing reminder and schedules nothing new (the unique index decides,
+        so two racing replays cannot both insert)."""
         now = self._clock.now()
         async with self._sf() as session, session.begin():
-            r = Reminder(
-                id=uuid.uuid4(),
-                title=title,
-                remind_at=remind_at,
-                status="pending",
-                source_event_id=source_event_id,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(r)
-            await session.flush()
+            values = {
+                "id": uuid.uuid4(),
+                "title": title,
+                "remind_at": remind_at,
+                "status": "pending",
+                "source_event_id": source_event_id,
+                "created_at": now,
+                "updated_at": now,
+            }
+            stmt = pg_insert(Reminder).values(**values)
+            if source_event_id is not None:
+                stmt = stmt.on_conflict_do_nothing(
+                    index_elements=[Reminder.source_event_id, Reminder.title, Reminder.remind_at],
+                    index_where=Reminder.source_event_id.is_not(None),
+                )
+            new_id = await session.scalar(stmt.returning(Reminder.id))
+            if new_id is None:  # already created by this turn
+                existing = await session.scalar(
+                    select(Reminder).where(
+                        Reminder.source_event_id == source_event_id,
+                        Reminder.title == title,
+                        Reminder.remind_at == remind_at,
+                    )
+                )
+                assert existing is not None
+                session.expunge(existing)
+                return existing
+            r = await session.get(Reminder, new_id)
+            assert r is not None
             await self._schedule(session, r)  # same transaction: both or neither
+            session.expunge(r)
         return r
 
     async def update(

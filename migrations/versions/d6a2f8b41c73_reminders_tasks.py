@@ -48,6 +48,14 @@ def upgrade() -> None:
         sa.CheckConstraint("char_length(title) BETWEEN 1 AND 500", name="ck_reminder_title"),
     )
     op.create_index("idx_reminder_status_at", "reminder", ["status", "remind_at"])
+    # Idempotent creation (M5): a replayed turn cannot make a second reminder.
+    op.create_index(
+        "uq_reminder_source_title_at",
+        "reminder",
+        ["source_event_id", "title", "remind_at"],
+        unique=True,
+        postgresql_where=sa.text("source_event_id IS NOT NULL"),
+    )
 
     op.create_table(
         "task",
@@ -62,6 +70,13 @@ def upgrade() -> None:
         sa.CheckConstraint("(done_at IS NOT NULL) = done", name="ck_task_done_at"),
     )
     op.create_index("idx_task_done_created", "task", ["done", "created_at"])
+    op.create_index(
+        "uq_task_source_title",
+        "task",
+        ["source_event_id", "title"],
+        unique=True,
+        postgresql_where=sa.text("source_event_id IS NOT NULL"),
+    )
 
 
 def downgrade() -> None:
