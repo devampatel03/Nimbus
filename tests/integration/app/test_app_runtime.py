@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from src.memory.manager import DeterministicStubEmbedder
 from src.memory.schemas.event import Event as EventRow
 from src.memory.schemas.ops import InboundUpdate as InboundRow
 from src.memory.schemas.ops import LLMAudit
+from src.memory.schemas.scheduling import Task
 from src.memory.store import PgVectorMemoryStore
 from tests.integration.app.harness import (
     TOKEN,
@@ -244,7 +246,9 @@ async def test_unreachable_database_at_index_check_logs_type_name_only(
     assert "HUNTER2PASSWORD" not in logs and "127.0.0.1" not in logs
 
 
-async def test_model_requested_write_is_denied_by_the_interim_policy(tmp_path: Path) -> None:
+async def test_model_requested_create_is_denied_while_creates_are_pending_idempotency(
+    tmp_path: Path,
+) -> None:
     call = ToolCallRequest(id="c1", name="tasks_create", arguments={"title": "buy milk"})
     llm = FakeLLM(
         script=[
@@ -260,6 +264,64 @@ async def test_model_requested_write_is_denied_by_the_interim_policy(tmp_path: P
     assert fake.replies() == ["I could not create that."]
     tool_msgs = [m for m in llm.requests[1].messages if m.role == "tool"]
     assert tool_msgs and (tool_msgs[0].content or "").startswith("Denied")
+
+
+def _tool_turn(*calls: ToolCallRequest) -> ProviderResponse:
+    return ProviderResponse(text=None, tool_calls=calls, usage=Usage(tokens_in=10, tokens_out=5))
+
+
+async def _seed_task(sf: async_sessionmaker[AsyncSession], title: str) -> str:
+    async with sf() as s, s.begin():
+        row = Task(title=title)
+        s.add(row)
+        await s.flush()
+        return str(row.id)
+
+
+async def _task_title(sf: async_sessionmaker[AsyncSession], task_id: str) -> str:
+    async with sf() as s:
+        t = await s.get(Task, uuid.UUID(task_id))
+        assert t is not None
+        return t.title
+
+
+async def test_run_app_wires_the_policy_engine_clean_turn_write_executes(
+    tmp_path: Path, sf: async_sessionmaker[AsyncSession]
+) -> None:
+    """Wiring guard (INV-5): DenyAllWritesPolicy would deny this; PolicyEngine allows
+    a local write in an untainted turn (allow.write_internal)."""
+    tid = await _seed_task(sf, "old title")
+    call = ToolCallRequest(
+        id="c1", name="tasks_update", arguments={"task_id": tid, "title": "new title"}
+    )
+    llm = FakeLLM(script=[_tool_turn(call), "Updated."])
+    fake = PacedTelegram()
+    fake.push(message(BASE + 41, "rename my task"))
+    await run_until(make_cfg(tmp_path), backends_for(fake, ChatOnly(llm)), lambda: bool(fake.sent))
+    assert fake.replies() == ["Updated."]
+    tool_msgs = [m for m in llm.requests[1].messages if m.role == "tool"]
+    assert tool_msgs and not (tool_msgs[0].content or "").startswith("Denied")
+    assert await _task_title(sf, tid) == "new title"
+
+
+async def test_run_app_wires_the_policy_engine_tainted_turn_write_needs_approval(
+    tmp_path: Path, sf: async_sessionmaker[AsyncSession]
+) -> None:
+    """tasks_list output is untrusted, so it taints the turn; the later write must
+    not run (approval.write_internal_tainted; approvals do not exist until P3.2)."""
+    tid = await _seed_task(sf, "keep me")
+    lst = ToolCallRequest(id="c1", name="tasks_list", arguments={})
+    upd = ToolCallRequest(
+        id="c2", name="tasks_update", arguments={"task_id": tid, "title": "hijacked"}
+    )
+    llm = FakeLLM(script=[_tool_turn(lst), _tool_turn(upd), "Needs approval."])
+    fake = PacedTelegram()
+    fake.push(message(BASE + 42, "rename my task"))
+    await run_until(make_cfg(tmp_path), backends_for(fake, ChatOnly(llm)), lambda: bool(fake.sent))
+    assert fake.replies() == ["Needs approval."]
+    tool_msgs = [m.content or "" for m in llm.requests[2].messages if m.role == "tool"]
+    assert tool_msgs[-1].startswith("Denied by policy (approval.write_internal_tainted)")
+    assert await _task_title(sf, tid) == "keep me"
 
 
 async def test_hostile_text_is_stored_and_answered_without_breaking_anything(

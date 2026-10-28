@@ -22,7 +22,8 @@ Startup order is a security property, so it is fixed:
 4. `MemoryManager.verify_index()`: a model/dim change aborts startup.
 5. Loops start. Policy is the deterministic `PolicyEngine` (P3.1, ADR-0009,
    INV-5) with its production config: `require_approval` never executes until
-   P3.2, and creates stay denied until P3.3 M5 (`PENDING_IDEMPOTENCY`).
+   P3.2. Creates stay denied by default (`PENDING_IDEMPOTENCY`) until a
+   separate, reviewed enable task.
 
 The Telegram token is read by `GatewaySettings`; no value is ever logged.
 """
