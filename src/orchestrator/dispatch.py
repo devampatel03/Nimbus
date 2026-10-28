@@ -4,31 +4,66 @@
 """Tool dispatch (ADR-0006): every model-proposed tool call is checked by a
 deterministic `Policy` before anything runs (INV-5).
 
-The policy sees only code-derived facts (tool name, the tool's declared risk
-class, whether the tool was exposed this turn). Model output supplies the
-tool name and arguments but never a verdict, risk class or approval flag.
-This module imports no LLM code. Fail closed: unknown tool, unexposed tool,
-policy error, or any non-`allow` verdict means the tool does not run.
+The policy (`src.policy`, P3.1) sees the proposed call (tool name, arguments,
+the tool's code-declared risk) and a `PolicyContext` built here from
+code-derived facts only: whether the tool was exposed this turn, the turn's
+taint (P3.0 `Taint`, plus the cross-turn carry), the guard mode (kill switch /
+spend cap), the enabled scopes and this tool's execution count in the last
+hour. Model output supplies the tool name and arguments but never a verdict,
+risk class, approval or taint flag. This module imports no LLM client code.
 
-P3.0: the caller passes the turn's taint (ADR-0010) as a boolean fact computed
-by code from code-declared flags (`ToolOutput.untrusted`, memory lanes), never
-from model output. It is logged and recorded on each `DispatchResult`. P3.1
-swaps `DenyAllWritesPolicy` for the real policy engine and feeds the fact into
-`decide` (tainted WRITE_INTERNAL -> require_approval).
+Fail closed: unknown tool, unexposed tool, policy error, and every verdict but
+`allow` mean the tool does not run. `require_approval` is NOT executable until
+P3.2 builds approvals: it is reported as a denial (`approval_unavailable`), and
+this dispatcher never sets `user_confirmed` / `step_up_confirmed`.
+
+`Risk`, `ProposedCall`, `Decision`, `Policy` and `DenyAllWritesPolicy` live in
+`src.policy` and are re-exported here for existing importers.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+import time
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 from src.lanes.data import UntrustedText
 from src.llm.types import ToolSpec
+from src.policy import (
+    LOCAL_SCOPES,
+    Decision,
+    DenyAllWritesPolicy,
+    Policy,
+    PolicyContext,
+    PolicyMode,
+    ProposedCall,
+    Risk,
+)
 
 log = logging.getLogger(__name__)
+
+__all__ = [
+    "CALL_CAP_MESSAGE",
+    "MAX_EXTERNAL_ITEMS",
+    "MAX_TOOL_ERROR_CHARS",
+    "MAX_TOOL_OUTPUT_CHARS",
+    "TRUNCATION_MARKER",
+    "Decision",
+    "DenyAllWritesPolicy",
+    "DispatchResult",
+    "Dispatcher",
+    "ExecutionCounter",
+    "LoopTool",
+    "Policy",
+    "ProposedCall",
+    "Risk",
+    "ToolError",
+    "ToolOutput",
+    "safe_name",
+]
 
 # Tool output is attacker-influenced and re-enters the prompt, so it is bounded
 # well below the LLM guard's pre-call spend estimate (a huge output must not be
@@ -39,13 +74,8 @@ MAX_TOOL_ERROR_CHARS = 200
 CALL_CAP_MESSAGE = "Denied: too many tool calls in this turn."
 # Each external item costs one quarantine call; bound them per tool output.
 MAX_EXTERNAL_ITEMS = 5
-
-
-class Risk(StrEnum):
-    READ = "read"
-    WRITE_INTERNAL = "write_internal"
-    WRITE_EXTERNAL = "write_external"
-    DESTRUCTIVE = "destructive"
+APPROVAL_UNAVAILABLE = "approval_unavailable"
+RATE_WINDOW_S = 3600.0
 
 
 class ToolError(Exception):
@@ -74,60 +104,108 @@ class LoopTool(Protocol):
 
 
 @dataclass(frozen=True)
-class ProposedCall:
-    tool: str
-    args: Mapping[str, Any]
-    risk: Risk | None  # None = unknown tool
-
-
-@dataclass(frozen=True)
-class Decision:
-    verdict: Literal["allow", "require_approval", "deny"]
-    rule_id: str
-    reason: str
-
-
-class Policy(Protocol):
-    """Pure and deterministic. No I/O, no model."""
-
-    def decide(self, call: ProposedCall) -> Decision: ...
-
-
-class DenyAllWritesPolicy:
-    """Interim policy: READ is allowed; everything else (any write or
-    external effect, and any unknown tool) is denied."""
-
-    def decide(self, call: ProposedCall) -> Decision:
-        if call.risk is None:
-            return Decision(verdict="deny", rule_id="deny.unknown_tool", reason="unknown tool")
-        if call.risk is Risk.READ:
-            return Decision(verdict="allow", rule_id="allow.read", reason="read-only")
-        return Decision(
-            verdict="deny", rule_id="deny.write_interim", reason="writes are disabled for now"
-        )
-
-
-@dataclass(frozen=True)
 class DispatchResult:
     tool: str
     status: Literal["ok", "denied", "error"]
     content: str
     untrusted: bool = False
     rule_id: str = ""
-    tainted: bool = False  # the turn's taint when this call was decided
+    tainted: bool = False  # the taint the policy saw when this call was decided
     external: tuple[UntrustedText, ...] = ()  # at most MAX_EXTERNAL_ITEMS
     external_dropped: int = 0  # over the cap, or not UntrustedText (fail closed)
+    needs_approval: bool = False  # policy said require_approval (not executed)
+    step_up: bool = False  # ... and that approval would need a TOTP step-up
 
 
 def safe_name(name: str) -> str:
     """Model-controlled; keep log lines single-line ASCII."""
-    return name[:64].encode("unicode_escape").decode("ascii")
+    return str(name)[:64].encode("unicode_escape").decode("ascii")
+
+
+ModeSource = Callable[[], Awaitable[object]]
+
+
+class ExecutionCounter:
+    """Executions per tool in the last hour (ADR-0009 row 4). In-process: a
+    restart resets it (acceptable for a one-user bot; recorded in the P3.1 PR).
+    Bounded memory: at most `limit` timestamps per tool, and only registered
+    tool names are ever recorded (the dispatcher checks)."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, limit: int = 1000) -> None:
+        self._clock = clock
+        self._seen: dict[str, deque[float]] = {}
+        self._limit = limit
+
+    def count(self, tool: str) -> int:
+        q = self._seen.get(tool)
+        if not q:
+            return 0
+        cutoff = self._clock() - RATE_WINDOW_S
+        while q and q[0] <= cutoff:
+            q.popleft()
+        return len(q)
+
+    def record(self, tool: str) -> None:
+        self._seen.setdefault(tool, deque(maxlen=self._limit)).append(self._clock())
+
+
+def _mode_of(raw: object) -> PolicyMode:
+    """Map the guard's mode (an `LLMMode`, a StrEnum) onto the policy's mirror
+    enum; anything unrecognised fails closed to KILLED."""
+    try:
+        return PolicyMode(str(raw)) if isinstance(raw, str) else PolicyMode.KILLED
+    except ValueError:
+        return PolicyMode.KILLED
 
 
 class Dispatcher:
-    def __init__(self, tools: Mapping[str, LoopTool], policy: Policy) -> None:
+    def __init__(
+        self,
+        tools: Mapping[str, LoopTool],
+        policy: Policy,
+        *,
+        mode_source: ModeSource | None = None,
+        scopes_enabled: frozenset[str] = LOCAL_SCOPES,
+        counter: ExecutionCounter | None = None,
+    ) -> None:
         self._tools = dict(tools)
         self._policy = policy
+        # None = no guard wired (unit tests). Every model call is gated by the
+        # guard anyway, so a proposed call exists only if its model call was
+        # allowed; production passes the guard's `mode` so a kill switch or
+        # spend cap engaged mid-turn also stops the remaining tool calls.
+        self._mode_source = mode_source
+        self._scopes = frozenset(scopes_enabled)
+        self._counter = counter or ExecutionCounter()
+
+    async def _mode(self) -> PolicyMode:
+        if self._mode_source is None:
+            return PolicyMode.NORMAL
+        try:
+            return _mode_of(await self._mode_source())
+        except Exception:  # noqa: BLE001 - unreadable mode fails closed
+            log.warning("guard mode unreadable; treating as killed")
+            return PolicyMode.KILLED
+
+    async def _context(
+        self, tool: LoopTool | None, name: str, exposed: bool, tainted: bool
+    ) -> PolicyContext:
+        risk = tool.risk if tool is not None else None
+        return PolicyContext(
+            exposed=exposed,
+            tainted=tainted,
+            mode=await self._mode(),
+            scopes_enabled=self._scopes,
+            calls_last_hour=self._counter.count(name) if tool is not None else 0,
+            # No contact allowlist exists yet: every external write is treated
+            # as going to an unlisted recipient (TOTP step-up). Fail closed.
+            external_recipient=risk is Risk.WRITE_EXTERNAL,
+            destructive=risk is Risk.DESTRUCTIVE,
+            quiet_hours=False,  # reserved for proactive jobs (R11)
+            # Approvals do not exist until P3.2: never confirmed here.
+            user_confirmed=False,
+            step_up_confirmed=False,
+        )
 
     async def dispatch(
         self,
@@ -138,34 +216,44 @@ class Dispatcher:
         tainted: bool = False,
     ) -> DispatchResult:
         tainted = tainted is not False  # fail closed: only an explicit False is clean
-        result = await self._decide_and_run(name, args, exposed)
-        log.info(
-            "dispatch decision tool=%s verdict=%s rule_id=%s tainted=%s",
-            safe_name(name),
-            "deny" if result.status == "denied" else "allow",
-            result.rule_id,
-            "yes" if tainted else "no",
-        )
-        return replace(result, tainted=tainted)
-
-    async def _decide_and_run(
-        self, name: str, args: Mapping[str, Any], exposed: frozenset[str]
-    ) -> DispatchResult:
-        tool = self._tools.get(name) if name in exposed else None
-        call = ProposedCall(tool=name, args=args, risk=tool.risk if tool else None)
+        tool = self._tools.get(name) if isinstance(name, str) else None
+        is_exposed = tool is not None and name in exposed
+        call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
+        decision: Decision | None
         try:
-            decision = self._policy.decide(call)
-        except Exception:  # noqa: BLE001 - fail closed
-            log.warning("policy error tool=%s", safe_name(name))
-            return DispatchResult(name, "denied", "Denied: policy error.", rule_id="deny.error")
-        if decision.verdict != "allow" or tool is None:
-            # require_approval is not executable until P3.2; treated as deny.
-            return DispatchResult(
-                name,
-                "denied",
-                f"Denied by policy ({decision.rule_id}): {decision.reason}.",
-                rule_id=decision.rule_id,
+            decision = self._policy.decide(
+                call, await self._context(tool, name, is_exposed, tainted)
             )
+            if not isinstance(decision, Decision):
+                raise TypeError("policy returned a non-Decision")
+        except Exception:  # noqa: BLE001 - fail closed
+            decision = None
+        verdict = decision.verdict if decision is not None else "deny"
+        rule_id = decision.rule_id if decision is not None else "deny.error"
+        step_up = decision is not None and decision.step_up is True
+        runnable = verdict == "allow" and is_exposed and tool is not None
+        # One structured line per decision: names and ids only, never arguments.
+        log.info(
+            "dispatch decision tool=%s verdict=%s rule_id=%s step_up=%s tainted=%s executed=%s",
+            safe_name(name),
+            verdict,
+            safe_name(rule_id),
+            "yes" if step_up else "no",
+            "yes" if tainted else "no",
+            "yes" if runnable else "no",
+        )
+        if decision is None:
+            res = DispatchResult(name, "denied", "Denied: policy error.", rule_id="deny.error")
+        elif not runnable or tool is None:
+            res = _denied(name, decision, step_up)
+        else:
+            self._counter.record(name)
+            res = await self._run(name, tool, args, rule_id)
+        return replace(res, tainted=tainted)
+
+    async def _run(
+        self, name: str, tool: LoopTool, args: Mapping[str, Any], rule_id: str
+    ) -> DispatchResult:
         try:
             out = await tool.run(args)
             text = "" if out.text is None else str(out.text)
@@ -180,11 +268,11 @@ class Dispatcher:
             # Error text may echo external content: capped and treated as DATA.
             msg = str(e)[:MAX_TOOL_ERROR_CHARS]
             return DispatchResult(
-                name, "error", f"Tool error: {msg}", untrusted=True, rule_id=decision.rule_id
+                name, "error", f"Tool error: {msg}", untrusted=True, rule_id=rule_id
             )
         except Exception:  # noqa: BLE001 - fail closed
             log.warning("tool failure tool=%s", safe_name(name))
-            return DispatchResult(name, "error", "Tool error: failed.", rule_id=decision.rule_id)
+            return DispatchResult(name, "error", "Tool error: failed.", rule_id=rule_id)
         if len(text) > MAX_TOOL_OUTPUT_CHARS:
             text = text[:MAX_TOOL_OUTPUT_CHARS] + TRUNCATION_MARKER
         return DispatchResult(
@@ -192,7 +280,25 @@ class Dispatcher:
             "ok",
             text,
             untrusted=untrusted,
-            rule_id=decision.rule_id,
+            rule_id=rule_id,
             external=external,
             external_dropped=dropped,
         )
+
+
+def _denied(name: str, decision: Decision, step_up: bool) -> DispatchResult:
+    rule_id = decision.rule_id
+    if decision.verdict == "require_approval":
+        # P3.2 turns this into an approval card; until then it never runs.
+        return DispatchResult(
+            name,
+            "denied",
+            f"Denied by policy ({rule_id}): approval required, but approvals are not "
+            f"available yet ({APPROVAL_UNAVAILABLE}).",
+            rule_id=rule_id,
+            needs_approval=True,
+            step_up=step_up,
+        )
+    return DispatchResult(
+        name, "denied", f"Denied by policy ({rule_id}): {decision.reason}.", rule_id=rule_id
+    )

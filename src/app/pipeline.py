@@ -17,6 +17,11 @@ Only the user's own text starts a turn. Forwards / via-bot text
 (`update.untrusted`) is stored in the untrusted lane and never becomes a trusted
 instruction (INV-6); voice and documents are ingest-only until a transcriber
 exists.
+
+Cross-turn taint (ADR-0010, P3.1): a tainted turn's reply stays in the history
+window, so the worker keeps a `TaintCarry` and runs later turns with
+`carried_taint=True` until that reply has left the window (at least 3 turns).
+A turn that fails arms the carry (its taint is unknown).
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from src.gateway.types import (
 from src.ingest.sanitize import clean_text
 from src.llm.types import ChatMessage
 from src.orchestrator.loop import Orchestrator, TurnResult
+from src.policy import TaintCarry, carry_turns_for
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +145,7 @@ class TurnWorker:
         self._orch = orchestrator
         self._queue = queue
         self._history = History(history_messages)
+        self._carry = TaintCarry(carry_turns_for(history_messages))
         self._timeout = turn_timeout_s
 
     async def serve(self) -> None:
@@ -150,6 +157,7 @@ class TurnWorker:
                 raise  # revoked token: not retryable, surfaces as a fatal loop error
             except Exception as exc:  # noqa: BLE001 - one bad turn must not stop the loop
                 log.warning("turn failed err=%s", type(exc).__name__)
+                self._carry.after_failed_turn()
                 await self._apologise(item)
             finally:
                 self._queue.task_done()
@@ -176,10 +184,16 @@ class TurnWorker:
         text, _ = clean_text(u.text or "", max_chars=MAX_TURN_TEXT_CHARS)
         if not text.strip():
             return
-        result = await self._orch.run_turn(text, history=self._history.get(), turn_id=uuid.uuid4())
+        result = await self._orch.run_turn(
+            text,
+            history=self._history.get(),
+            turn_id=uuid.uuid4(),
+            carried_taint=self._carry.carried,
+        )
         kept = _remember(text, result)
         if kept is not None:
             self._history.replace([*self._history.get(), *kept])
+        self._carry.after_turn(tainted=result.tainted, kept=kept is not None)
         await self._gw.send_text(result.text, reply_to=_ref(u))
 
 

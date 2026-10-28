@@ -14,6 +14,11 @@ P3.0 (ADR-0010): untrusted tool output enters only as a lanes `DataBlock`, and
 the turn's `Taint` is marked whenever untrusted-derived data enters (recalled
 untrusted memory, untrusted tool output, tool errors). Every later dispatch in
 the turn receives `tainted=True`; the result reports it for the next turn.
+
+P3.1: the caller passes `carried_taint` (ADR-0010 cross-turn window, owned by
+`src.policy.TaintCarry`); a carried turn dispatches every call as tainted.
+`TurnResult.tainted` stays the turn's OWN taint so the carry can expire. The
+dispatcher reads the guard's mode (`llm.mode`) for the policy context.
 """
 
 from __future__ import annotations
@@ -96,7 +101,7 @@ class Orchestrator:
         self._llm = llm
         self._quarantine = quarantine
         self._by_name: Mapping[str, LoopTool] = {t.spec.name: t for t in tools}
-        self._dispatcher = Dispatcher(self._by_name, policy)
+        self._dispatcher = Dispatcher(self._by_name, policy, mode_source=llm.mode)
         self._card = character_card
         self._recall = recall
         self._cfg = config or LoopConfig()
@@ -111,7 +116,9 @@ class Orchestrator:
         traits: Sequence[UserTrait] = (),
         stances: Sequence[AgentStance] = (),
         turn_id: uuid.UUID | None = None,
+        carried_taint: bool = False,
     ) -> TurnResult:
+        carried = carried_taint is not False  # fail closed
         ctx = await build_context(
             character_card=self._card,
             user_text=user_text,
@@ -184,14 +191,14 @@ class Orchestrator:
                             "denied",
                             CALL_CAP_MESSAGE,
                             rule_id="deny.call_cap",
-                            tainted=taint.tainted,
+                            tainted=taint.tainted or carried,
                         )
                     )
                     messages.append(
                         ChatMessage(role="tool", content=CALL_CAP_MESSAGE, tool_call_id=call.id)
                     )
                     continue
-                msg = await self._run_call(call, exposed_names, events, taint)
+                msg = await self._run_call(call, exposed_names, events, taint, carried)
                 remaining_chars = self._cfg.max_tool_output_chars_per_turn - out_chars
                 if len(msg.content or "") > remaining_chars:
                     msg = ChatMessage(
@@ -207,9 +214,10 @@ class Orchestrator:
         exposed: frozenset[str],
         events: list[DispatchResult],
         taint: Taint,
+        carried: bool,
     ) -> ChatMessage:
         result = await self._dispatcher.dispatch(
-            call.name, call.arguments, exposed=exposed, tainted=taint.tainted
+            call.name, call.arguments, exposed=exposed, tainted=taint.tainted or carried
         )
         events.append(result)
         content = result.content

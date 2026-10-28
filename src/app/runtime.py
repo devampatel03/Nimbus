@@ -18,7 +18,9 @@ Startup order is a security property, so it is fixed:
 3. Database engine (parameters hidden, statement timeout), then the gateway and
    the single `GuardedLLM`/`CallAccountant` (R4, R5).
 4. `MemoryManager.verify_index()`: a model/dim change aborts startup.
-5. Loops start. Policy is `DenyAllWritesPolicy` until P3.1 (INV-5).
+5. Loops start. Policy is the deterministic `PolicyEngine` (P3.1, ADR-0009,
+   INV-5) with its production config: `require_approval` never executes until
+   P3.2, and creates stay denied until P3.3 M5 (`PENDING_IDEMPOTENCY`).
 
 The Telegram token is read by `GatewaySettings`; no value is ever logged.
 """
@@ -68,8 +70,8 @@ from src.memory.embedder import (
 from src.memory.manager import MemoryManager
 from src.memory.store import VectorEmbedder
 from src.net import EgressClient, NetSettings
-from src.orchestrator.dispatch import DenyAllWritesPolicy
 from src.orchestrator.loop import Orchestrator
+from src.policy import PolicyEngine
 from src.tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -363,7 +365,7 @@ async def run_app(
         orchestrator = Orchestrator(
             llm,
             ToolRegistry().loop_tools(),
-            DenyAllWritesPolicy(),
+            PolicyEngine(),
             character_card=card,
             recall=SessionScopedRecall(sf, embedder),
         )
