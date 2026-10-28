@@ -141,6 +141,11 @@ class TasksTool(ToolGroup):
         return ToolOutput(json.dumps({"count": len(rows), "tasks": [_view(t) for t in rows]}))
 
     def tools(self) -> list[LoopTool]:
+        return self.gate(
+            self._all_tools(), lambda: self._sf is not None and self._clock is not None
+        )
+
+    def _all_tools(self) -> list[LoopTool]:
         w, r = Risk.WRITE_INTERNAL, Risk.READ
         tid = {"task_id": "string"}
         return [

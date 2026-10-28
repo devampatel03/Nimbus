@@ -84,10 +84,17 @@ class FunctionTool:
         risk: Risk,
         parameters: dict[str, Any],
         handler: Handler,
+        available: Callable[[], bool] | None = None,
     ) -> None:
         self.spec = ToolSpec(name=name, description=description, parameters=parameters)
         self.risk = risk
         self._handler = handler
+        self._available = available
+
+    def available(self) -> bool:
+        """False while the tool's group is unbound (it would only fail closed).
+        The loop does not offer unavailable tools to the model."""
+        return True if self._available is None else bool(self._available())
 
     async def run(self, args: Mapping[str, Any]) -> ToolOutput:
         validate_args(self.spec.parameters, args)
@@ -102,3 +109,12 @@ class ToolGroup(ABC):
 
     @abstractmethod
     def tools(self) -> list[LoopTool]: ...
+
+    @staticmethod
+    def gate(tools: list[LoopTool], available: Callable[[], bool]) -> list[LoopTool]:
+        """Mark every `FunctionTool` in `tools` as offered only while `available()`
+        (typically "the group is bound"). Returns `tools`."""
+        for t in tools:
+            if isinstance(t, FunctionTool):
+                t._available = available
+        return tools
