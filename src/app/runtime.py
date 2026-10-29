@@ -32,6 +32,12 @@ Startup order is a security property, so it is fixed:
    user is configured: `require_approval` then sends a card and runs only after
    the user's tap is verified and consumed. Otherwise it stays a denial.
 
+Canaries (P4.4, ADR-0023): the `CanaryGuard` is built before step 1 so its
+values and its detector go into the log scrubber; it plants canaries in every
+turn, screens replies, tool arguments, every Telegram send (`CanaryGateway`
+wraps the gateway that everything else is given) and every non-model egress
+request, writes `policy_audit` rows and alerts the allowlisted user.
+
 The Telegram token is read by `GatewaySettings`; no value is ever logged.
 """
 
@@ -64,8 +70,12 @@ from src.app.supervisor import EXIT_FATAL_LOOP, LoopSpec, Supervisor
 from src.approvals.service import ApprovalService
 from src.approvals.settings import ApprovalSettings
 from src.approvals.store import ApprovalStore
+from src.canary.gateway import CanaryGateway
+from src.canary.guard import CanaryGuard
+from src.canary.settings import CanarySettings
+from src.canary.tokens import CanarySet, derive_canaries, generate_canaries
 from src.core.clock import SystemClock
-from src.core.logging import install_log_scrubbing
+from src.core.logging import add_log_matchers, install_log_scrubbing
 from src.db.crypto import KEY_ENV_VAR, DataCipher
 from src.gateway.protocols import Gateway
 from src.gateway.settings import GatewaySettings
@@ -90,6 +100,7 @@ from src.memory.embedder import (
 from src.memory.manager import MemoryManager
 from src.memory.store import PgVectorMemoryStore, VectorEmbedder
 from src.net import EgressClient, NetSettings
+from src.net.policy import Service
 from src.orchestrator.loop import LoopConfig, Orchestrator
 from src.policy import PolicyEngine
 from src.scheduler.memory_extract import LedgerSpendProbe
@@ -123,6 +134,10 @@ class AppConfig:
     # Third-party tool credentials (H25/H26). None or unset = that group stays off.
     google: GoogleOAuthSettings | None = field(default=None, repr=False)
     notion: NotionSettings | None = field(default=None, repr=False)
+    # P4.4: None = defaults (alerts on). `canaries` is derived from CANARY_SEED,
+    # or random per process without one.
+    canary: CanarySettings | None = field(default=None, repr=False)
+    canaries: CanarySet = field(default_factory=generate_canaries, repr=False)
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -136,6 +151,7 @@ class AppConfig:
             approvals=ApprovalSettings(),
             google=GoogleOAuthSettings(),
             notion=NotionSettings(),
+            canary=CanarySettings(),
         )
 
     @classmethod
@@ -151,6 +167,7 @@ class AppConfig:
         approvals: ApprovalSettings | None = None,
         google: GoogleOAuthSettings | None = None,
         notion: NotionSettings | None = None,
+        canary: CanarySettings | None = None,
     ) -> AppConfig:
         if dsn is None:
             from config.settings import settings as shared
@@ -177,6 +194,13 @@ class AppConfig:
                     secrets.append(value.get_secret_value())
         if notion is not None and notion.token is not None and notion.token.get_secret_value():
             secrets.append(notion.token.get_secret_value())
+        seed = canary.seed if canary is not None else None
+        canaries = (
+            derive_canaries(seed.get_secret_value()) if seed is not None else generate_canaries()
+        )
+        if canary is not None:
+            secrets.extend(canary.secret_values())
+        # Canary VALUES join the scrubber in `run_app` (they may be random per build).
         return cls(
             app,
             llm,
@@ -187,6 +211,8 @@ class AppConfig:
             approvals=approvals,
             google=google,
             notion=notion,
+            canary=canary,
+            canaries=canaries,
         )
 
 
@@ -323,6 +349,38 @@ def build_embedder(cfg: AppConfig, llm: GuardedLLM) -> EmbedderLike:
         # Shares GuardedLLM's CallAccountant: one cap, one set of held spend (R5).
         return build_api_embedder(llm, cfg.llm)
     return Qwen3Embedder()
+
+
+def build_canary_guard(cfg: AppConfig) -> CanaryGuard:
+    """Pure (no I/O): audit and alert are bound once the backends exist."""
+    cooldown = cfg.canary.alert_cooldown_s if cfg.canary is not None else 600.0
+    return CanaryGuard(cfg.canaries, configured=cfg.llm.canaries, alert_cooldown_s=cooldown)
+
+
+def egress_check(guard: CanaryGuard) -> Callable[[Service, str], Awaitable[bool]]:
+    async def check(service: Service, text: str) -> bool:
+        return await guard.screen(text, sink=f"egress_{service.value}")
+
+    return check
+
+
+def wire_canary(
+    cfg: AppConfig, guard: CanaryGuard, be: Backends, audit: ApprovalStore
+) -> CanaryGateway:
+    """Audit sink, alert hook (fixed text to the allowlisted chat, through the
+    UNWRAPPED gateway), egress check; returns the wrapped gateway."""
+    guard.bind_audit(audit)
+    alerts_on = cfg.canary.alert_telegram if cfg.canary is not None else True
+    if alerts_on:
+        inner = be.gateway
+
+        async def alert(text: str) -> object:
+            return await inner.send_text(text)
+
+        guard.bind_alert(alert)
+    if be.egress is not None:
+        be.egress.set_outbound_check(egress_check(guard))
+    return CanaryGateway(be.gateway, guard)
 
 
 async def _first_done(*coros: Coroutine[Any, Any, None]) -> None:
@@ -474,8 +532,11 @@ async def run_app(
     handle_signals: bool = False,
     sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> int:
-    # 1. Scrubbing first: nothing below may log before this line.
-    install_log_scrubbing(cfg.secrets)
+    # 1. Scrubbing first: nothing below may log before this line. The canary
+    # guard is pure, so it is built first: its values and detector go in too.
+    canary = build_canary_guard(cfg)
+    install_log_scrubbing((*cfg.secrets, *cfg.canaries.values()))
+    add_log_matchers((canary.log_matcher,))
     logging.basicConfig(level=cfg.app.log_level)
     stop = stop or asyncio.Event()
 
@@ -514,8 +575,12 @@ async def run_app(
             flags=PostgresFlagStore(sf),
             audit=audit,
             ledger=audit,
+            payload_redact=cfg.canaries.values(),
         )
         embedder = be.embedder or build_embedder(cfg, llm)
+        approval_store = ApprovalStore(sf)
+        # P4.4: from here on every component gets the canary-screened gateway.
+        gateway = wire_canary(cfg, canary, be, approval_store)
 
         # 4. Index compatibility.
         try:
@@ -529,7 +594,7 @@ async def run_app(
         clock = SystemClock()
         parts = build_scheduler(
             sf,
-            gateway=be.gateway,
+            gateway=gateway,
             embedder=embedder,
             llm=llm,
             clock=clock,
@@ -551,13 +616,12 @@ async def run_app(
             registry,
             egress=be.egress,
             sf=sf,
-            gateway=be.gateway,
+            gateway=gateway,
             clock=clock,
             google=cfg.google,
             notion=cfg.notion,
         )
-        approval_store = ApprovalStore(sf)
-        approvals = build_approvals(cfg, approval_store, be.gateway, clock)
+        approvals = build_approvals(cfg, approval_store, gateway, clock)
         orchestrator = Orchestrator(
             llm,
             registry.loop_tools(),
@@ -571,6 +635,7 @@ async def run_app(
             quarantine=Quarantine(llm),
             config=LoopConfig(max_quarantine_calls_per_turn=cfg.app.quarantine_calls_per_turn),
             scopes_enabled=wired.scopes,
+            canary=canary,
         )
         if approvals is not None:
             approvals.bind_executor(orchestrator.dispatcher)
@@ -584,7 +649,7 @@ async def run_app(
             approvals.bind_listener(commitment_card_listener(intake))
         rt = Runtime(
             cfg=cfg,
-            gateway=be.gateway,
+            gateway=gateway,
             sink=PgEventSink(sf),
             transcriber=be.transcriber,
             orchestrator=orchestrator,
@@ -619,6 +684,10 @@ async def run_app(
     finally:
         if restore_signals is not None:
             restore_signals()
+        try:
+            await asyncio.wait_for(canary.drain(), timeout=5.0)
+        except Exception as exc:  # noqa: BLE001 - shutdown must finish
+            log.warning("canary alert drain failed err=%s", type(exc).__name__)
         if be is not None:
             for close in be.closers:
                 try:

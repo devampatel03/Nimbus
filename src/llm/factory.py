@@ -12,6 +12,7 @@ container must inject `PostgresFlagStore` / `PostgresAuditStore`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from src.llm.adapter import OpenAICompatProvider
@@ -39,6 +40,7 @@ def build_guarded_llm(
     alert: AlertHook | None = None,
     clock: Clock | None = None,
     transport: Any = None,
+    payload_redact: Sequence[str] = (),
 ) -> GuardedLLM:
     resolved = settings if settings is not None else LLMSettings()
     d_flags, d_audit, d_ledger = default_stores()
@@ -50,6 +52,7 @@ def build_guarded_llm(
         settings=resolved,
         alert=alert,
         clock=clock,
+        payload_redact=payload_redact,
     )
 
 

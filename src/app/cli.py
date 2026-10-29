@@ -1,7 +1,8 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Command line: `run` (default) and `healthcheck`.
+"""Command line: `run` (default), `healthcheck` and `canary-sweep` (P4.4,
+`src.app.sweep`: exit 0 clean, 1 findings, 2 config/database error).
 
 `healthcheck` imports only settings and the heartbeat reader: no database, no
 Telegram, no model. It prints one line with no secrets and exits 0 (healthy) or
@@ -62,7 +63,12 @@ def main(argv: Sequence[str]) -> int:
     hc = sub.add_parser("healthcheck", help="exit 1 if the heartbeat is stale")
     hc.add_argument("--heartbeat-path", type=Path, default=None)
     hc.add_argument("--stale-s", type=float, default=None)
+    sub.add_parser("canary-sweep", help="scan the database for canaries and secrets (P4.4)")
     args = parser.parse_args(list(argv))
     if args.cmd == "healthcheck":
         return healthcheck(args.heartbeat_path, args.stale_s)
+    if args.cmd == "canary-sweep":
+        from src.app.sweep import canary_sweep
+
+        return asyncio.run(canary_sweep())
     return run()

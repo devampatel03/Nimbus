@@ -20,6 +20,11 @@ Scrubbing is idempotent and has no "already done" short-circuit, so a
 handler-attached `ScrubbingFilter` still scrubs. `exc_info` is replaced by a
 redacted `exc_text` so a re-rendering formatter cannot leak the traceback.
 
+Matchers (P4.4): `install_log_scrubbing(matchers=...)` adds predicates (the
+canary detector) run on every scrubbed string after literal/pattern redaction;
+True replaces the whole string with `[REDACTED:canary]`, so an obfuscated canary
+(base64, spaced, homoglyphs ...) cannot reach a log either.
+
 Not redacted here: card/Aadhaar/OTP-shaped numbers (those are redacted in
 outbound prompts by `Scrubber.scrub`, but logs only drop secrets/tokens/
 canaries; do not log such values). Free-form personal text is also not
@@ -47,13 +52,27 @@ def _redact(text: str, literals: tuple[str, ...]) -> str:
     return redact_secrets(text, literals)
 
 
+Matcher = Callable[[str], bool]
+MATCHED = "[REDACTED:canary]"
+
+
 class ScrubbingFilter(logging.Filter):
-    def __init__(self, secrets: Iterable[str] = ()) -> None:
+    def __init__(self, secrets: Iterable[str] = (), matchers: Iterable[Matcher] = ()) -> None:
         super().__init__()
         self._literals: tuple[str, ...] = tuple(secrets)
+        self._matchers: tuple[Matcher, ...] = tuple(matchers)
 
     def add_secrets(self, secrets: Iterable[str]) -> None:
         self._literals = tuple(dict.fromkeys((*self._literals, *secrets)))
+
+    def add_matchers(self, matchers: Iterable[Matcher]) -> None:
+        self._matchers = tuple(dict.fromkeys((*self._matchers, *matchers)))
+
+    def _red(self, text: str) -> str:
+        out = _redact(text, self._literals)
+        if any(m(out) for m in self._matchers):
+            return MATCHED
+        return out
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -70,44 +89,46 @@ class ScrubbingFilter(logging.Filter):
 
     def _scrub_value(self, value: object) -> object:
         if isinstance(value, str):
-            return _redact(value, self._literals)
+            return self._red(value)
         # Non-str extras (dict/list/exception/bytes ...): scrub their repr; keep
         # the original object (and its type) only when nothing was found.
         text = repr(value)
-        redacted = _redact(text, self._literals)
+        redacted = self._red(text)
         return value if redacted == text else redacted
 
     def _scrub(self, record: logging.LogRecord) -> None:
-        lits = self._literals
         try:
             message = record.getMessage()
         except Exception:  # noqa: BLE001 - logging must never raise
             # Bad format/args: fall back to msg + repr of args, both scrubbed.
             message = f"{record.msg} {record.args!r}"
-        record.msg = _redact(message, lits)
+        record.msg = self._red(message)
         record.args = None
         if record.exc_info and not record.exc_text:
             record.exc_text = "".join(traceback.format_exception(*record.exc_info)).rstrip()
         if record.exc_text:
-            record.exc_text = _redact(record.exc_text, lits)
+            record.exc_text = self._red(record.exc_text)
         # The raw traceback must not survive on the record: a formatter that
         # re-renders from exc_info would bypass exc_text.
         record.exc_info = None
         if record.stack_info:
-            record.stack_info = _redact(record.stack_info, lits)
+            record.stack_info = self._red(record.stack_info)
         for key, value in list(record.__dict__.items()):
             if key not in _STD_ATTRS:
                 record.__dict__[key] = self._scrub_value(value)
 
 
-def install_log_scrubbing(secrets: Iterable[str] = ()) -> Callable[[], None]:
+def install_log_scrubbing(
+    secrets: Iterable[str] = (), matchers: Iterable[Matcher] = ()
+) -> Callable[[], None]:
     """Scrub every log record process-wide. Returns a callable that undoes it."""
     current = logging.Logger.makeRecord
     live: ScrubbingFilter | None = getattr(current, "_nimbus_filter", None)
     if live is not None:
         live.add_secrets(secrets)
+        live.add_matchers(matchers)
         return lambda: None
-    flt = ScrubbingFilter(secrets)
+    flt = ScrubbingFilter(secrets, matchers)
 
     def make_record(self: logging.Logger, *args: Any, **kwargs: Any) -> logging.LogRecord:
         record = current(self, *args, **kwargs)  # extras are merged in here
@@ -122,3 +143,8 @@ def install_log_scrubbing(secrets: Iterable[str] = ()) -> Callable[[], None]:
             logging.Logger.makeRecord = current  # type: ignore[method-assign]
 
     return restore
+
+
+def add_log_matchers(matchers: Iterable[Matcher]) -> Callable[[], None]:
+    """Add matchers to the live scrubber (installing it if needed: fail closed)."""
+    return install_log_scrubbing((), matchers)
