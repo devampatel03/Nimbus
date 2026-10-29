@@ -376,6 +376,11 @@ class StoredCredentials:
 
 
 class TokenStore(Protocol):
+    # The gmail.compose flag this store lints with. `GoogleAuth` refuses a store
+    # whose flag is missing or differs from the token client's (P3.4).
+    @property
+    def allow_compose(self) -> bool: ...
+
     async def load(self) -> StoredCredentials | None: ...
     async def save(self, creds: StoredCredentials) -> None: ...
     async def delete(self) -> None: ...
@@ -600,8 +605,9 @@ class GoogleAuth:
         renotify_after_s: float = 24 * 3600.0,
     ) -> None:
         store_flag = getattr(store, "allow_compose", None)
-        if store_flag is not None and store_flag is not client.allow_compose:
+        if not isinstance(store_flag, bool) or store_flag is not client.allow_compose:
             # One flag for both, or scope-lint disagrees between store and client.
+            # A store that does not declare a bool flag is refused (fail closed).
             raise GoogleAuthError("compose_flag_mismatch")
         self._client = client
         self._store = store
@@ -728,11 +734,12 @@ class GoogleAuth:
         hand at https://myaccount.google.com/permissions)."""
         async with self._lock:
             remote_failed = False
-            loader = getattr(self._store, "load_for_revoke", None)
+            found = getattr(self._store, "load_for_revoke", None)
+            loader: RevokeLoader | None = found if callable(found) else None
             try:
                 # Unlinted read: an out-of-policy token is exactly the one that
                 # most needs revoking at Google.
-                creds = await (loader() if callable(loader) else self._store.load())
+                creds = await (loader() if loader is not None else self._store.load())
             except GoogleAuthError:
                 # Unreadable (wrong key, corrupt; or out-of-policy on a store
                 # without `load_for_revoke`): forget it locally, but we could

@@ -255,7 +255,7 @@ class PolicyEngine:
         `disabled_tools` are still offered (and denied `deny.tool_disabled`):
         the protected `tests/eval/invariants/test_inv5_policy_engine.py` pins
         that verdict for a model-called `tasks_create`. Hiding them needs that
-        test changed with permission (HUMAN_TODO H28)."""
+        test changed with permission (HUMAN_TODO H29)."""
         try:
             if not isinstance(tool, str) or not isinstance(scopes_enabled, frozenset):
                 return False

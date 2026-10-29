@@ -206,3 +206,27 @@ def test_lax_env_value_is_refused(raw: str, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("GOOGLE_ALLOW_GMAIL_COMPOSE", raw)
     with pytest.raises(ValidationError):
         GoogleOAuthSettings(_env_file=None)
+
+
+class _FlaglessStore:
+    """A TokenStore that does not declare its compose flag."""
+
+    async def load(self) -> StoredCredentials | None:
+        return creds()
+
+    async def save(self, c: StoredCredentials) -> None:
+        return None
+
+    async def delete(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize("flag", [None, "false", 0, 1])
+def test_store_without_a_bool_compose_flag_is_refused(flag: Any) -> None:
+    """Review L2: a store that cannot state its flag is not trusted to agree."""
+    store: Any = _FlaglessStore()
+    if flag is not None:
+        store.allow_compose = flag
+    with pytest.raises(GoogleAuthError) as ei:
+        GoogleAuth(client(FakeTokenEndpoint()), store)
+    assert ei.value.code == "compose_flag_mismatch"
