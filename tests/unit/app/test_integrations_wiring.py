@@ -307,3 +307,41 @@ async def test_real_backends_hand_over_the_egress(
     assert fake.egress is None
     for close in [*be.closers, *fake.closers]:
         await close()
+
+
+@pytest.mark.parametrize(
+    ("ctor", "off"),
+    [("NotionClient", "notion"), ("CalendarClient", "calendar"), ("DriveReader", "drive")],
+)
+async def test_a_raising_client_constructor_leaves_only_that_group_off(
+    ctor: str, off: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def boom(*a: Any, **k: Any) -> Any:
+        raise RuntimeError(f"ctor failed {NOTION_SECRET} {REFRESH}")
+
+    monkeypatch.setattr(integ, ctor, boom)
+    reg = ToolRegistry()
+    store = InMemoryTokenStore(creds(SCOPE_CALENDAR_EVENTS, SCOPE_DRIVE_READONLY))
+    with caplog.at_level(logging.INFO):
+        wired = await wire(reg, google=google(), notion=notion(), google_store=store)
+    assert wired.scopes == LOCAL_SCOPES | ({"notion", "calendar", "drive"} - {off})
+    assert {n.split("_")[0] for n in external_offered(reg)} == {"notion", "calendar", "drive"} - {
+        off
+    }
+    assert f"integration off: {off} err=RuntimeError" in caplog.text
+    assert NOTION_SECRET not in caplog.text and REFRESH not in caplog.text
+
+
+async def test_a_raising_token_store_constructor_leaves_google_off(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def boom(*a: Any, **k: Any) -> Any:
+        raise RuntimeError("store ctor failed")
+
+    monkeypatch.setattr(integ, "PostgresTokenStore", boom)
+    monkeypatch.setattr(integ.DataCipher, "from_env", classmethod(lambda cls: object()))
+    reg = ToolRegistry()
+    with caplog.at_level(logging.INFO):
+        wired = await wire(reg, google=google(), notion=notion(), sf=object())
+    assert wired.scopes == LOCAL_SCOPES | {"notion"}
+    assert "integration off: google err=RuntimeError" in caplog.text

@@ -68,7 +68,7 @@ class Harness:
         allow_compose: bool = False,
     ) -> None:
         self.fake = FakeTokenEndpoint(*responses)
-        self.store = InMemoryTokenStore(stored)
+        self.store = InMemoryTokenStore(stored, allow_compose=allow_compose)
         self.sleeps = Sleeps()
         self.clock = Clock()
         self.notices: list[ReauthNotice] = []
@@ -444,10 +444,14 @@ async def test_revoke_network_failure_still_forgets_locally_and_reports() -> Non
 
 
 class _UnreadableStore(InMemoryTokenStore):
-    """Behaves like PostgresTokenStore.load on an out-of-policy record."""
+    """Behaves like PostgresTokenStore on a record it cannot decrypt (an
+    out-of-policy but readable record IS revoked: test_auth_followups.py)."""
 
     async def load(self) -> StoredCredentials | None:
         raise GoogleReauthRequired("scope_violation")
+
+    async def load_for_revoke(self) -> StoredCredentials | None:
+        raise GoogleAuthError("token_decrypt_failed")
 
 
 async def test_revoke_of_unreadable_record_forgets_it_and_reports_manual_revoke() -> None:

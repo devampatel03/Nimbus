@@ -28,6 +28,7 @@ lane, under the per-turn budget (P3.0 MED-D; wired in `src.app.runtime`).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -118,11 +119,12 @@ async def wire_integrations(
 
     if notion_configured(notion):
         assert notion is not None and notion.token is not None
+        token = notion.token
         group = _group(registry, "notion", NotionTool)
         if isinstance(group, NotionTool):
-            group.bind(NotionClient(egress, notion.token))
-            scopes.add("notion")
-            log.info("integration on: notion")
+            if _bind("notion", lambda: group.bind(NotionClient(egress, token))):
+                scopes.add("notion")
+                log.info("integration on: notion")
         else:
             log.warning("integration off: notion tool group missing")
 
@@ -133,11 +135,18 @@ async def wire_integrations(
         if auth is not None:
             cal = _group(registry, "calendar", GoogleCalendarTool)
             drive = _group(registry, "drive", DriveReadTool)
-            if SCOPE_CALENDAR_EVENTS in granted and isinstance(cal, GoogleCalendarTool):
-                cal.bind(CalendarClient(egress, auth), clock)
+            ga = auth
+            if (
+                SCOPE_CALENDAR_EVENTS in granted
+                and isinstance(cal, GoogleCalendarTool)
+                and _bind("calendar", lambda: cal.bind(CalendarClient(egress, ga), clock))
+            ):
                 scopes.add("calendar")
-            if SCOPE_DRIVE_READONLY in granted and isinstance(drive, DriveReadTool):
-                drive.bind(DriveReader(egress, auth))
+            if (
+                SCOPE_DRIVE_READONLY in granted
+                and isinstance(drive, DriveReadTool)
+                and _bind("drive", lambda: drive.bind(DriveReader(egress, ga)))
+            ):
                 scopes.add("drive")
             log.info(
                 "integration google: calendar=%s drive=%s",
@@ -145,6 +154,17 @@ async def wire_integrations(
                 "on" if "drive" in scopes else "off",
             )
     return WiredIntegrations(frozenset(scopes), auth)
+
+
+def _bind(name: str, bind: Callable[[], None]) -> bool:
+    """Construct a client and bind its group. Any failure leaves the group
+    unbound (its scope stays off) and is logged by type name only; boot goes on."""
+    try:
+        bind()
+    except Exception as exc:  # noqa: BLE001 - never block boot on an integration
+        log.warning("integration off: %s err=%s", name, type(exc).__name__)
+        return False
+    return True
 
 
 async def _google_auth(
@@ -164,9 +184,13 @@ async def _google_auth(
         except CryptoError:
             log.warning("integration off: google (NIMBUS_DATA_KEY not set)")
             return None, frozenset()
-        # One flag for store and client: scope-lint agrees everywhere (P3.4).
-        store = PostgresTokenStore(sf, cipher, allow_compose=allow_compose)
+        except Exception as exc:  # noqa: BLE001 - never block boot on an integration
+            log.warning("integration off: google err=%s", type(exc).__name__)
+            return None, frozenset()
     try:
+        if store is None:
+            # One flag for store and client: scope-lint agrees everywhere (P3.4).
+            store = PostgresTokenStore(sf, cipher, allow_compose=allow_compose)  # type: ignore[arg-type]
         creds = await store.load()
         if creds is None:
             log.info("integration off: google (not authorised; run scripts/google_oauth.py)")

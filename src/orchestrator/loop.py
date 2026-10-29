@@ -127,6 +127,12 @@ class Orchestrator:
         self._scopes = frozenset(scopes_enabled)
         self._quarantine = quarantine
         self._by_name: Mapping[str, LoopTool] = {t.spec.name: t for t in tools}
+        # #38: offer from the policy's own table when it has one (no skew with
+        # the module-level TOOL_RULES; unknown and disabled tools are hidden).
+        hint = getattr(policy, "offerable", None)
+        self._policy_offer: Callable[[str, frozenset[str]], object] | None = (
+            hint if callable(hint) else None
+        )
         self._dispatcher = Dispatcher(
             self._by_name,
             policy,
@@ -145,10 +151,19 @@ class Orchestrator:
         """Offer only tools that could run: bound, and (when the policy table
         knows the tool) in an enabled scope. Hidden tools are not exposed, so a
         call to one is still denied (`deny.unexposed`). Fail closed: an
-        `available()` that raises, or a non-callable `available`, hides the tool."""
-        rule = TOOL_RULES.get(tool.spec.name)
-        if rule is not None and rule.scope not in self._scopes:
-            return False
+        `available()` that raises, or a non-callable `available`, hides the tool.
+        With a table policy (`offerable`), only a tool it has a rule for, in an
+        enabled scope, is offered; anything but an exact True hides it."""
+        if self._policy_offer is not None:
+            try:
+                if self._policy_offer(tool.spec.name, self._scopes) is not True:
+                    return False
+            except Exception:  # noqa: BLE001 - fail closed
+                return False
+        else:
+            rule = TOOL_RULES.get(tool.spec.name)
+            if rule is not None and rule.scope not in self._scopes:
+                return False
         if not hasattr(tool, "available"):
             return True
         check = getattr(tool, "available")  # noqa: B009
