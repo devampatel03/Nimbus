@@ -245,6 +245,25 @@ class PolicyEngine:
         except Exception:  # noqa: BLE001 - fail closed, never raise
             return deny_decision("deny.error", "policy error")
 
+    def offerable(self, tool: str, scopes_enabled: frozenset[str]) -> bool:
+        """Whether the loop may OFFER `tool` to the model: the same table
+        `decide` uses has a rule for it and its scope is enabled. Restrictive
+        only: True grants nothing (every call is still decided); False hides a
+        tool `decide` would deny anyway (`deny.unknown_tool` /
+        `deny.scope_disabled`).
+
+        `disabled_tools` are still offered (and denied `deny.tool_disabled`):
+        the protected `tests/eval/invariants/test_inv5_policy_engine.py` pins
+        that verdict for a model-called `tasks_create`. Hiding them needs that
+        test changed with permission (HUMAN_TODO H28)."""
+        try:
+            if not isinstance(tool, str) or not isinstance(scopes_enabled, frozenset):
+                return False
+            rule = self._cfg.rules.get(tool)
+            return isinstance(rule, ToolRule) and rule.scope in scopes_enabled
+        except Exception:  # noqa: BLE001 - fail closed
+            return False
+
 
 class DenyAllWritesPolicy:
     """Strict fallback (P2.5a interim; kept for tests): READ is allowed when the

@@ -106,16 +106,21 @@ class _NotionTool(FunctionTool):
         describe: Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]] | None = None,
     ) -> None:
         super().__init__(*a)
-        self.resolve_args = self._resolve_async(resolve)
+        self.resolve_args = self._resolve_async(resolve, self.spec.parameters)
         if describe is not None:
             self.describe_args = describe
 
     @staticmethod
     def _resolve_async(
         fn: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+        parameters: Mapping[str, Any],
     ) -> Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]:
         async def go(args: Mapping[str, Any]) -> Mapping[str, Any]:
-            return fn(args)
+            out = fn(args)
+            # #39 LOW-D: schema check BEFORE the policy and the approval card, so a
+            # model-added key (sendUpdates, attendees, ...) never reaches a card.
+            validate_args(parameters, out)
+            return out
 
         return go
 

@@ -76,7 +76,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import urlencode
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -169,6 +169,17 @@ class GoogleOAuthSettings(BaseSettings):
     backoff_base_s: float = Field(default=0.5, ge=0, le=30)
     backoff_max_s: float = Field(default=8.0, ge=0, le=120)
     request_timeout_s: float = Field(default=15.0, gt=0, le=60)
+
+    @field_validator("allow_gmail_compose", mode="before")
+    @classmethod
+    def _strict_bool(cls, value: object) -> bool:
+        """Only `true` / `false` (any case). Lax truthy strings ("1", "yes",
+        "on") are refused: this flag widens the scope ceiling (H16)."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+            return value.strip().lower() == "true"
+        raise ValueError("must be true or false")
 
     def require_client(self) -> tuple[SecretStr, SecretStr]:
         if self.client_id is None or self.client_secret is None:
@@ -370,6 +381,12 @@ class TokenStore(Protocol):
     async def delete(self) -> None: ...
 
 
+# Optional on a `TokenStore` (both stores here have it): read the record WITHOUT
+# scope-lint, for `revoke_and_forget` only, so an out-of-policy token can still
+# be revoked at Google. Never use it to hand out access.
+RevokeLoader = Callable[[], Awaitable[StoredCredentials | None]]
+
+
 class InMemoryTokenStore:
     """Test / dry-run store. `initial` is deliberately not linted so tests can
     seed a hostile record; `save` lints like the real store."""
@@ -380,7 +397,14 @@ class InMemoryTokenStore:
         self._creds = initial
         self._allow_compose = allow_compose
 
+    @property
+    def allow_compose(self) -> bool:
+        return self._allow_compose
+
     async def load(self) -> StoredCredentials | None:
+        return self._creds
+
+    async def load_for_revoke(self) -> StoredCredentials | None:
         return self._creds
 
     async def save(self, creds: StoredCredentials) -> None:
@@ -407,6 +431,10 @@ class PostgresTokenStore:
         self._cipher = cipher
         self._allow_compose = allow_compose
 
+    @property
+    def allow_compose(self) -> bool:
+        return self._allow_compose
+
     async def save(self, creds: StoredCredentials) -> None:
         scopes = lint_scopes(creds.scopes, allow_compose=self._allow_compose)
         plaintext = json.dumps(
@@ -432,6 +460,20 @@ class PostgresTokenStore:
             raise GoogleAuthError("token_store_error") from None
 
     async def load(self) -> StoredCredentials | None:
+        raw = await self._read()
+        if raw is None:
+            return None
+        return StoredCredentials(
+            refresh_token=raw.refresh_token,
+            scopes=lint_scopes(raw.scopes, allow_compose=self._allow_compose),
+            obtained_at=raw.obtained_at,
+        )
+
+    async def load_for_revoke(self) -> StoredCredentials | None:
+        """The stored record WITHOUT scope-lint: only for revoking it."""
+        return await self._read()
+
+    async def _read(self) -> StoredCredentials | None:
         try:
             async with self._sf() as session:
                 row = await session.get(SystemFlag, CREDENTIALS_FLAG_KEY)
@@ -465,9 +507,7 @@ class PostgresTokenStore:
         except (AssertionError, KeyError, TypeError, ValueError):
             raise GoogleAuthError("token_store_corrupt") from None
         return StoredCredentials(
-            refresh_token=SecretStr(refresh),
-            scopes=lint_scopes(scope_set, allow_compose=self._allow_compose),
-            obtained_at=obtained,
+            refresh_token=SecretStr(refresh), scopes=scope_set, obtained_at=obtained
         )
 
     async def delete(self) -> None:
@@ -559,6 +599,10 @@ class GoogleAuth:
         clock: Callable[[], float] = time.monotonic,
         renotify_after_s: float = 24 * 3600.0,
     ) -> None:
+        store_flag = getattr(store, "allow_compose", None)
+        if store_flag is not None and store_flag is not client.allow_compose:
+            # One flag for both, or scope-lint disagrees between store and client.
+            raise GoogleAuthError("compose_flag_mismatch")
         self._client = client
         self._store = store
         self._notifier = notifier
@@ -684,11 +728,15 @@ class GoogleAuth:
         hand at https://myaccount.google.com/permissions)."""
         async with self._lock:
             remote_failed = False
+            loader = getattr(self._store, "load_for_revoke", None)
             try:
-                creds = await self._store.load()
+                # Unlinted read: an out-of-policy token is exactly the one that
+                # most needs revoking at Google.
+                creds = await (loader() if callable(loader) else self._store.load())
             except GoogleAuthError:
-                # Unreadable (wrong key, corrupt, out-of-policy scopes): forget it
-                # locally, but we could not revoke it at Google, so say so.
+                # Unreadable (wrong key, corrupt; or out-of-policy on a store
+                # without `load_for_revoke`): forget it locally, but we could
+                # not revoke it at Google, so say so.
                 creds = None
                 remote_failed = True
             if creds is not None:
