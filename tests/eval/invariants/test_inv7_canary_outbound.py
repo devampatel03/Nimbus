@@ -7,8 +7,8 @@ Structural pins on the production wiring (`src/app/runtime.py::run_app`):
   1. no component is handed the raw `be.gateway`; only `wire_canary` sees it,
      and everything else gets the `CanaryGateway` it returns;
   2. the `Orchestrator` is built with `canary=` (plants + reply/tool-arg screen);
-  3. `wire_canary` installs the egress outbound check and returns a
-     `CanaryGateway`;
+  3. `wire_canary` installs the egress outbound check and the Telegram screen
+     (`set_outbound_screen`), with a `CanaryGateway` fallback for other gateways;
   4. the log scrubber gets the canary values and the canary matcher before
      anything else runs.
 Behaviour: a compromised reply and a canary-bearing tool argument are blocked
@@ -70,8 +70,13 @@ def wiring_violations(source: str) -> list[str]:
     ]
     if "set_outbound_check" not in wire_calls:
         out.append("wire_canary does not install the egress outbound check")
+    consts = [
+        n.value for n in ast.walk(wire) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
+    if "set_outbound_screen" not in consts:
+        out.append("wire_canary does not install the Telegram outbound screen")
     if "CanaryGateway" not in wire_calls:
-        out.append("wire_canary does not return a CanaryGateway")
+        out.append("wire_canary has no CanaryGateway fallback")
     return out
 
 

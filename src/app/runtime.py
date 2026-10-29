@@ -34,8 +34,8 @@ Startup order is a security property, so it is fixed:
 
 Canaries (P4.4, ADR-0023): the `CanaryGuard` is built before step 1 so its
 values and its detector go into the log scrubber; it plants canaries in every
-turn, screens replies, tool arguments, every Telegram send (`CanaryGateway`
-wraps the gateway that everything else is given) and every non-model egress
+turn, screens replies, tool arguments, every Telegram send (`TelegramGateway.set_outbound_screen`;
+dev fakes are wrapped in `CanaryGateway`) and every non-model egress
 request, writes `policy_audit` rows and alerts the allowlisted user.
 
 The Telegram token is read by `GatewaySettings`; no value is ever logged.
@@ -364,11 +364,12 @@ def egress_check(guard: CanaryGuard) -> Callable[[Service, str], Awaitable[bool]
     return check
 
 
-def wire_canary(
-    cfg: AppConfig, guard: CanaryGuard, be: Backends, audit: ApprovalStore
-) -> CanaryGateway:
-    """Audit sink, alert hook (fixed text to the allowlisted chat, through the
-    UNWRAPPED gateway), egress check; returns the wrapped gateway."""
+def wire_canary(cfg: AppConfig, guard: CanaryGuard, be: Backends, audit: ApprovalStore) -> Gateway:
+    """Audit sink, alert hook (fixed text to the allowlisted chat), egress
+    check, and the Telegram screen. The real `TelegramGateway` screens in its
+    one outbound choke point (`_outbound_chunks`, cards, keypads) via
+    `set_outbound_screen`; a gateway without that hook (the dev fakes) is
+    wrapped in `CanaryGateway` instead. Returns the gateway to hand out."""
     guard.bind_audit(audit)
     alerts_on = cfg.canary.alert_telegram if cfg.canary is not None else True
     if alerts_on:
@@ -380,6 +381,10 @@ def wire_canary(
         guard.bind_alert(alert)
     if be.egress is not None:
         be.egress.set_outbound_check(egress_check(guard))
+    install = getattr(be.gateway, "set_outbound_screen", None)
+    if callable(install):
+        install(guard)
+        return be.gateway
     return CanaryGateway(be.gateway, guard)
 
 
