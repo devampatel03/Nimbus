@@ -10,7 +10,12 @@
 - R1: see `store.py`; the offset advances only with the ack of the event the
   update produced. Updates are processed strictly in order.
 - Every send disables link previews, uses HTML parse mode with full escaping,
-  and goes through the rate limiter.
+  and goes through the rate limiter. `_send_one` is the only send call site.
+- P4.3: every `send_text` (model replies, reminders, notices) and keypad
+  prompt passes the exfil filter (`exfil.py`); each chunk is re-checked and a
+  failing reply is replaced by a fixed notice. Approval cards are NOT filtered:
+  they must show the exact payload being approved; it is rendered inside a
+  `<pre>` entity (not auto-linked by Telegram), previews off.
 - Transcription is NOT done here: voice bytes are handed to the ingest layer,
   which calls the `llm` module.
 """
@@ -25,12 +30,13 @@ from datetime import timedelta, timezone
 from typing import Any
 
 from src.gateway.api import TelegramApi
+from src.gateway.exfil import BLOCKED_NOTICE, filter_reply, find_links
 from src.gateway.parse import parse_update
 from src.gateway.ratelimit import RateLimiter
 from src.gateway.render import (
     MAX_MESSAGE_CHARS,
+    chunk_text,
     escape_html,
-    render_chunks,
     sanitize,
     utf16_len,
 )
@@ -43,6 +49,7 @@ from src.gateway.types import (
     InboundUpdate,
     MessageRef,
     MessageTooLong,
+    OutboundBlocked,
     TelegramAuthError,
     TelegramError,
     UpdateKind,
@@ -69,6 +76,7 @@ class TelegramGateway:
         on_poll: Callable[[], None] | None = None,
     ) -> None:
         self._s = settings
+        self._reply_policy = settings.reply_url_policy()
         # Liveness signal for the app heartbeat: called after every COMPLETED
         # getUpdates cycle (empty long polls included), never on a failed one.
         self._on_poll = on_poll
@@ -218,9 +226,20 @@ class TelegramGateway:
         return MessageRef(mid)
 
     async def send_text(self, text: str, *, reply_to: MessageRef | None = None) -> list[MessageRef]:
+        result = filter_reply(text, self._reply_policy)
+        chunks = chunk_text(result.text)
+        blocked = result.blocked or any(find_links(c, self._reply_policy) for c in chunks)
+        if blocked:
+            # Counts only: the reply may hold the very data being exfiltrated.
+            logger.warning("outbound reply blocked by link filter removed=%d", result.removed)
+            chunks = chunk_text(BLOCKED_NOTICE)
+        elif result.removed:
+            logger.info("outbound links neutralised count=%d", result.removed)
         refs: list[MessageRef] = []
-        for i, html in enumerate(render_chunks(text)):
-            refs.append(await self._send_one(html, reply_to=reply_to if i == 0 else None))
+        for i, chunk in enumerate(chunks):
+            refs.append(
+                await self._send_one(escape_html(chunk), reply_to=reply_to if i == 0 else None)
+            )
         return refs
 
     async def send_approval(self, card: ApprovalCard) -> MessageRef:
@@ -255,7 +274,11 @@ class TelegramGateway:
                     raise ValueError("callback_data must be 1..64 bytes")
                 buttons.append({"text": sanitize(label)[:16], "callback_data": data})
             keyboard.append(buttons)
-        body = escape_html(sanitize(text))
+        filtered = filter_reply(text, self._reply_policy)
+        if filtered.blocked:
+            logger.warning("keypad text blocked by link filter")
+            raise OutboundBlocked("outbound_blocked")
+        body = escape_html(filtered.text)
         if utf16_len(body) > MAX_MESSAGE_CHARS:
             raise MessageTooLong("keypad_text_too_long")
         return await self._send_one(body, reply_to=None, markup={"inline_keyboard": keyboard})
