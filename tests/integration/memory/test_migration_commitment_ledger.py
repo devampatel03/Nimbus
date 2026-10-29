@@ -81,8 +81,10 @@ def _has_table(dsn: str) -> bool:
 
 
 def test_single_head_is_this_revision() -> None:
-    heads = ScriptDirectory.from_config(_cfg(settings.postgres_dsn)).get_heads()
-    assert heads == [REVISION]
+    script = ScriptDirectory.from_config(_cfg(settings.postgres_dsn))
+    heads = script.get_heads()
+    assert len(heads) == 1  # later revisions chain on top of this one (P4.6)
+    assert REVISION in {r.revision for r in script.walk_revisions(REVISION, heads[0])}
 
 
 def test_round_trip_and_no_drift(scratch_dsn: str) -> None:

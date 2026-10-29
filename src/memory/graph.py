@@ -15,11 +15,13 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import ColumnElement, and_, func, literal_column, or_, select
+from sqlalchemy import ColumnElement, and_, func, literal_column, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from src.memory.schemas.graph import GraphEdge
+from src.memory.store import PROMOTE_EDGE_SQL, ApprovalRequiredError
 
 _INFINITY: ColumnElement[datetime] = literal_column("'infinity'::timestamptz")
 
@@ -46,9 +48,11 @@ class GraphRepository:
         confidence: float,
         lane: Literal["trusted", "untrusted"],
         source_speaker: uuid.UUID | None = None,
+        source_event_id: uuid.UUID | None = None,
     ) -> GraphEdge:
         """`lane` is required (no default, P3.3): an untrusted edge is born
-        unpromoted (R8) and only a consumed approval can promote it."""
+        unpromoted (R8) and only a consumed approval can promote it. When
+        `source_event_id` is given the DB refuses a lane more trusted than the event's."""
         edge = GraphEdge(
             subject_id=subject_id,
             predicate=predicate,
@@ -58,6 +62,7 @@ class GraphRepository:
             ingested_at=datetime.now(tz=valid_from.tzinfo),
             source_session=source_session,
             source_speaker=source_speaker,
+            source_event_id=source_event_id,
             confidence=confidence,
             lane=lane,
             promoted=lane == "trusted",
@@ -99,6 +104,22 @@ class GraphRepository:
         old_edge.superseded_by = new_edge.id
         await self._session.flush()
         return new_edge
+
+    async def promote_edge(self, edge_id: uuid.UUID, *, approval_id: uuid.UUID) -> None:
+        """R8 for graph edges (P4.6): same binding as `PgVectorMemoryStore.promote`.
+        Needs a consumed, in-time `memory`/`promote` approval whose payload names
+        exactly `edge_id`, used at most once. The DB trigger re-checks it."""
+        try:
+            async with self._session.begin_nested():
+                done = (
+                    await self._session.execute(
+                        text(PROMOTE_EDGE_SQL), {"i": edge_id, "a": approval_id}
+                    )
+                ).first()
+        except IntegrityError:  # approval already stamped on another edge
+            raise ApprovalRequiredError("approval_already_used") from None
+        if done is None:
+            raise ApprovalRequiredError("promotion_refused")
 
     async def find_contradictions(
         self, subject_id: uuid.UUID, predicate: str

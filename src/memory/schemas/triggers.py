@@ -55,6 +55,45 @@ END
 $fn$
 """
 
+PROMOTION_GUARD_FN_SQL = """
+CREATE OR REPLACE FUNCTION nimbus_promotion_guard() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    -- Lane spoofing: a derived row may not be more trusted than its source event.
+    IF TG_OP = 'INSERT' AND NEW.lane = 'trusted' AND NEW.source_event_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM event e WHERE e.id = NEW.source_event_id AND e.lane <> 'trusted')
+    THEN
+        RAISE EXCEPTION '%: row lane is more trusted than its source event (R8)', TG_TABLE_NAME
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF TG_OP = 'UPDATE' AND OLD.promoted AND NOT NEW.promoted THEN
+        RAISE EXCEPTION '%: demotion is forbidden; invalidate instead (INV-3)', TG_TABLE_NAME
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.lane = 'untrusted' AND NEW.promoted THEN
+        IF TG_OP = 'UPDATE' AND OLD.promoted THEN
+            RETURN NEW;  -- already promoted; the append-only trigger freezes the approval id
+        END IF;
+        IF TG_OP = 'INSERT' THEN
+            RAISE EXCEPTION '%: an untrusted row cannot be born promoted (R8)', TG_TABLE_NAME
+                USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pending_action p
+            WHERE p.id = NEW.promoted_approval_id AND p.status = 'consumed'
+              AND p.consumed_at IS NOT NULL AND p.consumed_at <= p.expires_at
+              AND p.tool = 'memory' AND p.action = 'promote'
+              AND p.payload ->> 'item_id' = NEW.id::text
+        ) THEN
+            RAISE EXCEPTION '%: promotion needs a consumed approval for this exact item (R8)',
+                TG_TABLE_NAME USING ERRCODE = 'integrity_constraint_violation';
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$fn$
+"""
+
 SINGLE_USE_FN_SQL = """
 CREATE OR REPLACE FUNCTION nimbus_single_use_guard() RETURNS trigger
 LANGUAGE plpgsql AS $fn$
@@ -77,6 +116,9 @@ BEGIN
 END
 $fn$
 """
+
+# P4.6: tables whose promotion is guarded in the database (R8).
+PROMOTION_GUARDED_TABLES: tuple[str, ...] = ("memory_chunk", "graph_edge")
 
 # table -> (mutable columns, set-once columns)
 APPEND_ONLY_TABLES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
@@ -131,6 +173,13 @@ SINGLE_USE_TRIGGER_SQL = (
 )
 
 
+def promotion_guard_trigger_sql(table: str) -> str:
+    return (
+        f"CREATE TRIGGER trg_{table}_promotion_guard BEFORE INSERT OR UPDATE ON {table} "
+        f"FOR EACH ROW EXECUTE FUNCTION nimbus_promotion_guard()"
+    )
+
+
 def truncate_guard_sql(table: str) -> str:
     return (
         f"CREATE TRIGGER trg_{table}_no_truncate BEFORE TRUNCATE ON {table} "
@@ -152,11 +201,14 @@ def install_orm_ddl(metadata: MetaData) -> None:
     event.listen(metadata, "before_create", _ddl(APPEND_ONLY_FN_SQL))
     event.listen(metadata, "before_create", _ddl(SINGLE_USE_FN_SQL))
     event.listen(metadata, "before_create", _ddl(NO_TRUNCATE_FN_SQL))
+    event.listen(metadata, "before_create", _ddl(PROMOTION_GUARD_FN_SQL))
 
 
 def attach_table_triggers(table: Table) -> None:
     if table.name in APPEND_ONLY_TABLES:
         event.listen(table, "after_create", _ddl(append_only_trigger_sql(table.name)))
         event.listen(table, "after_create", _ddl(truncate_guard_sql(table.name)))
+    if table.name in PROMOTION_GUARDED_TABLES:
+        event.listen(table, "after_create", _ddl(promotion_guard_trigger_sql(table.name)))
     if table.name == "pending_action":
         event.listen(table, "after_create", _ddl(SINGLE_USE_TRIGGER_SQL))

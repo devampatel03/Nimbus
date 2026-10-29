@@ -522,15 +522,15 @@ async def test_promotion_request_payload_shape(h: Harness) -> None:
 async def test_memory_promotion_end_to_end_with_the_real_store(h: Harness) -> None:
     """R8: the approval the service writes is exactly what
     `PgVectorMemoryStore.promote` accepts, once."""
-    from src.app.runtime import memory_promoter
+    from src.memory.review import ReviewQueue
     from src.memory.store import ChunkIn
-    from tests._memory_helpers import EMB, make_event, store_for
+    from tests._memory_helpers import make_event, store_for
 
     async with h.sf() as s, s.begin():
         store = store_for(s)
         ev = await store.record_event(make_event(lane="untrusted", kind="recorder_transcript"))  # type: ignore[arg-type]
         (chunk,) = await store.add_chunks(ev, [ChunkIn(text="maybe true")])
-    h.service.bind_promoter(memory_promoter(h.sf, EMB))
+    h.service.bind_promoter(ReviewQueue(h.sf).promote)
     assert await h.service.request_memory_promotion(chunk) is AskOutcome.REQUESTED
     card = h.last_card()
     await h.tap(card.approve_data)

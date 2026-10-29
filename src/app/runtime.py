@@ -88,7 +88,8 @@ from src.memory.embedder import (
     Qwen3Embedder,
 )
 from src.memory.manager import MemoryManager
-from src.memory.store import PgVectorMemoryStore, VectorEmbedder
+from src.memory.review import ReviewQueue
+from src.memory.store import VectorEmbedder
 from src.net import EgressClient, NetSettings
 from src.orchestrator.loop import LoopConfig, Orchestrator
 from src.policy import PolicyEngine
@@ -273,22 +274,6 @@ def build_approvals(
     return ApprovalService(store, gateway, ap, user_id=cfg.gateway.allowed_user_id, clock=clock)
 
 
-def memory_promoter(
-    sf: SessionFactory, embedder: VectorEmbedder
-) -> Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]:
-    """R8: promote a chunk with a consumed `memory`/`promote` approval. The
-    store's single SQL statement re-checks the approval (consumed, in time,
-    exact item, single use)."""
-
-    async def promote(item_id: uuid.UUID, approval_id: uuid.UUID) -> None:
-        async with sf() as session, session.begin():
-            await PgVectorMemoryStore(session, embedder=embedder).promote(
-                item_id, approval_id=approval_id
-            )
-
-    return promote
-
-
 def commitment_confirmer(
     ledger: CommitmentLedgerStore,
 ) -> Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]:
@@ -299,6 +284,33 @@ def commitment_confirmer(
         await ledger.confirm(candidate_id, approval_id)
 
     return confirm
+
+
+def memory_review_listener(
+    review: ReviewQueue,
+) -> Callable[[str, str, Mapping[str, Any], str], Awaitable[None]]:
+    """P4.6: a rejected memory-promotion card retracts the untrusted item."""
+
+    async def listen(tool: str, action: str, payload: Mapping[str, Any], outcome: str) -> None:
+        if tool != "memory" or action != "promote":
+            return
+        try:
+            item = uuid.UUID(str(payload.get("item_id")))
+        except ValueError:
+            return
+        await review.card_closed(item, outcome)
+
+    return listen
+
+
+def chain_card_listeners(
+    *listeners: Callable[[str, str, Mapping[str, Any], str], Awaitable[None]],
+) -> Callable[[str, str, Mapping[str, Any], str], Awaitable[None]]:
+    async def listen(tool: str, action: str, payload: Mapping[str, Any], outcome: str) -> None:
+        for fn in listeners:
+            await fn(tool, action, payload, outcome)
+
+    return listen
 
 
 def commitment_card_listener(
@@ -574,14 +586,20 @@ async def run_app(
         )
         if approvals is not None:
             approvals.bind_executor(orchestrator.dispatcher)
-            approvals.bind_promoter(memory_promoter(sf, embedder))
+            # P4.6: chunks and graph edges promote through the same single-use binding.
+            review = ReviewQueue(sf, approvals)
+            approvals.bind_promoter(review.promote)
             # P3.9 (ADR-0022): candidate commitments from the user's own messages, confirmed
             # by card only. Trusted user text only: the untrusted route needs P3.0 MED-D.
             ledger = CommitmentLedgerStore(sf, clock)
             approvals.bind_confirmer(commitment_confirmer(ledger))
             intake = CommitmentIntake(ledger, approvals)
             parts.extract_handler.bind_commitments(intake)
-            approvals.bind_listener(commitment_card_listener(intake))
+            approvals.bind_listener(
+                chain_card_listeners(
+                    commitment_card_listener(intake), memory_review_listener(review)
+                )
+            )
         rt = Runtime(
             cfg=cfg,
             gateway=be.gateway,
