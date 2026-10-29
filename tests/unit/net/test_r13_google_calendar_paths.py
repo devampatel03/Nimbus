@@ -69,3 +69,81 @@ async def test_other_calendar_paths_and_methods_are_denied_before_io(
             await client.request(service, method, path)
     assert ei.value.reason == reason
     assert t.calls == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sendNotifications": "true"},
+        {"sendnotifications": "false"},
+        {"conferenceDataVersion": 1},
+        {"sendUpdates": "all"},
+        {"sendUpdates": "externalOnly"},
+        {"sendUpdates": ["none", "all"]},
+        {"SENDUPDATES": ""},
+    ],
+)
+@pytest.mark.parametrize("service", [Service.GOOGLE_APIS, Service.GMAIL])
+async def test_notification_and_conference_query_params_are_denied_before_io(
+    service: Service, params: dict[str, object]
+) -> None:
+    client, t = _client()
+    async with client:
+        with pytest.raises(EgressDenied) as ei:
+            await client.request(service, "POST", EV, params=params)  # type: ignore[arg-type]
+    assert ei.value.reason == "google_query_param" and t.calls == []
+
+
+async def test_send_updates_none_and_ordinary_params_pass() -> None:
+    client, t = _client()
+    async with client:
+        await client.request(Service.GOOGLE_APIS, "POST", EV, params={"sendUpdates": "none"})
+        await client.request(Service.GOOGLE_APIS, "GET", EV, params={"maxResults": 5})
+    assert len(t.calls) == 2
+
+
+async def test_query_param_guard_also_covers_redirect_style_urls() -> None:
+    import httpx
+
+    from src.net.http import _GuardTransport  # the transport-level last line of defence
+    from src.net.policy import Allowlist, all_rules
+
+    guard = _GuardTransport(
+        RecordingTransport(), Allowlist.from_settings(make_settings()), all_rules()
+    )
+    req = httpx.Request("POST", f"https://www.googleapis.com{EV}?conferenceDataVersion=1")
+    with pytest.raises(EgressDenied) as ei:
+        await guard.handle_async_request(req)
+    assert ei.value.reason == "google_query_param"
+
+
+async def test_request_level_check_works_without_the_guard_transport() -> None:
+    """`EgressClient.request` refuses on its own, before the guard transport is
+    reached: replace the guard with one that fails the test if it is called."""
+    client, t = _client()
+    async with client:
+        from src.net import http
+
+        calls: list[object] = []
+        orig = http._GuardTransport.handle_async_request
+
+        async def tripwire(self: object, request: object) -> object:
+            calls.append(request)
+            raise AssertionError("guard transport reached")
+
+        http._GuardTransport.handle_async_request = tripwire  # type: ignore[method-assign]
+        try:
+            with pytest.raises(EgressDenied) as ei:
+                await client.request(Service.GOOGLE_APIS, "POST", EV, params={"sendUpdates": "all"})
+        finally:
+            http._GuardTransport.handle_async_request = orig  # type: ignore[method-assign]
+    assert ei.value.reason == "google_query_param" and calls == [] and t.calls == []
+
+
+@pytest.mark.parametrize("params", [[("sendUpdates", "all")], "sendUpdates=all", 5])
+async def test_non_mapping_params_are_denied_not_attribute_error(params: object) -> None:
+    client, t = _client()
+    async with client:
+        with pytest.raises(EgressDenied) as ei:
+            await client.request(Service.GOOGLE_APIS, "GET", EV, params=params)  # type: ignore[arg-type]
+    assert ei.value.reason == "bad_params" and t.calls == []

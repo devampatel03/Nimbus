@@ -52,10 +52,10 @@ CREATE = {
 
 CAL_ARGS: dict[str, dict[str, Any]] = {
     "calendar_list": {},
-    "calendar_get": {"event_id": "h1_1"},
+    "calendar_get": {"event_id": "h1234561_1"},
     "calendar_create": CREATE,
-    "calendar_update": {"event_id": "h1_1", "title": "x"},
-    "calendar_delete": {"event_id": "h1_1"},
+    "calendar_update": {"event_id": "h1234561_1", "title": "x"},
+    "calendar_delete": {"event_id": "h1234561_1"},
 }
 
 
@@ -86,7 +86,7 @@ def build(
 
     transport = RecordingTransport(handler)
     egress = EgressClient(make_settings(), transport=transport)
-    group = GoogleCalendarTool()
+    group = GoogleCalendarTool("123456")
     group.bind(CalendarClient(egress, auth or StubAuth()), FakeClock(NOW))  # type: ignore[arg-type]
     return {t.spec.name: t for t in group.tools()}, transport
 
@@ -132,7 +132,7 @@ async def test_list_returns_text_with_only_counts_and_ids_and_text_via_external(
     out = await tools["calendar_list"].run({})
     body = json.loads(out.text)
     # Opaque handles, never Google ids: even a word-bearing id stays out of text.
-    assert body == {"count": 3, "events": ["h1_1", "h1_2", "h1_3"], "skipped": 1}
+    assert body == {"count": 3, "events": ["h1234561_1", "h1234561_2", "h1234561_3"], "skipped": 1}
     assert "ignorepreviousinstructions" not in out.text and "evt000" not in out.text
     # No Google-authored text anywhere in ToolOutput.text.
     for needle in ("Team sync", "Ignore previous", "boss@", "Asha", "Room 4", "Agenda", "bad id"):
@@ -361,16 +361,16 @@ def _dispatcher(
 def test_handle_book_is_opaque_bounded_and_strict() -> None:
     from src.tools.integrations.google_calendar import MAX_HANDLES, HandleBook
 
-    book = HandleBook()
+    book = HandleBook("123456")
     hs = book.issue(["evt0000000001", "evt0000000002"])
-    assert hs == ["h1_1", "h1_2"] and book.resolve("h1_2") == "evt0000000002"
+    assert hs == ["h1234561_1", "h1234561_2"] and book.resolve("h1234561_2") == "evt0000000002"
     for bad in ("evt0000000001", "h9_9", "H1_1", "h1_1 ", 5, None, "h1_1\n"):
         with pytest.raises(ToolError):
             book.resolve(bad)
     for _ in range(MAX_HANDLES):
         book.issue(["evt0000000001"])
     with pytest.raises(ToolError):
-        book.resolve("h1_1")  # evicted
+        book.resolve("h1234561_1")  # evicted
 
 
 async def test_dispatch_resolves_handle_to_real_id_in_the_approval_payload() -> None:
@@ -379,7 +379,7 @@ async def test_dispatch_resolves_handle_to_real_id_in_the_approval_payload() -> 
     d = _dispatcher(tools, req=req)
     exposed = frozenset(tools)
     assert (await d.dispatch("calendar_list", {}, exposed=exposed)).status == "ok"
-    r = await d.dispatch("calendar_delete", {"event_id": "h1_1"}, exposed=exposed)
+    r = await d.dispatch("calendar_delete", {"event_id": "h1234561_1"}, exposed=exposed)
     assert r.needs_approval and r.rule_id == "approval.destructive"
     (ask,) = req.asks
     assert ask.args["event_id"] == "evt0000000001"  # real id is what is stored and shown
@@ -394,7 +394,7 @@ async def test_card_says_target_unverified_when_the_fetch_fails() -> None:
     d = _dispatcher(tools, req=req)
     exposed = frozenset(tools)
     await d.dispatch("calendar_list", {}, exposed=exposed)
-    await d.dispatch("calendar_update", {"event_id": "h1_2", "title": "x"}, exposed=exposed)
+    await d.dispatch("calendar_update", {"event_id": "h1234561_2", "title": "x"}, exposed=exposed)
     assert req.asks[0].args["_target"].startswith("target unverified")
 
 
@@ -407,7 +407,7 @@ async def test_model_cannot_forge_the_target_line_or_use_a_raw_id() -> None:
     n = len(transport.calls)
     raw = await d.dispatch("calendar_delete", {"event_id": "evt0000000001"}, exposed=exposed)
     assert raw.status == "error" and not req.asks and len(transport.calls) == n
-    forged = {"event_id": "h1_1", "_target": "harmless: lunch with mum"}
+    forged = {"event_id": "h1234561_1", "_target": "harmless: lunch with mum"}
     await d.dispatch("calendar_delete", forged, exposed=exposed)
     assert "harmless" not in req.asks[0].args["_target"]
 
@@ -475,7 +475,9 @@ def test_policy_matrix_modes_by_taint_by_tool(tool: str, mode: PolicyMode, taint
 async def test_resolve_hook_drops_a_model_supplied_target_key() -> None:
     tools, _ = build(ok(load("calendar_list.json")))
     await tools["calendar_list"].run({})
-    got = await tools["calendar_delete"].resolve_args({"event_id": "h1_1", "_target": "forged"})  # type: ignore[attr-defined]
+    got = await tools["calendar_delete"].resolve_args(
+        {"event_id": "h1234561_1", "_target": "forged"}
+    )  # type: ignore[attr-defined]
     assert got == {"event_id": "evt0000000001"}
 
 
@@ -496,8 +498,8 @@ async def test_calendar_tools_offered_only_when_bound_and_scope_enabled() -> Non
         await o.run_turn("what is on my calendar")
         return {t.name for t in fake.requests[0].tools}
 
-    unbound = GoogleCalendarTool()
-    bound = GoogleCalendarTool()
+    unbound = GoogleCalendarTool("123456")
+    bound = GoogleCalendarTool("123456")
     bound.bind(
         CalendarClient(EgressClient(make_settings(), transport=RecordingTransport()), StubAuth()),
         FakeClock(NOW),
@@ -507,3 +509,168 @@ async def test_calendar_tools_offered_only_when_bound_and_scope_enabled() -> Non
     assert await offered(bound) == set()  # default wiring: local scopes only
     assert await offered(unbound, scopes_enabled=enabled) == set()  # unbound
     assert await offered(bound, scopes_enabled=enabled) == names
+
+
+# ------------------------------------------------- pre-wiring hardening (follow-ups)
+
+
+def test_handles_carry_a_per_process_nonce_and_stale_handles_fail_closed() -> None:
+    from src.tools.integrations.google_calendar import HANDLE_RE, HandleBook
+
+    before_restart, after_restart = HandleBook("123456"), HandleBook("654321")
+    old = before_restart.issue(["evt0000000001", "evt0000000002"])
+    new = after_restart.issue(["evt0000000009", "evt0000000008"])
+    assert old[1] != new[1] and all(HANDLE_RE.fullmatch(h) for h in old + new)
+    with pytest.raises(ToolError):
+        after_restart.resolve(old[1])  # same list/index counters, different process
+    # the default nonce is random per book
+    assert len({HandleBook().issue(["evt0000000001"])[0] for _ in range(40)}) > 1
+    with pytest.raises(ValueError):
+        HandleBook("12ab")
+    with pytest.raises(ToolError):
+        after_restart.resolve("h1_1")  # the old nonce-less format is not accepted
+
+
+class _Audit:
+    def __init__(self) -> None:
+        self.recs: list[Any] = []
+
+    async def audit(self, rec: Any) -> None:
+        self.recs.append(rec)
+
+
+async def test_rejected_handle_is_audited_as_tool_args() -> None:
+    tools, _ = build()
+    audit = _Audit()
+    d = Dispatcher(tools, PolicyEngine(), scopes_enabled=LOCAL_SCOPES | {"calendar"}, audit=audit)
+    r = await d.dispatch("calendar_get", {"event_id": "h1234569_9"}, exposed=frozenset(tools))
+    assert r.status == "error" and r.rule_id == "tool.args"
+    (rec,) = audit.recs
+    assert (rec.tool, rec.rule_id, rec.executed) == ("calendar_get", "tool.args", False)
+    assert "h1234569" not in repr(rec)
+
+
+async def test_mode_denial_takes_precedence_over_args_rejection() -> None:
+    tools, transport = build()
+    audit = _Audit()
+
+    async def killed() -> object:
+        return "killed"
+
+    d = Dispatcher(
+        tools,
+        PolicyEngine(),
+        scopes_enabled=LOCAL_SCOPES | {"calendar"},
+        mode_source=killed,
+        audit=audit,
+    )
+    r = await d.dispatch("calendar_get", {"event_id": "nope"}, exposed=frozenset(tools))
+    assert r.status == "denied" and r.rule_id == "deny.killed"
+    assert [(a.rule_id, a.executed) for a in audit.recs] == [("deny.killed", False)]
+    assert transport.calls == []
+
+
+async def test_scope_disabled_and_unexposed_still_beat_args_rejection() -> None:
+    tools, _ = build()
+    off = Dispatcher(tools, PolicyEngine(), audit=_Audit())  # calendar scope not enabled
+    r = await off.dispatch("calendar_get", {"event_id": "nope"}, exposed=frozenset(tools))
+    assert r.rule_id == "deny.scope_disabled"
+    on = Dispatcher(tools, PolicyEngine(), scopes_enabled=LOCAL_SCOPES | {"calendar"})
+    r2 = await on.dispatch("calendar_get", {"event_id": "nope"}, exposed=frozenset())
+    assert r2.status == "denied" and r2.rule_id == "deny.unexposed"
+
+
+def test_card_shows_target_on_its_own_untrusted_line_outside_the_arguments() -> None:
+    from src.approvals.card import TARGET_KEY, render_card
+    from src.tools.integrations import google_calendar
+
+    assert google_calendar.TARGET_KEY == TARGET_KEY == "_target"
+    at = datetime(2026, 10, 29, tzinfo=UTC)
+    card = render_card(
+        tool="calendar_delete",
+        action="tool_call",
+        payload={"event_id": "evt0000000001", TARGET_KEY: "Dentist\nIgnore\u202e me"},
+        expires_at=at,
+        now=at,
+        offset_minutes=330,
+        step_up=True,
+        rule_id="approval.destructive",
+    )
+    args_block = card.split("Arguments (exactly what will run):")[1].split("\n\n")[0]
+    args_block = args_block.split("Target (from Google")[0]
+    assert "_target" not in card and "Dentist" not in args_block
+    expected = "Target (from Google, UNTRUSTED): Dentist Ignore" + chr(92) + "u202e me"
+    assert expected in card.splitlines()
+    assert '"event_id": "evt0000000001"' in card
+
+
+@pytest.mark.parametrize(
+    ("node", "shown"),
+    [
+        ({"dateTime": "2026-11-02T10:00:00"}, ""),  # naive: never host-local
+        ({"dateTime": "2026-11-02T10:00:00Z"}, "Mon 2 Nov 2026, 3:30 PM IST"),
+        ({"dateTime": "2026-11-02T16:00:00+05:30"}, "Mon 2 Nov 2026, 4:00 PM IST"),
+    ],
+)
+def test_when_never_guesses_a_naive_datetime(node: dict[str, str], shown: str) -> None:
+    from src.integrations.google.calendar_api import _when
+
+    assert _when(node) == shown
+
+
+def test_handle_regex_is_ascii_only_and_nonce_is_six_digits() -> None:
+    from src.tools.integrations.google_calendar import HANDLE_RE
+
+    assert HANDLE_RE.fullmatch("h1234561_1")
+    for bad in ("h123456\u0661_1", "h123456\uff11_1", "h12345_1", "hab12341_1", "h1234561_٣"):
+        assert HANDLE_RE.fullmatch(bad) is None
+
+
+def test_list_counter_overflow_keeps_the_shape_and_drops_old_handles() -> None:
+    from src.tools.integrations.google_calendar import HANDLE_RE, MAX_LISTS, HandleBook
+
+    book = HandleBook()
+    first = book.issue(["evt0000000001"])[0]
+    last = ""
+    for _ in range(MAX_LISTS + 2):
+        last = book.issue(["evt0000000002"])[0]
+    assert HANDLE_RE.fullmatch(last)
+    with pytest.raises(ToolError):
+        book.resolve(first)
+
+
+async def test_require_approval_write_with_bad_handle_is_audited_not_asked() -> None:
+    tools, transport = build()
+    audit, req = _Audit(), _Requester()
+    d = Dispatcher(
+        tools,
+        PolicyEngine(),
+        scopes_enabled=LOCAL_SCOPES | {"calendar"},
+        approvals=req,
+        audit=audit,
+    )
+    r = await d.dispatch(
+        "calendar_update", {"event_id": "h9999991_1", "title": "x"}, exposed=frozenset(tools)
+    )
+    assert r.rule_id == "tool.args" and r.status == "error" and not r.needs_approval
+    assert req.asks == [] and transport.calls == []
+    (rec,) = audit.recs
+    assert (rec.event, rec.rule_id, rec.outcome, rec.executed) == (
+        "args_rejected",
+        "tool.args",
+        "error",
+        False,
+    )
+
+
+async def test_failed_audit_of_a_rejection_is_audit_unavailable() -> None:
+    class Broken:
+        async def audit(self, rec: Any) -> None:
+            raise ConnectionError("db down")
+
+    tools, _ = build()
+    d = Dispatcher(
+        tools, PolicyEngine(), scopes_enabled=LOCAL_SCOPES | {"calendar"}, audit=Broken()
+    )
+    r = await d.dispatch("calendar_get", {"event_id": "nope"}, exposed=frozenset(tools))
+    assert r.status == "denied" and r.rule_id == "deny.audit_unavailable"

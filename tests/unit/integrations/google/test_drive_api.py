@@ -90,7 +90,7 @@ async def test_oversized_body_is_cut_off_by_max_bytes() -> None:
     assert ei.value.code == "too_large"
 
 
-@pytest.mark.parametrize("fid", ["../about", "abc", "a/b/c/d/e/f/g/h/i/j", "x" * 200, ""])
+@pytest.mark.parametrize("fid", ["../about", "abc", "a/b/c/d/e/f/g/h/i/j", "x" * 65, "x" * 200, ""])
 async def test_bad_file_id_never_reaches_the_network(fid: str) -> None:
     drive = FakeDrive({})
     with pytest.raises(DriveError) as ei:
