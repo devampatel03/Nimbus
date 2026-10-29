@@ -1,0 +1,22 @@
+# 0022 - Commitment ledger: append-only chain, DB-enforced confirmation
+
+- Status: Proposed (P3.9). Needs reviewer sign-off. Builds on ADR-0009 (policy), ADR-0020 (approvals), ADR-0017 (episodic store).
+
+## Context
+The legacy `commitment` table (T4.8) has mutable `status`/`closed_at` columns (allowed by the append-only trigger as "lifecycle" columns), a NOT NULL FK to the legacy `session` table the Telegram path does not have, and a `lane` server default of `trusted` (H23). It cannot express "candidate until the user confirms" without updating a row in place, and nothing in the database ties a confirmation to a user approval.
+
+## Decision
+1. New table `commitment_ledger` (migration `a9d4c6e2f801`). One commitment is a chain of immutable rows (`commitment_key`, `version`, `supersedes_id`). Status changes are new rows: `candidate -> confirmed -> completed | cancelled`, or `candidate -> rejected`; a candidate may be re-issued as a new candidate version (the user answered "when?"). `nimbus_append_only('','')` forbids every UPDATE, DELETE and TRUNCATE (INV-3). The legacy `commitment` table is left as is (no writer; removal is a later cleanup).
+2. Provenance (R7): `source_event_id`, `lane` (no default), `confidence`, `created_at` are NOT NULL. `lane` is read from the source event by the store, never passed by the caller. A forwarded or third-party event yields an `untrusted` candidate (R8).
+3. Confirmation (INV-5, R8): a new approval pair `commitment`/`confirm` with payload exactly `{"candidate_id": "<uuid>"}` goes through the existing `ApprovalService` (HMAC-bound to the user id, 10 minute expiry, single use, atomic consume). Only the executor's `Confirmer` callback, after `ApprovalStore.consume`, calls `CommitmentLedgerStore.confirm`. Defence in depth: an INSERT trigger (`nimbus_ledger_guard`) refuses a `confirmed` row unless the referenced `pending_action` is consumed, consumed before it expired, tool `commitment`, action `confirm`, and names exactly the candidate being superseded; it also enforces the legal transitions, fixed description/lane, and a fixed due time outside candidate re-issues. A unique partial index makes one approval confirm at most one row. A CHECK ties `status = 'confirmed'` to a non-null approval id.
+4. Extraction adds no LLM call site. The existing `memory_extract` job (trusted user events only) already runs `CombinedExtractor`; `ExtractedCommitment` gains `due_phrase` (the user's own words, quoted). The model's own `due_at` is ignored. Code checks the quote occurs in the message and resolves it with `parse_when` in Asia/Kolkata (ADR-0008) relative to the MESSAGE time. Any assumption beyond "no time given, used 9:00" (day-first numeric date, invented year, rolled-over weekday, "next Friday") leaves the due time `unresolved`: the card says "Due: NOT SET" and asks for the exact date; `set_due` records the answer as a new candidate version.
+5. A short first-person message ("I'll send X by Friday", under the 40 character gate) is let through by a deterministic cue regex, only when the ledger is wired.
+6. Idempotency: `dedupe_key` is unique (event + normalised description; chain + version for transitions); a restatement of an open commitment (same normalised description) is dropped; at most 3 candidates per event.
+7. Hooks for later: `review_queue()` (candidates awaiting the user), `open_confirmed(due_before=...)` (P5.1 nudges), `complete`/`cancel`/`reject` (each needs a trusted user event). No proactive message is sent: the only outbound message is the confirmation card, in reply to the user's own message.
+
+## Consequences
+- The user's timezone is Asia/Kolkata (ADR-0008); a second timezone needs a setting and a migration of nothing (instants are stored UTC).
+- Untrusted-origin commitments (Recorder `.txt`, forwarded mail) are NOT extracted yet: that route needs the quarantine budget work (P3.0 MED-D). The table, the lane inheritance and the card label are ready for it.
+- `complete`/`cancel`/`reject`/`set_due` have no chat entry point yet (no tool exposes them); Reject on the card leaves the candidate in the review queue until it is rejected through the store. A tool for them is a follow-up.
+- The semantic-duplicate check is application-level (two concurrent extractions of the same text could both insert; the per-event dedupe key still holds).
+- The DB role is a superuser (known HIGH): it can disable these triggers like the others.

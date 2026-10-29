@@ -63,6 +63,7 @@ from src.llm.guard import ist_day_bounds
 from src.llm.protocols import LLMClient, SpendLedger
 from src.llm.scrub import redact_secrets
 from src.llm.types import LLMMode, LLMRefused, LLMResponseError
+from src.memory.commitments import CommitmentIntake, has_commitment_cue
 from src.memory.embedder import BatchEmbedder
 from src.memory.extractor import (
     CombinedExtractor,
@@ -243,7 +244,7 @@ def _line(item: BaseModel) -> str | None:
         obj = item.object_literal if item.object_literal is not None else (item.object_name or "")
         return _clip(f"{item.subject_name} {item.predicate} {obj}")
     if isinstance(item, ExtractedCommitment):
-        due = f" (due {item.due_at.date().isoformat()})" if item.due_at is not None else ""
+        due = f" ({item.due_phrase})" if item.due_phrase else ""
         return _clip(f"Commitment: {item.description}{due}")
     if isinstance(item, ExtractedDecision):
         return _clip(f"Decision: {item.decision_text} (why: {item.reasoning})")
@@ -264,13 +265,19 @@ class MemoryExtractHandler:
         clock: Clock,
         spend: SpendProbe | None = None,
         max_spend_share: float = MAX_SPEND_SHARE,
+        commitments: CommitmentIntake | None = None,
     ) -> None:
+        self._commitments = commitments
         self._sf = session_factory
         self._embedder = embedder
         self._llm = llm
         self._clock = clock
         self._spend = spend
         self._share = max_spend_share
+
+    def bind_commitments(self, intake: CommitmentIntake) -> None:
+        """P3.9 seam: candidate commitments from the combined extraction."""
+        self._commitments = intake
 
     @staticmethod
     def _event_id(ctx: JobContext) -> uuid.UUID:
@@ -287,6 +294,18 @@ class MemoryExtractHandler:
         async with self._sf() as session, session.begin():
             mgr = MemoryManager(pg_session=session, embedder=self._embedder)
             await mgr.write_episodic(event_id, chunks)
+
+    async def _record_commitments(self, event_id: uuid.UUID, items: list[BaseModel]) -> None:
+        """Candidates only (P3.9): the user confirms by card; never auto-confirmed."""
+        if self._commitments is None:
+            return
+        found = [
+            (i.description, i.confidence, i.due_phrase)
+            for i in items
+            if isinstance(i, ExtractedCommitment)
+        ]
+        if found:
+            await self._commitments.on_extracted(event_id, found)
 
     async def handle(self, ctx: JobContext) -> None:
         event_id = self._event_id(ctx)
@@ -313,7 +332,8 @@ class MemoryExtractHandler:
             log.info("memory_extract skipped: unsupported event kind=%s", ev.kind)
             return
         body = (ev.body or "").strip()
-        if len(body) < MIN_CHARS or is_low_signal(body):
+        short_ok = self._commitments is not None and has_commitment_cue(body)
+        if (len(body) < MIN_CHARS and not short_ok) or is_low_signal(body):
             log.info("memory_extract skipped: not worth a model call")
             return
 
@@ -347,6 +367,9 @@ class MemoryExtractHandler:
                             confidence=conf if isinstance(conf, float) else None,
                         )
                     )
+            # Before the chunk write: a crash in between replays the extraction, and the
+            # ledger's dedupe key makes the second pass a no-op.
+            await self._record_commitments(event_id, items)
             if numbered:
                 await self._write(event_id, numbered)
         except LLMRefused as exc:

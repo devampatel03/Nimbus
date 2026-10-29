@@ -28,6 +28,10 @@ TOOL_CALL_ACTION = "call"
 # R8 (migration c4e8a1d92b37, `PgVectorMemoryStore.promote`): exact shape.
 MEMORY_TOOL = "memory"
 PROMOTE_ACTION = "promote"
+# P3.9 (ADR-0022): confirm a candidate commitment. Payload is exactly
+# `{"candidate_id": "<uuid>"}`; the ledger's DB trigger re-checks it.
+COMMITMENT_TOOL = "commitment"
+CONFIRM_ACTION = "confirm"
 
 
 def _freeze(value: Any) -> Any:

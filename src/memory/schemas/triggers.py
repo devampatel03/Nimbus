@@ -108,6 +108,7 @@ APPEND_ONLY_TABLES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     "pending_action": (("status", "consumed_at"), ("consumed_at",)),
     "policy_audit": ((), ()),  # P3.2: decision / approval audit, fully immutable
+    "commitment_ledger": ((), ()),  # P3.9: every status change is a new row
 }
 
 

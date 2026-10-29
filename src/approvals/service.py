@@ -55,6 +55,8 @@ from src.approvals.card import render_card, render_step_up_prompt, reveal
 from src.approvals.settings import ApprovalSettings
 from src.approvals.store import TOTP_FAILED, TOTP_OK, ApprovalStore, PendingRow
 from src.approvals.types import (
+    COMMITMENT_TOOL,
+    CONFIRM_ACTION,
     MEMORY_TOOL,
     PROMOTE_ACTION,
     TOOL_CALL_ACTION,
@@ -109,6 +111,8 @@ class ApprovalExecutor(Protocol):
 
 # (item_id, approval_id) -> None; raises when the store refuses (R8).
 Promoter = Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]
+# (candidate_id, approval_id) -> None; raises when the ledger refuses (P3.9).
+Confirmer = Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]
 
 
 @dataclass
@@ -149,6 +153,7 @@ class ApprovalService:
         clock: Clock | None = None,
         executor: ApprovalExecutor | None = None,
         promoter: Promoter | None = None,
+        confirmer: Confirmer | None = None,
     ) -> None:
         if not settings.enabled:
             raise ValueError("approvals need APPROVAL_HMAC_KEY")
@@ -163,6 +168,7 @@ class ApprovalService:
         self._clock = clock or SystemClock()
         self._executor = executor
         self._promoter = promoter
+        self._confirmer = confirmer
         self._challenge: _Challenge | None = None
 
     def bind_executor(self, executor: ApprovalExecutor) -> None:
@@ -170,6 +176,9 @@ class ApprovalService:
 
     def bind_promoter(self, promoter: Promoter) -> None:
         self._promoter = promoter
+
+    def bind_confirmer(self, confirmer: Confirmer) -> None:
+        self._confirmer = confirmer
 
     # ------------------------------------------------------------- helpers
 
@@ -236,6 +245,28 @@ class ApprovalService:
             )
         except Exception as exc:  # noqa: BLE001 - fail closed
             log.warning("promotion request failed err=%s", type(exc).__name__)
+            return AskOutcome.FAILED
+
+    async def request_commitment_confirm(
+        self, candidate_id: uuid.UUID, *, preview: str | None = None
+    ) -> AskOutcome:
+        """P3.9: ask the user to confirm ONE candidate commitment. Payload is exactly
+        `{"candidate_id": "<uuid>"}`; the card text comes from the stored row (code),
+        and only the user's genuine tap can consume it (INV-5, R8)."""
+        if not isinstance(candidate_id, uuid.UUID):
+            return AskOutcome.INVALID
+        try:
+            return await self._request(
+                tool=COMMITMENT_TOOL,
+                action=CONFIRM_ACTION,
+                args={"candidate_id": str(candidate_id)},
+                step_up=False,
+                rule_id="approval.commitment_confirm",
+                tainted=True,
+                preview=preview,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            log.warning("commitment confirm request failed err=%s", type(exc).__name__)
             return AskOutcome.FAILED
 
     async def _request(
@@ -565,6 +596,14 @@ class ApprovalService:
                 item = uuid.UUID(str(c.payload.get("item_id")))
                 await self._promoter(item, c.action_id)
                 return "ok", "approval.memory_promote"
+            if (
+                c.tool == COMMITMENT_TOOL
+                and c.action == CONFIRM_ACTION
+                and self._confirmer is not None
+            ):
+                cand = uuid.UUID(str(c.payload.get("candidate_id")))
+                await self._confirmer(cand, c.action_id)
+                return "ok", "approval.commitment_confirm"
         except Exception as exc:  # noqa: BLE001 - consumed but failed: nothing retried
             log.warning("approved action failed err=%s", type(exc).__name__)
             return "error", "exec.error"
