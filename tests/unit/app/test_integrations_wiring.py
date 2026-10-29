@@ -191,8 +191,29 @@ async def test_compose_grant_needs_the_same_flag_as_the_client() -> None:
     off = await wire(reg, google=google(), google_store=store)
     assert off.scopes == LOCAL_SCOPES
     reg2 = ToolRegistry()
-    on = await wire(reg2, google=google(allow_gmail_compose=True), google_store=store)
+    store_on = InMemoryTokenStore(
+        creds(SCOPE_CALENDAR_EVENTS, SCOPE_GMAIL_COMPOSE), allow_compose=True
+    )
+    on = await wire(reg2, google=google(allow_gmail_compose=True), google_store=store_on)
     assert on.scopes == LOCAL_SCOPES | {"calendar"}
+
+
+async def test_google_auth_construction_failure_stays_off(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """E.g. a store/client compose-flag mismatch (refused by GoogleAuth once
+    the P3.4 follow-up lands): Google stays off, boot continues."""
+
+    def refuse(*a: Any, **k: Any) -> Any:
+        raise GoogleAuthError("compose_flag_mismatch")
+
+    monkeypatch.setattr(integ, "GoogleAuth", refuse)
+    reg = ToolRegistry()
+    store = InMemoryTokenStore(creds(SCOPE_CALENDAR_EVENTS))
+    with caplog.at_level(logging.INFO):
+        wired = await wire(reg, google=google(), google_store=store)
+    assert wired.scopes == LOCAL_SCOPES and wired.google_auth is None
+    assert "compose_flag_mismatch" in caplog.text
 
 
 @pytest.mark.parametrize(

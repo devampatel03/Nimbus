@@ -172,6 +172,9 @@ async def _google_auth(
             log.info("integration off: google (not authorised; run scripts/google_oauth.py)")
             return None, frozenset()
         granted = lint_scopes(creds.scopes, allow_compose=allow_compose)
+        auth = GoogleAuth(
+            GoogleTokenClient(settings, egress), store, notifier=_owner_notifier(gateway)
+        )
     except GoogleAuthError as exc:
         log.warning("integration off: google code=%s", exc.code)
         return None, frozenset()
@@ -179,7 +182,6 @@ async def _google_auth(
         log.warning("integration off: google err=%s", type(exc).__name__)
         return None, frozenset()
     install_log_scrubbing([creds.refresh_token.get_secret_value()])
-    auth = GoogleAuth(GoogleTokenClient(settings, egress), store, notifier=_owner_notifier(gateway))
     return auth, granted
 
 
