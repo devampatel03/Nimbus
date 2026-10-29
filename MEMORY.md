@@ -422,6 +422,42 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 - `QuarantineBudget` (`src/lanes/quarantine.py`): one per turn, made by the orchestrator and shared by recalled untrusted memory and every tool's `ToolOutput.external`. `extract(..., budget=)` takes a slot BEFORE the model call (a failed call still spends it); a spent budget raises `QuarantineError("over_budget")` with no call and the loop/context withhold the item with a fixed notice, one per item (keeps positions). Default 10, range 0-25 pinned in code (`APP_QUARANTINE_CALLS_PER_TURN`, `LoopConfig.max_quarantine_calls_per_turn`). `build_context` without a budget still gets the default cap.
 - The guard makes no repair retry on the QUARANTINE lane (trusted lane keeps one). Old worst case 8 x 5 x 2 = 80 quarantine calls per turn; now <= 10. Provider transport retries (429/5xx in the adapter) are unchanged.
 - `src/app/integrations.py::wire_integrations`: Notion bound iff `NOTION_TOKEN`; Calendar/Drive iff Google client + data key + an in-policy stored grant with the matching scope. Returns the enabled scopes (LOCAL_SCOPES plus bound groups only). Fakes (no `Backends.egress`) never bind. Failures log a code or type name and leave the group off; boot never fails on an integration. Quarantine(llm) is always wired.
+
+## Pivot W3 — Nimbus Lite tools, lanes, policy, approvals (2026-10-27 to 2026-10-29)
+
+### Architecture decisions (W3)
+- P3.4 ADR-0019 Accepted, with addenda for Calendar (path rule) and Drive (`deny_drive_write`). P3.0 lanes on the ADR-0010 interim default (quarantine every untrusted field). P3.1 `PolicyEngine` is wired into dispatch; `DenyAllWritesPolicy` is no longer wired (still exported). P3.2 ADR-0020 is built but still Proposed. P3.7 ADR-0021 and P3.9 ADR-0022 are Proposed (H26, H27). Next ADR number: 0023.
+- Calendar and Notion: the model sees opaque handles (per-process nonce); `resolve_args` maps them before policy. Approval cards carry `Target (from the service, UNTRUSTED)`.
+- Per-turn quarantine budget: default 10, range 0-25. No repair retry on the QUARANTINE lane.
+- Google and Notion groups bind only when their credentials exist (`src/app/integrations.py`); boot never fails on them.
+
+### Gate numbers (2026-10-29, `task/W3-gate-docs` from `pivot` @ a1614e8, Windows 11, compose postgres up)
+- `uv run pytest --ignore=tests/adversarial -q`: 3280 passed, 5 skipped, 0 failed.
+- `uv run pytest tests/adversarial -q`: 681 passed (pytest items; the 100-case red-team corpus is P4.7).
+- `uv run ruff check .`: clean. `uv run mypy src`: 139 files clean.
+- Not measured: coverage, live runs, LoCoMo. `uv run alembic heads`: `a9d4c6e2f801`.
+
+### What the agent learned (W3)
+- The remote branch of P3.3 (`dc1cfa0`, `f126d31`) got commits after #30 merged. The squash `0b1a565` has the same tree as `dc1cfa0`. Check the remote head before calling a PR merged.
+- After any script write, check `file` for CRLF. One STATE write lost its CRLF endings and was fixed by a second pass.
+- The adversarial item count is 681 (62 at W2). It counts pytest items, not red-team cases.
+
+### Superseded or corrected (W3)
+- [SUPERSEDED by PR #43 / pivot] The P3.5 and P3.8 lines above that say "NOT wired into runtime": wiring landed in #43 (`src/app/integrations.py`).
+- [CORRECTED 2026-10-29] The approval card label is `Target (from the service, UNTRUSTED)` (`src/approvals/card.py:78`). The P3.5 pre-wiring entry above says `Target (from Google, UNTRUSTED)`; that label is superseded. Calendar and Notion tests pin the new label.
+
+### Open follow-ups (W3; owner)
+- P3.6 Gmail: blocked on H16 (ADR-0007).
+- H23: remove the lane server default on graph_edge, commitment and decision. P3.3b branch parked.
+- Projected chat cost ~4,400-5,550 INR/mo vs 1500 threshold (STATE P3.3 row, placeholder prices): P5.5.
+- `MAX_SPEND_SHARE` (`src/scheduler/memory_extract.py:90`) is a constant, not a setting: P3.3 follow-up.
+- No chat entry for set_due, complete or cancel; untrusted commitment route unbuilt (P3.9).
+- Disabled tools still offered (H29). ADR-0020, 0021, 0022 acceptance (H24, H26, H27).
+- Dead-token persistence and GOOGLE_* / NOTION_TOKEN names in `.env.example` (P3.4, H28).
+- Approval payload is plaintext with no purge (append-only trigger; needs a migration or ADR).
+
+### Human items at W3 gate
+- Open: H16, H18, H23, H24-H29, plus H1-H6, H12, H19, H21, H22 as in STATE. No superuser-role waiver recorded.
 ## 2026-10-29 - P4.3: outbound exfil filter (markdown images, URLs, previews off)
 - `src/gateway/exfil.py::filter_reply` runs inside `TelegramGateway.send_text` (every model reply, reminder and notice) and on keypad prompts: NFKC + invisible-format strip + ideographic-dot fold, then one left-to-right pass: images always `[image removed]`; ref defs removed; `[label](url)`, scheme URLs (incl. `javascript:`, `data:`, `tg:`, `mailto:`), IPv4 and bare domains with port/path/query -> `[link removed]` unless allowed; bare host/IP defanged (`evil[.]com`). Independent post-check (`find_links`) on the whole reply and on every chunk; any hit or exception sends `BLOCKED_NOTICE` instead (logs counts only).
 - Reply allowlist `TELEGRAM_REPLY_URL_ALLOWLIST` (JSON list, default empty): exact lowercase hosts; allowed URL = https, no userinfo/port/query/fragment/`%`, plain path <= 256. Display only, not an egress change (R13 untouched).

@@ -1,4 +1,36 @@
-# KPI — W2 gate
+# KPI — W3 gate
+
+Measured 2026-10-29 on `task/W3-gate-docs` (worktree from `pivot` @ `a1614e8`). Windows 11, `uv sync --extra dev`, compose `postgres` up, `POSTGRES_*` as in CI. No model was loaded; no provider, Google, Notion or Telegram was called. Thresholds: `quality/thresholds.yaml` (unchanged by this PR). Narrative: `docs/pivot/reports/WAVE_W3.md`.
+
+### 1. Test and quality gates
+
+| KPI | Command | Measured | Threshold / target | Status |
+|---|---|---|---|---|
+| Non-adversarial suite (CI test job) | `uv run pytest --ignore=tests/adversarial -q` | 3280 passed, 5 skipped, 0 failed | `tests_must_pass: true` | met |
+| Adversarial tests | `uv run pytest tests/adversarial -q` | 681 passed | `redteam_min_cases: 100` | counts pytest items, not cases; corpus is P4.7 (**not met as a corpus**) |
+| Lint | `uv run ruff check .` | All checks passed | `lint_clean: true` | met |
+| Types | `uv run mypy src` | Success: no issues in 139 source files | `types_clean: true` | met |
+| Coverage | not run at W3 | not measured | `min_coverage_security_policy: 0.95` | not measured |
+
+### 2. Threshold status changes vs W2
+
+| Key | W3 measurement | Status |
+|---|---|---|
+| `gmail_send_scope_present` | `git grep -E 'gmail\.(send|modify)' -- src config`: 0 hits. `gmail.compose` is an opt-in constant (`src/integrations/google/auth.py:98`), off by default | met in code; real scope set is H16 |
+| `oauth_scopes_allowlist_enforced` | OAuth built (P3.4, ADR-0019) | tests pass; no live consent |
+| `cost.projected_monthly_inr_max` (1500) | ~4,400-5,550 INR/mo at placeholder prices (STATE P3.3 row; not re-run) | **not met** |
+| `daily_spend_cap_enforced` | unchanged from W2 | partly met (WAVE_W2 section 5) |
+| Long-term memory written by the running app | `MemoryManager.write_episodic` is called by the `memory_extract` job (`src/scheduler/memory_extract.py`) | wired; tests pass with FakeLLM; no live count |
+| `untrusted_auto_promotion` | chunk promotion needs a consumed approval; commitments need a consumed `commitment`/`confirm` approval (trigger `nimbus_ledger_guard`) | tests pass; no runtime count |
+| Kill switch operator control | unchanged | no operator control (`/panic` not built) |
+
+### 3. Not measured at W3
+
+LoCoMo (stub pointer 5.58%, ADR-0018, not re-run); real-embedder baseline; provider cost; runtime SLOs; personality harnesses.
+
+---
+
+### W2 gate (history, 2026-10-27)
 
 Measured 2026-10-27 on a fresh worktree of `origin/pivot` @ `bf78d58` (branch `task/W2-gate-docs`). Windows 11, `uv sync --extra dev`, compose `postgres` up (`POSTGRES_*` set as in CI). No model was loaded, no live provider was called, and the LoCoMo and personality harnesses were not re-run. Each number comes from a command run in that worktree. Thresholds: `quality/thresholds.yaml` (values unchanged by this PR). Narrative and risks: `docs/pivot/reports/WAVE_W2.md`.
 
