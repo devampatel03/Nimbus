@@ -29,6 +29,11 @@ rate limit, disabled tool or a missing step-up.
 Audit (P3.1 LOW-6): when an `audit` sink is wired, every decision is written
 to `policy_audit` BEFORE the tool runs; if that write fails, nothing runs.
 
+Canary (P4.4, ADR-0023): with a `canary` screen wired, the tool name and
+arguments of every call (proposed AND approved) are checked before the policy;
+a planted canary in any form means `deny.canary` and the tool never runs (the
+guard writes the audit row and raises the alert). A screen error also denies.
+
 `Risk`, `ProposedCall`, `Decision`, `Policy` and `DenyAllWritesPolicy` live in
 `src.policy` and are re-exported here for existing importers.
 """
@@ -36,6 +41,7 @@ to `policy_audit` BEFORE the tool runs; if that write fails, nothing runs.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import time
 from collections import deque
@@ -150,6 +156,17 @@ class AuditSink(Protocol):
     async def audit(self, rec: AuditRecord) -> None: ...
 
 
+class OutboundScreen(Protocol):
+    """`src.canary.guard.CanaryGuard`: True = the text may leave."""
+
+    async def screen(
+        self, text: str, *, sink: str, tool: str | None = None, stream: bool = False
+    ) -> bool: ...
+
+
+CANARY_DENIED = "Denied: the arguments contain protected internal data (deny.canary)."
+
+
 _ASK_TEXT: dict[AskOutcome, str] = {
     AskOutcome.REQUESTED: (
         "The user was sent an approval card with these exact arguments. The call has NOT "
@@ -220,8 +237,10 @@ class Dispatcher:
         counter: ExecutionCounter | None = None,
         approvals: ApprovalRequester | None = None,
         audit: AuditSink | None = None,
+        canary: OutboundScreen | None = None,
     ) -> None:
         self._tools = dict(tools)
+        self._canary = canary
         self._policy = policy
         self._approvals = approvals
         self._audit = audit
@@ -281,6 +300,32 @@ class Dispatcher:
             return False
         return True
 
+    async def _args_clean(self, name: object, args: object) -> bool:
+        """Canary screen of the tool name + arguments. No screen wired = clean."""
+        if self._canary is None:
+            return True
+        tool = safe_name(str(name))
+        try:
+            blob = f"{name}\n" + json.dumps(args, default=str, ensure_ascii=False, sort_keys=True)
+            got = await self._canary.screen(blob, sink="tool_args", tool=tool)
+            if got is True:
+                # Stream check over the argument VALUES only, so pieces spread
+                # over several calls are seen side by side (keys would split them).
+                got = await self._canary.screen(
+                    "".join(_leaf_strings(args)), sink="tool_args", tool=tool, stream=True
+                )
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            log.warning("canary screen failed err=%s", type(exc).__name__)
+            return False
+        return got is True
+
+    def _canary_denied(self, name: str, tainted: bool) -> DispatchResult:
+        log.info(
+            "dispatch decision tool=%s verdict=deny rule_id=deny.canary executed=no",
+            safe_name(name),
+        )
+        return DispatchResult(name, "denied", CANARY_DENIED, rule_id="deny.canary", tainted=tainted)
+
     async def dispatch(
         self,
         name: str,
@@ -290,6 +335,8 @@ class Dispatcher:
         tainted: bool = False,
     ) -> DispatchResult:
         tainted = tainted is not False  # fail closed: only an explicit False is clean
+        if not await self._args_clean(name, args):
+            return self._canary_denied(name, tainted)
         tool = self._tools.get(name) if isinstance(name, str) else None
         is_exposed = tool is not None and name in exposed
         if tool is not None:
@@ -379,6 +426,8 @@ class Dispatcher:
             return DispatchResult(
                 name, "denied", "Denied: approval mismatch.", rule_id="deny.approval_mismatch"
             )
+        if not await self._args_clean(name, args):
+            return self._canary_denied(name, True)
         tool = self._tools.get(name)
         exists = tool is not None
         call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
@@ -531,6 +580,18 @@ class Dispatcher:
             external=external,
             external_dropped=dropped,
         )
+
+
+def _leaf_strings(value: object, depth: int = 0) -> list[str]:
+    """String and number leaves of tool arguments, in key order (bounded depth;
+    anything deeper is stringified whole, so nothing is skipped)."""
+    if depth > 16:
+        return [str(value)]
+    if isinstance(value, Mapping):
+        return [s for k in sorted(value, key=str) for s in _leaf_strings(value[k], depth + 1)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _leaf_strings(v, depth + 1)]
+    return [] if value is None else [str(value)]
 
 
 def _denied(name: str, decision: Decision, step_up: bool) -> DispatchResult:

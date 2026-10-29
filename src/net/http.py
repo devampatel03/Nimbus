@@ -22,6 +22,13 @@ re-validated) and anything else raises `EgressRedirectBlocked`; env proxies and
 `max_response_bytes` (post-decompression, so gzip bombs are capped too);
 connect/read/write/pool timeouts plus an overall deadline.
 
+Outbound content check (P4.4, ADR-0023): `set_outbound_check(fn)` (once) adds
+an async check over each request's path (not for Telegram: its path holds the
+bot token), query and body of every `request()`. The model provider is not
+covered: it is reached only through `build_sdk_http_client`, and the model is
+meant to see the planted canaries. Anything but `True`, or an error, raises
+`EgressDenied("canary_blocked")` before any I/O.
+
 INV-7: error messages and log lines carry only service, method, status, byte
 count and a fixed reason code -- never URL, path, query, headers or body.
 httpx/httpcore loggers are silenced because httpx logs the full request URL
@@ -33,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import json as jsonlib
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Self
@@ -68,6 +75,21 @@ _USER_AGENT = "nimbus/0.1"
 
 QueryValue = str | int | float | bool | None
 QueryParams = Mapping[str, QueryValue | Sequence[QueryValue]]
+# (service, request text) -> True when it may leave. See `set_outbound_check`.
+OutboundCheck = Callable[[Service, str], Awaitable[bool]]
+
+
+def _outbound_text(
+    service: Service, path: str, params: object, json: Any, content: bytes | None
+) -> str:
+    parts = [] if service is Service.TELEGRAM else [path]
+    if params is not None:
+        parts.append(repr(params))
+    if json is not None:
+        parts.append(jsonlib.dumps(json, default=str, ensure_ascii=False))
+    if content is not None:
+        parts.append(bytes(content).decode("utf-8", errors="replace"))
+    return "\n".join(parts)
 
 
 class _DropAll(logging.Filter):
@@ -203,10 +225,42 @@ class EgressClient:
             timeout=_timeout(self._settings),
             headers={"user-agent": _USER_AGENT},
         )
+        self._outbound_check: OutboundCheck | None = None
 
     @property
     def allowlist(self) -> Allowlist:
         return self._allowlist
+
+    def set_outbound_check(self, check: OutboundCheck) -> None:
+        """Install the outbound content check (P4.4). Once only: a second call
+        raises, so the check cannot be swapped out later."""
+        if self._outbound_check is not None:
+            raise RuntimeError("outbound check already set")
+        if not callable(check):
+            raise TypeError("outbound check must be callable")
+        self._outbound_check = check
+
+    async def _check_outbound(
+        self,
+        service: Service,
+        verb: str,
+        path: str,
+        params: object,
+        json: Any,
+        content: bytes | None,
+    ) -> None:
+        check = self._outbound_check
+        if check is None:
+            return
+        try:
+            ok = await check(service, _outbound_text(service, path, params, json, content))
+        except Exception:  # noqa: BLE001 - fail closed
+            ok = False
+        if ok is not True:
+            logger.warning(
+                "egress denied service=%s method=%s reason=canary_blocked", service.value, verb
+            )
+            raise EgressDenied("canary_blocked", service=service.value, method=verb)
 
     async def __aenter__(self) -> Self:
         return self
@@ -246,6 +300,7 @@ class EgressClient:
         apply_deny_rules(self._rules, service=service, method=verb, normalised_path=normalised)
         if json is not None and content is not None:
             raise EgressDenied("ambiguous_body", service=service.value, method=verb)
+        await self._check_outbound(service, verb, path, params, json, content)
         cap = self._cap(max_bytes)
         deadline = self._deadline(timeout_s)
 

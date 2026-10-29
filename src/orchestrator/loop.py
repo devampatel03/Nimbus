@@ -26,6 +26,12 @@ P3.1: the caller passes `carried_taint` (ADR-0010 cross-turn window, owned by
 `src.policy.TaintCarry`); a carried turn dispatches every call as tainted.
 `TurnResult.tainted` stays the turn's OWN taint so the carry can expire. The
 dispatcher reads the guard's mode (`llm.mode`) for the policy context.
+
+P4.4 (ADR-0023): with a `CanaryGuard`, a canary is planted in the system
+prompt, the memory preamble and every tool-output frame; the final reply is
+screened (a hit ends the turn as `canary_blocked` with a fixed text, so the
+reply is neither sent nor kept in history) and the dispatcher screens every
+tool call's arguments before the policy runs.
 """
 
 from __future__ import annotations
@@ -35,6 +41,8 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from src.canary.guard import BLOCKED_REPLY, CanaryGuard
+from src.canary.tokens import Site
 from src.lanes.data import BlockOrigin, DataBlock, default_nonce, render_data_block
 from src.lanes.quarantine import (
     MAX_QUARANTINE_CALLS_PER_TURN,
@@ -99,7 +107,7 @@ class LoopConfig:
 @dataclass(frozen=True)
 class TurnResult:
     text: str
-    status: str  # ok | budget_exceeded | unavailable
+    status: str  # ok | budget_exceeded | unavailable | canary_blocked
     tool_events: tuple[DispatchResult, ...] = ()
     tokens_used: int = 0
     messages: tuple[ChatMessage, ...] = field(default=())
@@ -122,8 +130,10 @@ class Orchestrator:
         approvals: ApprovalRequester | None = None,
         audit: AuditSink | None = None,
         scopes_enabled: frozenset[str] = LOCAL_SCOPES,
+        canary: CanaryGuard | None = None,
     ) -> None:
         self._llm = llm
+        self._canary = canary
         self._scopes = frozenset(scopes_enabled)
         self._quarantine = quarantine
         self._by_name: Mapping[str, LoopTool] = {t.spec.name: t for t in tools}
@@ -140,6 +150,7 @@ class Orchestrator:
             scopes_enabled=self._scopes,
             approvals=approvals,
             audit=audit,
+            canary=canary,
         )
         self._card = character_card
         self._recall = recall
@@ -202,8 +213,12 @@ class Orchestrator:
             quarantine=self._quarantine,
             turn_id=turn_id,
             budget=budget,
+            memory_canary=self._canary.plant(Site.MEMORY) if self._canary is not None else None,
         )
         taint = ctx.taint
+        system_prompt = ctx.system_prompt
+        if self._canary is not None:
+            system_prompt = f"{system_prompt}\n\n{self._canary.plant(Site.SYSTEM)}"
         exposed = select_tools(
             [
                 ExposableTool(t.spec, t.spec.name in self._always)
@@ -215,7 +230,7 @@ class Orchestrator:
         )
         exposed_names = names(exposed)
         messages: list[ChatMessage] = [
-            ChatMessage(role="system", content=ctx.system_prompt),
+            ChatMessage(role="system", content=system_prompt),
             *ctx.history,
             ChatMessage(role="user", content=user_text),
         ]
@@ -251,7 +266,10 @@ class Orchestrator:
                 return done(UNAVAILABLE_MESSAGE, "unavailable")
             used += res.usage.tokens_in + res.usage.tokens_out
             if not res.tool_calls:
-                return done(res.text or EMPTY_MESSAGE, "ok")
+                reply = res.text or EMPTY_MESSAGE
+                if not await self._reply_clean(reply):
+                    return done(BLOCKED_REPLY, "canary_blocked")
+                return done(reply, "ok")
             messages.append(
                 ChatMessage(role="assistant", content=res.text, tool_calls=res.tool_calls)
             )
@@ -287,6 +305,15 @@ class Orchestrator:
                 messages.append(msg)
         return done(BUDGET_MESSAGE, "budget_exceeded")
 
+    async def _reply_clean(self, reply: str) -> bool:
+        if self._canary is None:
+            return True
+        try:
+            return await self._canary.screen(reply, sink="model_reply") is True
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            log.warning("canary screen failed err=%s", type(exc).__name__)
+            return False
+
     async def _run_call(
         self,
         call: ToolCallRequest,
@@ -316,6 +343,8 @@ class Orchestrator:
         extra = await self._external_blocks(call.name, result, taint, budget, turn_id)
         if extra:
             content = "\n\n".join([content, *extra])
+        if self._canary is not None:
+            content = f"{content}\n{self._canary.plant(Site.TOOL_FRAME)}"
         return ChatMessage(role="tool", content=content, tool_call_id=call.id)
 
     async def _external_blocks(
