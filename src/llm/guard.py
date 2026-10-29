@@ -449,7 +449,9 @@ class GuardedLLM:
             parsed = _parse_schema(result.text, schema)
             if parsed is not None:
                 return result.model_copy(update={"parsed": parsed})
-            if attempt == 1:
+            # QUARANTINE lane: no repair retry (P3.0 MED-D). A malformed reply
+            # fails closed after one billed call; the caller withholds the item.
+            if attempt == 1 or req.lane is Lane.QUARANTINE:
                 raise LLMResponseError("schema_mismatch")
             # One repair retry; a full guarded call of its own (audited, capped).
             current = current.model_copy(

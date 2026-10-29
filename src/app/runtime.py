@@ -24,6 +24,10 @@ Startup order is a security property, so it is fixed:
    INV-5) with its production config; creates stay denied by default (`PENDING_IDEMPOTENCY`)
    until a separate, reviewed enable task.
    Every decision is written to `policy_audit` before a tool runs (P3.2).
+   Untrusted tool output and memory go through the quarantine lane with a
+   per-turn budget (P3.0). Google/Notion tool groups are bound, and their
+   scopes enabled, only when their credentials are configured
+   (`src.app.integrations`); otherwise the app boots exactly as without them.
    Approvals (P3.2) are ON only when `APPROVAL_HMAC_KEY` is set and a Telegram
    user is configured: `require_approval` then sends a card and runs only after
    the user's tap is verified and consumed. Otherwise it stays a denial.
@@ -51,6 +55,7 @@ from config.settings import Settings as DbSettings
 from src.app.card import StartupRefused, load_card
 from src.app.db import build_engine, build_session_factory
 from src.app.heartbeat import Heartbeat, HeartbeatPathError
+from src.app.integrations import wire_integrations
 from src.app.pipeline import CallbackHandler, PendingTurn, TurnGateway, TurnWorker
 from src.app.recall import SessionScopedRecall
 from src.app.seams import JobRunner, NoopJobRunner, NoopScheduler, Scheduler
@@ -68,6 +73,9 @@ from src.gateway.store import UpdateStore
 from src.gateway.telegram import TelegramGateway
 from src.gateway.types import TelegramAuthError
 from src.ingest import EventSink, Ingestor, PgEventSink, Transcriber, UnavailableTranscriber
+from src.integrations.google.auth import GoogleOAuthSettings
+from src.integrations.notion.settings import NotionSettings
+from src.lanes.quarantine import Quarantine
 from src.llm import GuardedLLM, build_guarded_llm
 from src.llm.factory import build_api_embedder
 from src.llm.pg_stores import PostgresAuditStore, PostgresFlagStore
@@ -82,7 +90,7 @@ from src.memory.embedder import (
 from src.memory.manager import MemoryManager
 from src.memory.store import PgVectorMemoryStore, VectorEmbedder
 from src.net import EgressClient, NetSettings
-from src.orchestrator.loop import Orchestrator
+from src.orchestrator.loop import LoopConfig, Orchestrator
 from src.policy import PolicyEngine
 from src.scheduler.memory_extract import LedgerSpendProbe
 from src.scheduler.wiring import SchedulerParts, build_scheduler
@@ -112,6 +120,9 @@ class AppConfig:
     dsn: str = field(repr=False)  # carries the DB password
     secrets: tuple[str, ...] = field(default=(), repr=False)
     approvals: ApprovalSettings | None = field(default=None, repr=False)  # None = off
+    # Third-party tool credentials (H25/H26). None or unset = that group stays off.
+    google: GoogleOAuthSettings | None = field(default=None, repr=False)
+    notion: NotionSettings | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -123,6 +134,8 @@ class AppConfig:
             llm=LLMSettings(),
             net=NetSettings(),
             approvals=ApprovalSettings(),
+            google=GoogleOAuthSettings(),
+            notion=NotionSettings(),
         )
 
     @classmethod
@@ -136,6 +149,8 @@ class AppConfig:
         db: DbSettings | None = None,
         dsn: str | None = None,
         approvals: ApprovalSettings | None = None,
+        google: GoogleOAuthSettings | None = None,
+        notion: NotionSettings | None = None,
     ) -> AppConfig:
         if dsn is None:
             from config.settings import settings as shared
@@ -156,7 +171,23 @@ class AppConfig:
             secrets.append(data_key)
         if approvals is not None:
             secrets.extend(approvals.secret_values())
-        return cls(app, llm, net, gateway, dsn, tuple(dict.fromkeys(secrets)), approvals=approvals)
+        if google is not None:
+            for value in (google.client_id, google.client_secret):
+                if value is not None and value.get_secret_value():
+                    secrets.append(value.get_secret_value())
+        if notion is not None and notion.token is not None and notion.token.get_secret_value():
+            secrets.append(notion.token.get_secret_value())
+        return cls(
+            app,
+            llm,
+            net,
+            gateway,
+            dsn,
+            tuple(dict.fromkeys(secrets)),
+            approvals=approvals,
+            google=google,
+            notion=notion,
+        )
 
 
 @dataclass
@@ -168,6 +199,9 @@ class Backends:
     provider: Provider | None = None  # None => the real OpenAI-compatible provider
     embedder: EmbedderLike | None = None  # None => per APP_EMBEDDER
     transcriber: Transcriber = field(default_factory=UnavailableTranscriber)
+    # Real network egress for third-party tools (Google, Notion). None (fakes):
+    # those groups are never bound.
+    egress: EgressClient | None = None
     closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
@@ -182,7 +216,7 @@ def real_backends(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
         raise StartupRefused("telegram settings are required")
     egress = EgressClient(cfg.net)
     gw = TelegramGateway(cfg.gateway, egress, UpdateStore(sf), on_poll=beat)
-    return Backends(gateway=gw, closers=[gw.aclose, egress.aclose])
+    return Backends(gateway=gw, egress=egress, closers=[gw.aclose, egress.aclose])
 
 
 def fake_backends(cfg: AppConfig, sf: SessionFactory, beat: Beat) -> Backends:
@@ -511,6 +545,17 @@ async def run_app(
             log.info("released %d interrupted job(s) at boot", released)
         registry = ToolRegistry()
         bind_scheduling_tools(registry, parts, sf, clock)
+        # Google / Notion groups only when their credentials are configured; the
+        # scopes come back only for bound groups (absent creds = boot as before).
+        wired = await wire_integrations(
+            registry,
+            egress=be.egress,
+            sf=sf,
+            gateway=be.gateway,
+            clock=clock,
+            google=cfg.google,
+            notion=cfg.notion,
+        )
         approval_store = ApprovalStore(sf)
         approvals = build_approvals(cfg, approval_store, be.gateway, clock)
         orchestrator = Orchestrator(
@@ -521,6 +566,11 @@ async def run_app(
             recall=SessionScopedRecall(sf, embedder),
             approvals=approvals,
             audit=approval_store,
+            # ToolOutput.external and untrusted memory go through the quarantine
+            # lane (same guard and spend cap), bounded per turn (P3.0 MED-D).
+            quarantine=Quarantine(llm),
+            config=LoopConfig(max_quarantine_calls_per_turn=cfg.app.quarantine_calls_per_turn),
+            scopes_enabled=wired.scopes,
         )
         if approvals is not None:
             approvals.bind_executor(orchestrator.dispatcher)
