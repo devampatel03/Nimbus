@@ -50,7 +50,7 @@ from src.llm.protocols import (
     Provider,
     SpendLedger,
 )
-from src.llm.scrub import Scrubber, ScrubBlocked
+from src.llm.scrub import Scrubber, ScrubBlocked, redact_secrets
 from src.llm.settings import DEFAULT_API_KEY, LLMSettings
 from src.llm.types import (
     ChatMessage,
@@ -407,8 +407,12 @@ class GuardedLLM:
         pricing: PriceTable | None = None,
         alert: AlertHook | None = None,
         clock: Clock | None = None,
+        payload_redact: Sequence[str] = (),
     ) -> None:
         self._provider = provider
+        # P4.4: planted canaries reach the model on purpose; they are still
+        # redacted from the stored (encrypted) audit payload (INV-7).
+        self._payload_redact = tuple(payload_redact)
         self._settings = settings if settings is not None else LLMSettings()
         self._scrubber = (
             scrubber
@@ -538,7 +542,9 @@ class GuardedLLM:
             raise LLMRefused("scrub_blocked") from None
         scrubbed = req.model_copy(update={"messages": tuple(out)})
         payload = (
-            "\n".join(f"{m.role}: {_message_text(m)}" for m in out)
+            redact_secrets(
+                "\n".join(f"{m.role}: {_message_text(m)}" for m in out), self._payload_redact
+            )
             if self._settings.store_payload
             else None
         )

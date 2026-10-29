@@ -20,6 +20,11 @@
   Telegram clients do not make a URL inside `<pre>` tappable is a live check
   (HUMAN_TODO). Callback toasts (`answer_callback`) carry code constants only
   (static test).
+- P4.4 (ADR-0023): `set_outbound_screen` (once) adds the canary screen. It runs
+  in `_outbound_chunks` on the raw reply (as a stream, so a canary split over
+  sends is caught) and on every chunk; a hit sends the fixed `CANARY_NOTICE`.
+  Approval card and keypad text are screened too; a hit raises
+  `OutboundBlocked` (nothing sent). Callback toasts stay constants-only.
 - Transcription is NOT done here: voice bytes are handed to the ingest layer,
   which calls the `llm` module.
 """
@@ -31,8 +36,10 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import timedelta, timezone
-from typing import Any
+from typing import Any, Protocol
 
+# Fixed text sent instead of a reply that held a canary (P4.4): single-sourced.
+from src.canary.guard import BLOCKED_REPLY as CANARY_NOTICE
 from src.gateway.api import TelegramApi
 from src.gateway.exfil import BLOCKED_NOTICE, filter_reply, find_links
 from src.gateway.parse import parse_update
@@ -73,6 +80,14 @@ APPROVAL_LINK_WARNING = (
 )
 
 
+class OutboundScreen(Protocol):
+    """`src.canary.guard.CanaryGuard`: True = the text may leave."""
+
+    async def screen(
+        self, text: str, *, sink: str, tool: str | None = None, stream: bool = False
+    ) -> bool: ...
+
+
 class TelegramGateway:
     def __init__(
         self,
@@ -103,11 +118,30 @@ class TelegramGateway:
             sleep=sleep,
             on_retry_after=lambda secs: self._limiter.penalize(self._chat, secs),
         )
+        self._screen: OutboundScreen | None = None
         self._closed = False
         self._notices_due = True  # retry unsent poison notices after a restart
 
     async def aclose(self) -> None:
         self._closed = True
+
+    def set_outbound_screen(self, screen: OutboundScreen) -> None:
+        """Install the canary screen (P4.4). Once only: it cannot be swapped."""
+        if self._screen is not None:
+            raise RuntimeError("outbound screen already set")
+        if not callable(getattr(screen, "screen", None)):
+            raise TypeError("outbound screen must have screen()")
+        self._screen = screen
+
+    async def _clean(self, text: str, *, sink: str, stream: bool = False) -> bool:
+        """Canary screen; no screen = clean. Errors fail closed."""
+        if self._screen is None:
+            return True
+        try:
+            return await self._screen.screen(text, sink=sink, stream=stream) is True
+        except Exception as exc:  # noqa: BLE001 - fail closed
+            logger.warning("outbound screen failed err=%s", type(exc).__name__)
+            return False
 
     # ------------------------------------------------------------ inbound
 
@@ -234,11 +268,13 @@ class TelegramGateway:
             raise TelegramError("bad_response")
         return MessageRef(mid)
 
-    def _outbound_chunks(self, text: str) -> list[str]:
-        """Every outbound text check, in one place (P4.3 link filter; later
-        outbound checks such as P4.4 canaries belong here). Returns raw chunks;
-        a failing reply becomes the fixed notice. Logs counts only: the reply
-        may hold the very data being exfiltrated."""
+    async def _outbound_chunks(self, text: str) -> list[str]:
+        """Every outbound text check, in one place: P4.4 canary screen (raw
+        reply as a stream, then every chunk) and the P4.3 link filter. Returns
+        raw chunks; a failing reply becomes a fixed notice. Logs counts only:
+        the reply may hold the very data being exfiltrated."""
+        if not await self._clean(text, sink="telegram_send", stream=True):
+            return chunk_text(CANARY_NOTICE)
         result = filter_reply(text, self._reply_policy)
         chunks = chunk_text(result.text)
         if result.blocked or any(find_links(c, self._reply_policy) for c in chunks):
@@ -246,11 +282,14 @@ class TelegramGateway:
             return chunk_text(BLOCKED_NOTICE)
         if result.removed:
             logger.info("outbound links neutralised count=%d", result.removed)
+        for c in chunks:
+            if not await self._clean(c, sink="telegram_send"):
+                return chunk_text(CANARY_NOTICE)
         return chunks
 
     async def send_text(self, text: str, *, reply_to: MessageRef | None = None) -> list[MessageRef]:
         refs: list[MessageRef] = []
-        for i, chunk in enumerate(self._outbound_chunks(text)):
+        for i, chunk in enumerate(await self._outbound_chunks(text)):
             refs.append(
                 await self._send_one(escape_html(chunk), reply_to=reply_to if i == 0 else None)
             )
@@ -261,6 +300,8 @@ class TelegramGateway:
             n = len(data.encode("utf-8"))
             if not 1 <= n <= _CALLBACK_DATA_MAX_BYTES:
                 raise ValueError("callback_data must be 1..64 bytes")
+        if not await self._clean(card.text, sink="telegram_card"):
+            raise OutboundBlocked("outbound_blocked")
         # Fixed text outside one <pre>; the payload only inside it. A payload
         # with a non-allowlisted link gets a fixed warning (host never echoed).
         warn = APPROVAL_LINK_WARNING + "\n" if find_links(card.text, self._reply_policy) else ""
@@ -294,6 +335,9 @@ class TelegramGateway:
                     raise ValueError("callback_data must be 1..64 bytes")
                 buttons.append({"text": sanitize(label)[:16], "callback_data": data})
             keyboard.append(buttons)
+        labels = " ".join(label for row in rows for label, _ in row)
+        if not await self._clean(f"{text}\n{labels}", sink="telegram_keypad"):
+            raise OutboundBlocked("outbound_blocked")
         filtered = filter_reply(text, self._reply_policy)
         if filtered.blocked:
             logger.warning("keypad text blocked by link filter")

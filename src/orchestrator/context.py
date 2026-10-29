@@ -13,6 +13,10 @@ withheld behind a fixed notice. Either way the turn's taint is set. Trusted
 memory is data-framed for defence in depth and does not taint. Quarantine calls
 are bounded by the turn's `QuarantineBudget` (P3.0 MED-D); over budget, the
 item is withheld (`over_budget`).
+
+P4.4: `memory_canary` (from the `CanaryGuard`) is planted as the first
+trusted memory block, so a model induced to dump "what you remember" leaks a
+canary that the outbound check recognises.
 """
 
 from __future__ import annotations
@@ -138,9 +142,17 @@ async def build_context(
     quarantine: Quarantine | None = None,
     turn_id: UUID | None = None,
     budget: QuarantineBudget | None = None,
+    memory_canary: str | None = None,
 ) -> TurnContext:
     blocks: list[DataBlock] = []
     taint = Taint()
+    if memory_canary is not None:
+        # P4.4: a code-authored trusted memory item at the head of the preamble.
+        blocks.append(
+            local_data_block(
+                "memory", memory_canary, origin=BlockOrigin.LOCAL_MEMORY, untrusted=False
+            )
+        )
     # P3.0 MED-D: always bounded. The loop passes its per-turn budget (shared
     # with tool output); a direct caller gets the default cap.
     turn_budget = budget if budget is not None else QuarantineBudget()
