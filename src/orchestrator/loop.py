@@ -14,6 +14,9 @@ P3.0 (ADR-0010): untrusted tool output enters only as a lanes `DataBlock`, and
 the turn's `Taint` is marked whenever untrusted-derived data enters (recalled
 untrusted memory, untrusted tool output, tool errors). Every later dispatch in
 the turn receives `tainted=True`; the result reports it for the next turn.
+P3.0 MED-D: one `QuarantineBudget` per turn (`max_quarantine_calls_per_turn`)
+bounds every quarantine call in the turn, memory and tool output together;
+items past it are withheld (`over_budget`) without a model call.
 
 P3.2: `approvals` (an `ApprovalRequester`) turns a `require_approval` verdict
 into a card for the user; the call still does not run in this turn. `audit`
@@ -33,7 +36,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from src.lanes.data import BlockOrigin, DataBlock, default_nonce, render_data_block
-from src.lanes.quarantine import Quarantine, QuarantineError, local_data_block, withheld_block
+from src.lanes.quarantine import (
+    MAX_QUARANTINE_CALLS_PER_TURN,
+    Quarantine,
+    QuarantineBudget,
+    QuarantineError,
+    local_data_block,
+    withheld_block,
+)
 from src.lanes.schemas import SCHEMA_FOR_SOURCE
 from src.lanes.taint import Taint, TaintSource
 from src.llm.protocols import LLMClient
@@ -79,6 +89,11 @@ class LoopConfig:
     max_output_tokens: int = 800
     max_tool_calls_per_turn: int = 8
     max_tool_output_chars_per_turn: int = 16000
+    # P3.0 MED-D: hard cap on quarantine calls per turn (memory + tool output).
+    max_quarantine_calls_per_turn: int = MAX_QUARANTINE_CALLS_PER_TURN
+
+    def __post_init__(self) -> None:
+        QuarantineBudget(self.max_quarantine_calls_per_turn)  # validates type and range
 
 
 @dataclass(frozen=True)
@@ -160,6 +175,7 @@ class Orchestrator:
         carried_taint: bool = False,
     ) -> TurnResult:
         carried = carried_taint is not False  # fail closed
+        budget = QuarantineBudget(self._cfg.max_quarantine_calls_per_turn)  # one per turn
         ctx = await build_context(
             character_card=self._card,
             user_text=user_text,
@@ -170,6 +186,7 @@ class Orchestrator:
             nonce_factory=self._nonce,
             quarantine=self._quarantine,
             turn_id=turn_id,
+            budget=budget,
         )
         taint = ctx.taint
         exposed = select_tools(
@@ -243,7 +260,9 @@ class Orchestrator:
                         ChatMessage(role="tool", content=CALL_CAP_MESSAGE, tool_call_id=call.id)
                     )
                     continue
-                msg = await self._run_call(call, exposed_names, events, taint, carried)
+                msg = await self._run_call(
+                    call, exposed_names, events, taint, carried, budget, turn_id
+                )
                 remaining_chars = self._cfg.max_tool_output_chars_per_turn - out_chars
                 if len(msg.content or "") > remaining_chars:
                     msg = ChatMessage(
@@ -260,6 +279,8 @@ class Orchestrator:
         events: list[DispatchResult],
         taint: Taint,
         carried: bool,
+        budget: QuarantineBudget,
+        turn_id: uuid.UUID | None,
     ) -> ChatMessage:
         result = await self._dispatcher.dispatch(
             call.name, call.arguments, exposed=exposed, tainted=taint.tainted or carried
@@ -277,14 +298,23 @@ class Orchestrator:
             )
             taint.absorb(block)
             content = render_data_block(block, self._nonce or default_nonce)
-        extra = await self._external_blocks(call.name, result, taint)
+        extra = await self._external_blocks(call.name, result, taint, budget, turn_id)
         if extra:
             content = "\n\n".join([content, *extra])
         return ChatMessage(role="tool", content=content, tool_call_id=call.id)
 
-    async def _external_blocks(self, name: str, result: DispatchResult, taint: Taint) -> list[str]:
+    async def _external_blocks(
+        self,
+        name: str,
+        result: DispatchResult,
+        taint: Taint,
+        budget: QuarantineBudget,
+        turn_id: uuid.UUID | None,
+    ) -> list[str]:
         """Quarantine each external item (H18 interim default: every item, no
-        bypass); withhold on failure, without a quarantine, or over the cap."""
+        bypass); withhold on failure, without a quarantine, over the item cap,
+        or once the turn's quarantine budget is spent (`over_budget`, one fixed
+        notice per item so positions are kept; no model call)."""
         if not result.external and not result.external_dropped:
             return []
         taint.mark(TaintSource.UNTRUSTED_TOOL_OUTPUT)
@@ -295,7 +325,9 @@ class Orchestrator:
                 blocks.append(withheld_block(label, reason="quarantine_unavailable"))
                 continue
             try:
-                out = await self._quarantine.extract(item, SCHEMA_FOR_SOURCE[item.source])
+                out = await self._quarantine.extract(
+                    item, SCHEMA_FOR_SOURCE[item.source], turn_id=turn_id, budget=budget
+                )
             except QuarantineError as e:
                 blocks.append(withheld_block(label, reason=e.code))
                 continue

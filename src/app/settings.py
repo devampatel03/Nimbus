@@ -67,6 +67,11 @@ class AppSettings(BaseSettings):
     # Turn pipeline.
     turn_queue_size: int = Field(default=8, ge=1, le=100)
     history_messages: int = Field(default=20, ge=0, le=100)
+    # P3.0 MED-D: hard cap on quarantine-lane model calls per turn (memory and
+    # tool output together); items past it are withheld. Literals (this module
+    # stays import-light for `healthcheck`); a test pins them to
+    # `src.lanes.quarantine` MAX_QUARANTINE_CALLS_PER_TURN / QUARANTINE_CALLS_RANGE.
+    quarantine_calls_per_turn: int = Field(default=10, ge=0, le=25)
 
     # DB: no statement may run longer than this (a hung audit write must not
     # block a loop forever, P1.4b follow-up).

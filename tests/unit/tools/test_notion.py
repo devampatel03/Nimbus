@@ -473,11 +473,16 @@ async def test_tools_offered_only_when_bound_and_scope_enabled() -> None:
     assert await offered(bound, scopes_enabled=enabled) == NAMES
 
 
-def test_group_is_discovered_by_the_registry_but_not_wired_in_runtime() -> None:
+def test_group_is_discovered_and_bound_only_by_the_gated_integration_wiring() -> None:
+    """Since the P3.0 follow-up the group is wired, but only through
+    `src.app.integrations` (bound iff NOTION_TOKEN is set; see
+    tests/unit/app/test_integrations_wiring.py). Nothing else in the app builds
+    a NotionClient."""
     from pathlib import Path
 
     from src.tools.registry import ToolRegistry
 
     assert "notion" in ToolRegistry()
-    runtime = (Path(__file__).parents[3] / "src" / "app" / "runtime.py").read_text(encoding="utf-8")
-    assert "notion" not in runtime.lower()
+    app = Path(__file__).parents[3] / "src" / "app"
+    builders = sorted(p.name for p in app.glob("*.py") if "NotionClient(" in p.read_text("utf-8"))
+    assert builders == ["integrations.py"]
