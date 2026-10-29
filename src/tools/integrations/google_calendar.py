@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 from typing import Any
 
+from src.approvals.card import TARGET_KEY  # code-written card line; model values are dropped
 from src.core.clock import Clock
 from src.core.timeparse import IST
 from src.core.turn_context import current_event_id
@@ -70,20 +72,37 @@ def _guard(exc: CalendarError) -> ToolError:
 # never appears in ToolOutput.text. The model gets `h<list>_<n>` handles that
 # code maps back to the real id BEFORE the policy and approval see the call
 # (`resolve_args`), so the stored approval payload carries the real id and
-# survives a restart, while a handle is only valid in this process.
-HANDLE_RE = re.compile(r"h\d{1,9}_\d{1,2}")
+# survives a restart, while a handle is only valid in this process. Each
+# process draws a random 6-digit decimal nonce (`h<nonce><list>_<n>`), so after
+# a restart a stale handle (the counters start again) fails closed instead of
+# silently naming a different event (collision odds 1e-6). ASCII digits only.
+HANDLE_RE = re.compile(r"h[0-9]{6}[0-9]{1,3}_[0-9]{1,2}")
+_NONCE_RE = re.compile(r"[0-9]{6}")
+MAX_LISTS = 999  # at this point the nonce is redrawn: older handles stop resolving
 MAX_HANDLES = 256
-TARGET_KEY = "_target"  # code-written card line; model-supplied values are dropped
 
 
 class HandleBook:
-    def __init__(self) -> None:
+    def __init__(self, nonce: str | None = None) -> None:
         self._ids: OrderedDict[str, str] = OrderedDict()
         self._lists = 0
+        self._fixed = nonce is not None
+        self._nonce = nonce if nonce is not None else self._draw()
+        if _NONCE_RE.fullmatch(self._nonce) is None:
+            raise ValueError("handle nonce must be 6 ASCII digits")
+
+    @staticmethod
+    def _draw() -> str:
+        return f"{secrets.randbelow(10**6):06d}"
 
     def issue(self, event_ids: list[str]) -> list[str]:
+        if self._lists >= MAX_LISTS:  # keep the handle shape; invalidate older handles
+            self._lists = 0
+            self._ids.clear()
+            if not self._fixed:
+                self._nonce = self._draw()
         self._lists += 1
-        handles = [f"h{self._lists}_{i}" for i, _ in enumerate(event_ids, 1)]
+        handles = [f"h{self._nonce}{self._lists}_{i}" for i, _ in enumerate(event_ids, 1)]
         self._ids.update(zip(handles, event_ids, strict=True))
         while len(self._ids) > MAX_HANDLES:
             self._ids.popitem(last=False)
@@ -132,10 +151,10 @@ class _CalTool(FunctionTool):
 class GoogleCalendarTool(ToolGroup):
     name = "calendar"
 
-    def __init__(self) -> None:
+    def __init__(self, handle_nonce: str | None = None) -> None:
         self._client: CalendarClient | None = None
         self._clock: Clock | None = None
-        self._handles = HandleBook()
+        self._handles = HandleBook(handle_nonce)
 
     def _resolve(self, args: Mapping[str, Any]) -> Mapping[str, Any]:
         """Model-path argument preparation: drop any model-supplied `_target`,

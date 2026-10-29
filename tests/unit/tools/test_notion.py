@@ -94,7 +94,7 @@ def test_three_tools_strict_schemas_and_declared_risk() -> None:
     }
     for t in tools.values():
         assert t.spec.parameters["additionalProperties"] is False
-        assert len(t.spec.description) < 220
+        assert len(t.spec.description) < 330
     assert set(tools["notion_append"].spec.parameters["properties"]) == {"page", "text"}
 
 
@@ -248,7 +248,7 @@ async def test_resolve_rejection_still_writes_a_policy_audit_row() -> None:
         "decision",
         "args_rejected",
         "notion_read",
-        "deny",
+        "error",
         False,
     )
 
@@ -344,8 +344,56 @@ async def test_append_status_text_has_no_notion_strings() -> None:
             PATCH1: [ok({})],
         }
     )
-    out = await tools["notion_append"].run({"page": P1, "text": "x"})
+    with turn_event(uuid.UUID(int=1)):
+        out = await tools["notion_append"].run({"page": P1, "text": "x"})
     assert set(json.loads(out.text)) == {"status"}
+
+
+async def test_append_without_a_stored_turn_event_is_refused() -> None:
+    tools, n = build({PAGE1: [ok(fx("notion_page.json"))], PATCH1: [ok({})]})
+    with pytest.raises(ToolError, match="stored user turn"):
+        await tools["notion_append"].run({"page": P1, "text": "x"})
+    assert n.requests == []
+
+
+async def test_failed_describe_hook_never_lets_a_model_target_reach_the_card() -> None:
+    tools, _ = build({**search_routes(), PAGE1: [ok(fx("notion_page.json"))]})
+
+    async def boom(_a: Any) -> Any:
+        raise RuntimeError("fetch failed")
+
+    tools["notion_append"].describe_args = boom
+    req = _Requester()
+    d = dispatcher(tools, req=req)
+    await _search_then(tools, d, "notion_append", {"text": "x", "_target": "harmless: lunch"})
+    (ask,) = req.asks
+    assert "_target" not in ask.args and "harmless" not in json.dumps(dict(ask.args))
+
+
+def test_notion_append_card_shows_true_payload_and_source_neutral_untrusted_target() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from src.approvals.card import render_card
+
+    now = datetime(2026, 10, 29, 4, 0, tzinfo=UTC)
+    payload = {
+        "page": P1,
+        "text": "buy milk",
+        "_target": "UNTRUSTED page title from Notion, shown for identification only: title='T'",
+    }
+    card = render_card(
+        tool="notion_append",
+        action="call",
+        payload=payload,
+        expires_at=now + timedelta(minutes=10),
+        now=now,
+        offset_minutes=330,
+        step_up=True,
+        rule_id="approval.write_external",
+    )
+    assert '"text": "buy milk"' in card and P1 in card
+    assert "Target (from the service, UNTRUSTED): UNTRUSTED page title from Notion" in card
+    assert "Google" not in card
 
 
 # ----------------------------------------------------------------- policy

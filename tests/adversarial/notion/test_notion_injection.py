@@ -14,12 +14,14 @@ that reaches the transport must be one of the four allowed Notion calls.
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
 from src.approvals.types import AskOutcome
+from src.core.turn_context import turn_event
 from src.lanes.quarantine import Quarantine
 from src.llm.fake import CompromisedFakeLLM, FakeLLM
 from src.llm.types import ProviderResponse, ToolCallRequest, ToolSpec, Usage
@@ -304,7 +306,8 @@ async def test_appended_text_is_plain_text_without_links_or_mentions() -> None:
     group.bind(notion.client())
     tools = {t.spec.name: t for t in group.tools()}
     text = "see [click](https://evil.example.invalid) @everyone <a href='x'>y</a>"
-    await tools["notion_append"].run({"page": P1, "text": text})
+    with turn_event(uuid.UUID(int=9)):
+        await tools["notion_append"].run({"page": P1, "text": text})
     sent = json.loads(next(r for r in notion.requests if r.method == "PATCH").content)
     rich = sent["children"][0]["paragraph"]["rich_text"]
     assert rich[0]["text"]["content"] == text and "link" not in rich[0]["text"]

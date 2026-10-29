@@ -190,7 +190,12 @@ class NotionTool(ToolGroup):
         try:
             pid = normalise_page_id(args["page"])
             text = validate_append_text(args["text"])
-            key = append_key(current_event_id(), pid, text)
+            source = current_event_id()
+            if source is None:
+                # No stored turn event: a deterministic key would collapse two
+                # legitimate identical appends (or be unreplayable). Refuse.
+                raise ToolError("notion_append can only run for a stored user turn.")
+            key = append_key(source, pid, text)
             done = await client.append(pid, text, key)
         except NotionError as exc:
             raise _guard(exc) from None
@@ -225,8 +230,9 @@ class NotionTool(ToolGroup):
             ),
             _NotionTool(
                 "notion_append",
-                "Append plain text to the end of a Notion page (handle from notion_search). "
-                "Cannot edit or delete. Needs the user's approval and authenticator code.",
+                "Append plain text (max 6000 chars) to the end of a Notion page (handle from "
+                "notion_search); pages over ~1000 blocks are refused. A small gray [nimbus:id] "
+                "tag is added. Cannot edit or delete. Needs approval and authenticator code.",
                 Risk.WRITE_EXTERNAL,
                 object_schema({**page, "text": "string"}),
                 self._append,

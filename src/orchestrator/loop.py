@@ -130,17 +130,19 @@ class Orchestrator:
         """Offer only tools that could run: bound, and (when the policy table
         knows the tool) in an enabled scope. Hidden tools are not exposed, so a
         call to one is still denied (`deny.unexposed`). Fail closed: an
-        `available()` that raises hides the tool."""
+        `available()` that raises, or a non-callable `available`, hides the tool."""
         rule = TOOL_RULES.get(tool.spec.name)
         if rule is not None and rule.scope not in self._scopes:
             return False
-        check = getattr(tool, "available", None)
-        if callable(check):
-            try:
-                return bool(check())
-            except Exception:  # noqa: BLE001 - fail closed
-                return False
-        return True
+        if not hasattr(tool, "available"):
+            return True
+        check = getattr(tool, "available")  # noqa: B009
+        if not callable(check):
+            return False  # a non-callable `available` is a bug: hide the tool
+        try:
+            return bool(check())
+        except Exception:  # noqa: BLE001 - fail closed
+            return False
 
     @property
     def dispatcher(self) -> Dispatcher:

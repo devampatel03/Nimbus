@@ -233,7 +233,10 @@ def _when(node: object) -> str:
         return ""
     try:
         if "T" in raw:
-            return format_ist(datetime.fromisoformat(raw))
+            at = datetime.fromisoformat(raw)
+            if at.tzinfo is None or at.utcoffset() is None:
+                return ""  # naive: never guess (host-local would be wrong); show nothing
+            return format_ist(at)
         return datetime.fromisoformat(raw).strftime("%a %d %b %Y (all day)")
     except ValueError:
         return ""

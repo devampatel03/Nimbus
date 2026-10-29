@@ -187,3 +187,50 @@ async def test_names_and_owners_are_single_line_and_one_item_per_file() -> None:
     assert files[0].name.startswith("a.txt 2. Q3 plan")  # newline became a space
     out = await _tools(drive)["drive_search"].run({"query": ""})  # type: ignore[attr-defined]
     assert len(out.external) == len(files) == 3
+
+
+def test_list_cap_never_exceeds_the_per_output_quarantine_cap() -> None:
+    from src.integrations.google.drive_api import MAX_LIST_RESULTS
+    from src.orchestrator.dispatch import MAX_EXTERNAL_ITEMS
+
+    assert MAX_LIST_RESULTS <= MAX_EXTERNAL_ITEMS  # else files are silently withheld
+
+
+async def test_quarantine_failure_on_a_middle_search_item_leaves_a_withheld_block_there() -> None:
+    from src.lanes.quarantine import Quarantine
+    from src.llm.fake import FakeLLM
+    from src.llm.types import ProviderResponse, ToolCallRequest, Usage
+    from src.orchestrator.dispatch import DenyAllWritesPolicy
+    from src.orchestrator.loop import Orchestrator
+    from tests.fakes.llm import build_env
+
+    drive = FakeDrive({"/drive/v3/files": (200, fx("drive_list.json"))})
+    group = DriveReadTool()
+    group.bind(drive.reader())
+    good = json.dumps({"summary": "GOODSUMMARY"})
+    # quarantine replies, in file order: ok, garbage (and its repair try), ok
+    qfake = FakeLLM([good, "not json", "still not json", good])
+    main = FakeLLM(
+        [
+            ProviderResponse(
+                text=None,
+                tool_calls=(ToolCallRequest(id="c", name="drive_search", arguments={"query": ""}),),
+                usage=Usage(tokens_in=1, tokens_out=1),
+            ),
+            "ok",
+        ]
+    )
+    orch = Orchestrator(
+        build_env(provider=main).llm,
+        group.tools(),
+        DenyAllWritesPolicy(),
+        character_card="c",
+        scopes_enabled=frozenset({"tasks", "reminders", "drive"}),
+        nonce_factory=lambda: "N",
+        quarantine=Quarantine(build_env(provider=qfake).llm),
+    )
+    await orch.run_turn("search drive")
+    msg = next(m for m in main.requests[1].messages if m.role == "tool").content or ""
+    first, second, third = msg.split("DATA label=")[2:5]
+    assert "GOODSUMMARY" in first and "GOODSUMMARY" in third
+    assert "withheld" in second.lower() and "GOODSUMMARY" not in second

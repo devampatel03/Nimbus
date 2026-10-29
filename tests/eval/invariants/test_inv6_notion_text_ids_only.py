@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
+from src.core.turn_context import turn_event
 from src.lanes.data import UntrustedText
 from src.policy import LOCAL_SCOPES
 from src.tools.integrations.notion import NotionTool
@@ -63,8 +65,9 @@ async def test_tool_text_is_counts_handles_and_statuses_only() -> None:
         search,
         await tools["notion_read"].run({"page": P1}),
         await tools["notion_read"].run({"page": P2}),
-        await tools["notion_append"].run({"page": P1, "text": "note"}),
     ]
+    with turn_event(uuid.UUID(int=3)):
+        outs.append(await tools["notion_append"].run({"page": P1, "text": "note"}))
     assert handles and all(re.fullmatch(r"n[0-9a-f]{6}_\d+_\d+", h) for h in handles)
     for out in outs:
         for leak in HOSTILE:
