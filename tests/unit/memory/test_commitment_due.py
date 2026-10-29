@@ -72,9 +72,46 @@ def test_cue_matches(text: str) -> None:
     assert has_commitment_cue(text)
 
 
-@pytest.mark.parametrize("text", ["ok thanks", "what is the weather", "she'll send it"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ok thanks",
+        "what is the weather",
+        "she'll send it",
+        "let me know",
+        "I need to sleep",
+        "I have to go",
+        "I must say",
+        "I feel ill",
+    ],
+)
 def test_cue_rejects(text: str) -> None:
     assert not has_commitment_cue(text)
+
+
+def _row(**kw: object) -> Commitment:
+    base: dict[str, object] = dict(
+        id=uuid.uuid4(), key=uuid.uuid4(), version=1, status="candidate",
+        description="send it", due_at=None, due_state="unresolved", due_phrase="5/6",
+        lane="trusted", source_event_id=uuid.uuid4(), confidence=0.9,
+    )  # fmt: skip
+    base.update(kw)
+    return Commitment(**base)  # type: ignore[arg-type]
+
+
+def test_card_does_not_promise_a_chat_path_that_does_not_exist() -> None:
+    text = _row().preview()
+    assert "tell me the exact date" not in text
+    assert "send the commitment again" in text
+
+
+def test_preview_shows_the_due_assumption() -> None:
+    row = _row(
+        due_at=datetime(2026, 10, 30, 3, 30, tzinfo=UTC),
+        due_state="resolved",
+        due_note="No time given, used 9:00 AM.",
+    )
+    assert "No time given, used 9:00 AM." in row.preview()
 
 
 def test_normalise_ignores_case_punctuation_spacing() -> None:

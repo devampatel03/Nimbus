@@ -304,8 +304,13 @@ class MemoryExtractHandler:
             for i in items
             if isinstance(i, ExtractedCommitment)
         ]
-        if found:
+        if not found:
+            return
+        try:
             await self._commitments.on_extracted(event_id, found)
+        except Exception as exc:  # noqa: BLE001 - never block the chunks or retry a paid call
+            # Type name only: the message may carry untrusted text (INV-7).
+            log.warning("commitment record failed err=%s", type(exc).__name__)
 
     async def handle(self, ctx: JobContext) -> None:
         event_id = self._event_id(ctx)

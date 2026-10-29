@@ -39,7 +39,7 @@ import logging
 import os
 import signal
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -265,6 +265,23 @@ def commitment_confirmer(
         await ledger.confirm(candidate_id, approval_id)
 
     return confirm
+
+
+def commitment_card_listener(
+    intake: CommitmentIntake,
+) -> Callable[[str, str, Mapping[str, Any], str], Awaitable[None]]:
+    """P3.9: when a commitment card ends, record a Reject and ask the next queued one."""
+
+    async def listen(tool: str, action: str, payload: Mapping[str, Any], outcome: str) -> None:
+        if tool != "commitment" or action != "confirm":
+            return
+        try:
+            cand = uuid.UUID(str(payload.get("candidate_id")))
+        except ValueError:
+            return
+        await intake.card_closed(cand, outcome)
+
+    return listen
 
 
 def build_embedder(cfg: AppConfig, llm: GuardedLLM) -> EmbedderLike:
@@ -512,7 +529,9 @@ async def run_app(
             # by card only. Trusted user text only: the untrusted route needs P3.0 MED-D.
             ledger = CommitmentLedgerStore(sf, clock)
             approvals.bind_confirmer(commitment_confirmer(ledger))
-            parts.extract_handler.bind_commitments(CommitmentIntake(ledger, approvals))
+            intake = CommitmentIntake(ledger, approvals)
+            parts.extract_handler.bind_commitments(intake)
+            approvals.bind_listener(commitment_card_listener(intake))
         rt = Runtime(
             cfg=cfg,
             gateway=be.gateway,

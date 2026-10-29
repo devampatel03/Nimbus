@@ -113,6 +113,7 @@ class ApprovalExecutor(Protocol):
 Promoter = Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]
 # (candidate_id, approval_id) -> None; raises when the ledger refuses (P3.9).
 Confirmer = Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]
+CardListener = Callable[[str, str, Mapping[str, Any], str], Awaitable[None]]
 
 
 @dataclass
@@ -169,6 +170,7 @@ class ApprovalService:
         self._executor = executor
         self._promoter = promoter
         self._confirmer = confirmer
+        self._listener: CardListener | None = None
         self._challenge: _Challenge | None = None
 
     def bind_executor(self, executor: ApprovalExecutor) -> None:
@@ -179,6 +181,20 @@ class ApprovalService:
 
     def bind_confirmer(self, confirmer: Confirmer) -> None:
         self._confirmer = confirmer
+
+    def bind_listener(self, listener: CardListener) -> None:
+        """Told when a card ends (`rejected`, `expired`, `done`). Decides nothing."""
+        self._listener = listener
+
+    async def _notify(
+        self, tool: str, action: str, payload: Mapping[str, Any], outcome: str
+    ) -> None:
+        if self._listener is None:
+            return
+        try:
+            await self._listener(tool, action, payload, outcome)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping only
+            log.warning("card listener failed err=%s", type(exc).__name__)
 
     # ------------------------------------------------------------- helpers
 
@@ -296,6 +312,13 @@ class ApprovalService:
             return AskOutcome.DUPLICATE
         if await self._store.open_count(now) >= self._s.max_open:
             await self._audit("request_refused", reason="too_many_open", **audit_kw)
+            return AskOutcome.TOO_MANY
+        if (
+            tool == COMMITMENT_TOOL
+            and await self._store.open_count(now, tool=COMMITMENT_TOOL)
+            >= self._s.max_open_commitment
+        ):
+            await self._audit("request_refused", reason="too_many_commitment", **audit_kw)
             return AskOutcome.TOO_MANY
         expires = (now + timedelta(seconds=self._s.ttl_s)).replace(microsecond=0)
         nonce = secrets.token_bytes(16)
@@ -425,12 +448,14 @@ class ApprovalService:
             await self._audit("expired", action_id=aid, tool=row.tool)
             await self._answer(cb, EXPIRED)
             await self._close_card(ref, "expired")
+            await self._notify(row.tool, row.action, row.payload, "expired")
             return
         if parsed.verb is tok.Verb.REJECT:
             await self._store.close(aid, "rejected")
             await self._audit("rejected_by_user", action_id=aid, tool=row.tool)
             await self._answer(cb, REJECTED)
             await self._close_card(ref, "rejected")
+            await self._notify(row.tool, row.action, row.payload, "rejected")
             return
         if row.requires_totp:
             await self._start_step_up(cb, row, ref, now)
@@ -585,6 +610,7 @@ class ApprovalService:
         )
         log.info("approval executed action=%s status=%s", _short(aid), status)
         await self._close_card(ref, f"done: {status}" if executed else f"not run ({status})")
+        await self._notify(consumed.tool, consumed.action, consumed.payload, "done")
 
     async def _execute(self, c: ConsumedApproval) -> tuple[str, str]:
         try:

@@ -36,6 +36,9 @@ class ApprovalSettings(BaseSettings):
     ttl_s: int = Field(default=600, ge=60, le=900)  # ADR-0009: 10 minutes
     step_up_window_s: int = Field(default=180, ge=30, le=600)
     max_open: int = Field(default=3, ge=1, le=10)  # open cards at once (spam bound)
+    # Commitment cards (P3.9) are model-originated: their own smaller cap, so they
+    # cannot starve tool approvals of the `max_open` slots.
+    max_open_commitment: int = Field(default=1, ge=1, le=3)
     totp_attempts_per_action: int = Field(default=3, ge=1, le=5)
     totp_lockout_failures: int = Field(default=5, ge=1, le=20)
     totp_lockout_window_s: int = Field(default=900, ge=60, le=86_400)
