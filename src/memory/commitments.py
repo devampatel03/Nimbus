@@ -13,6 +13,9 @@ approval (user-bound, single-use, ADR-0020). The database re-checks that
 * Provenance: the lane is READ FROM the source event, never from the caller, so
   a commitment derived from untrusted text is `untrusted` and stays a
   candidate until the user approves it (R8).
+* The description is the model's PARAPHRASE of the user's message, not their
+  verbatim words: the approval card shows it labelled untrusted, and the tap
+  approves "track this", not the wording.
 * No model output is trusted for time: the extractor supplies the user's own
   words for the deadline (`due_phrase`); code checks the phrase really occurs in
   the message and resolves it deterministically in Asia/Kolkata relative to the
@@ -30,7 +33,7 @@ import re
 import unicodedata
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final, Protocol
 
@@ -59,8 +62,8 @@ _ACCEPTED_ASSUMPTIONS: Final = ("No time given",)
 # Deterministic cue for a first-person commitment: lets a short message such as
 # "I'll send the report by Friday" past the extractor's minimum-length gate.
 _CUE: Final = re.compile(
-    r"\b(i\s*'?ll|i\s+will|i\s*'?m\s+going\s+to|i\s+am\s+going\s+to|i\s+promise|i\s+shall"
-    r"|i\s+need\s+to|i\s+have\s+to|i\s+must|let\s+me)\b|\bi’ll\b",
+    r"\b(i\s*'\s*ll|i\s+will|i\s*'?m\s+going\s+to|i\s+am\s+going\s+to|i\s+promise|i\s+shall)\b"
+    r"|\bi’ll\b",
     re.IGNORECASE | re.ASCII,
 )
 
@@ -137,16 +140,22 @@ class Commitment:
     lane: str
     source_event_id: uuid.UUID
     confidence: float
+    due_note: str = ""  # assumption made while resolving the due time (not stored)
 
     def preview(self) -> str:
-        """Card text built by code from the stored row (never model prose)."""
+        """Card text assembled by code from the stored row. The description is the
+        model's PARAPHRASE of the user's message, not their verbatim words, so the
+        approval card shows this whole block labelled untrusted."""
         lines = [f"Commitment: {self.description[:200]}"]
         if self.due_at is not None:
             lines.append(f"Due: {format_ist(self.due_at)}")
+            if self.due_note:
+                lines.append(f"Assumed: {self.due_note}")
         elif self.due_state == "unresolved":
             lines.append(
                 "Due: NOT SET. I could not tell exactly when that means. Approve to track it "
-                "without a date, or Reject and tell me the exact date."
+                "without a date, or Reject it and send the commitment again with an exact "
+                "date (for example 12 Nov, 5pm)."
             )
         else:
             lines.append("Due: no deadline mentioned.")
@@ -218,6 +227,36 @@ class CommitmentLedgerStore:
             )
             .order_by(CommitmentLedger.created_at)
         )
+
+    async def card_preview(self, c: Commitment) -> str:
+        """`preview` plus the assumption behind the due time, re-derived by code from
+        the source event (deterministic, so a re-asked card reads like the first)."""
+        note = ""
+        if c.due_state == "resolved" and c.due_at is not None and c.due_phrase:
+            async with self._sf() as s:
+                ev = (
+                    await s.execute(
+                        select(Event.body, Event.occurred_at).where(Event.id == c.source_event_id)
+                    )
+                ).one_or_none()
+            if ev is not None:
+                due = resolve_due(c.due_phrase, body=ev.body or "", event_time=ev.occurred_at)
+                if due.state == "resolved" and due.at == c.due_at:
+                    note = due.note
+        return replace(c, due_note=note).preview()
+
+    async def duplicate_of(self, description: str) -> Commitment | None:
+        """The open (candidate or confirmed) row with the same normalised description."""
+        desc = _clean(description, MAX_DESCRIPTION)
+        if not desc:
+            return None
+        async with self._sf() as s:
+            dup = await s.scalar(
+                self._latest_stmt(*OPEN_STATUSES)  # type: ignore[attr-defined]
+                .where(CommitmentLedger.norm_key == normalise(desc))
+                .limit(1)
+            )
+            return _view(dup) if dup is not None else None
 
     async def review_queue(self, *, limit: int = 50) -> list[Commitment]:
         """Candidates still awaiting the user's decision (R8 review queue)."""
@@ -366,6 +405,11 @@ class CommitmentLedgerStore:
         await self._user_event(event_id)
         return await self._next(candidate_id, "rejected", source_event_id=event_id)
 
+    async def reject_via_card(self, candidate_id: uuid.UUID) -> Commitment:
+        """The user tapped Reject on the card (a verified, user-bound callback).
+        Only ever moves a candidate to `rejected`; it can never confirm (INV-5)."""
+        return await self._next(candidate_id, "rejected")
+
     async def complete(self, row_id: uuid.UUID, *, event_id: uuid.UUID) -> Commitment:
         await self._user_event(event_id)
         return await self._next(row_id, "completed", source_event_id=event_id)
@@ -392,8 +436,9 @@ class CommitmentLedgerStore:
 
 class CommitmentIntake:
     """Glue used by the `memory_extract` job: record candidates, then ask the
-    user to confirm each one. Failure to ask leaves the candidate in the review
-    queue; nothing is ever confirmed here."""
+    user to confirm each one. A card that cannot be sent now (cap reached, Telegram
+    down) leaves the candidate in the review queue; `drain` asks again when a
+    commitment card closes. Nothing is ever confirmed here."""
 
     def __init__(
         self, ledger: CommitmentLedgerStore, requester: ConfirmationRequester | None = None
@@ -404,6 +449,21 @@ class CommitmentIntake:
     def bind_requester(self, requester: ConfirmationRequester) -> None:
         self._requester = requester
 
+    async def _ask(self, cand: Commitment) -> str | None:
+        if self._requester is None:
+            return None
+        try:
+            got = await self._requester.request_commitment_confirm(
+                cand.id, preview=await self._ledger.card_preview(cand)
+            )
+        except Exception as exc:  # noqa: BLE001 - stays in the review queue
+            log.warning("commitment confirm request failed err=%s", type(exc).__name__)
+            return "failed"
+        outcome = str(getattr(got, "value", got))
+        if outcome not in ("requested", "duplicate"):
+            log.info("commitment card not sent outcome=%s", outcome[:24])  # queued
+        return outcome
+
     async def on_extracted(
         self, event_id: uuid.UUID, items: Sequence[tuple[str, float, str | None]]
     ) -> list[Commitment]:
@@ -412,14 +472,36 @@ class CommitmentIntake:
             cand = await self._ledger.propose(
                 event_id, description=description, confidence=confidence, due_phrase=phrase
             )
-            if cand is None:
+            if cand is not None:
+                made.append(cand)
+                await self._ask(cand)
                 continue
-            made.append(cand)
-            if self._requester is not None:
-                try:
-                    await self._requester.request_commitment_confirm(
-                        cand.id, preview=cand.preview()
-                    )
-                except Exception as exc:  # noqa: BLE001 - stays in the review queue
-                    log.warning("commitment confirm request failed err=%s", type(exc).__name__)
+            # A restatement must not vanish silently: if the earlier candidate was never
+            # decided (card expired or unsent) ask again. An open card answers "duplicate".
+            dup = await self._ledger.duplicate_of(description)
+            if dup is not None and dup.status == "candidate" and dup.source_event_id != event_id:
+                await self._ask(dup)
         return made
+
+    async def drain(self, *, limit: int = 5) -> int:
+        """Ask for queued candidates that have no open card, oldest first, until the
+        approval service says stop. Returns the number of cards sent."""
+        sent = 0
+        for cand in await self._ledger.review_queue(limit=limit):
+            outcome = await self._ask(cand)
+            if outcome == "requested":
+                sent += 1
+            elif outcome != "duplicate":
+                break  # too_many / failed: try again at the next card close
+        return sent
+
+    async def card_closed(self, candidate_id: uuid.UUID, outcome: str) -> None:
+        """A commitment card ended (`rejected` by the user's tap, `expired`, `done`).
+        A Reject is recorded in the ledger so the candidate leaves the review queue;
+        then the next queued candidate gets its turn."""
+        if outcome == "rejected":
+            try:
+                await self._ledger.reject_via_card(candidate_id)
+            except LedgerRefused as exc:
+                log.info("reject not recorded code=%s", exc.code)
+        await self.drain()

@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.app.runtime import commitment_card_listener
 from src.memory.commitments import CommitmentIntake, CommitmentLedgerStore
 from src.memory.schemas.event import Event
 from tests._approval_helpers import Harness, build_harness
@@ -50,3 +51,4 @@ class LedgerHarness:
             await self.ledger.confirm(candidate_id, approval_id)
 
         self.h.service.bind_confirmer(confirm)
+        self.h.service.bind_listener(commitment_card_listener(self.intake))

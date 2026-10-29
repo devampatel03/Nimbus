@@ -78,7 +78,7 @@ async def test_reject_tap_confirms_nothing(lh: LedgerHarness) -> None:
     card = lh.h.last_card()
     assert await lh.h.tap(card.reject_data) == svc.REJECTED
     assert await lh.h.tap(card.approve_data) == svc.DONE_ALREADY
-    assert await rows(lh, cand.key) == [(1, "candidate")]
+    assert await rows(lh, cand.key) == [(1, "candidate"), (2, "rejected")]  # Reject recorded
 
 
 async def test_unresolved_due_is_asked_not_guessed(lh: LedgerHarness) -> None:

@@ -111,13 +111,16 @@ class ApprovalStore:
                 row.created_at,
             )
 
-    async def open_count(self, now: datetime) -> int:
+    async def open_count(self, now: datetime, *, tool: str | None = None) -> int:
         async with self._sf() as s:
-            n = await s.scalar(
+            stmt = (
                 select(func.count())
                 .select_from(PendingAction)
                 .where(PendingAction.status == "pending", PendingAction.expires_at > now)
             )
+            if tool is not None:
+                stmt = stmt.where(PendingAction.tool == tool)
+            n = await s.scalar(stmt)
             return int(n or 0)
 
     async def open_duplicate(self, payload_sha256: str, now: datetime) -> uuid.UUID | None:
