@@ -35,6 +35,7 @@ class SchedulerParts:
     sweeper: mx.MemoryExtractSweeper
     reminders: rem.ReminderStore
     session_factory: async_sessionmaker[AsyncSession]
+    extract_handler: mx.MemoryExtractHandler
 
     async def enqueue_extract_after_turn(self, event_id: uuid.UUID) -> None:
         """Post-turn hook (TARGET_DESIGN 4.1 step 7). Failures are logged by type
@@ -88,4 +89,5 @@ def build_scheduler(
         sweeper=mx.MemoryExtractSweeper(session_factory, queue, clock),
         reminders=rem.ReminderStore(session_factory, queue, clock),
         session_factory=session_factory,
+        extract_handler=extract,
     )

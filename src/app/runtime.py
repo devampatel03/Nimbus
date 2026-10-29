@@ -73,6 +73,7 @@ from src.llm.factory import build_api_embedder
 from src.llm.pg_stores import PostgresAuditStore, PostgresFlagStore
 from src.llm.protocols import Provider
 from src.llm.settings import DEFAULT_API_KEY, LLMSettings
+from src.memory.commitments import CommitmentIntake, CommitmentLedgerStore
 from src.memory.embedder import (
     BatchEmbedder,
     EmbeddingMigrationRequired,
@@ -252,6 +253,18 @@ def memory_promoter(
             )
 
     return promote
+
+
+def commitment_confirmer(
+    ledger: CommitmentLedgerStore,
+) -> Callable[[uuid.UUID, uuid.UUID], Awaitable[None]]:
+    """P3.9: runs only after a consumed `commitment`/`confirm` approval; the ledger's
+    DB trigger re-checks it, so this is not the only guard."""
+
+    async def confirm(candidate_id: uuid.UUID, approval_id: uuid.UUID) -> None:
+        await ledger.confirm(candidate_id, approval_id)
+
+    return confirm
 
 
 def build_embedder(cfg: AppConfig, llm: GuardedLLM) -> EmbedderLike:
@@ -495,6 +508,11 @@ async def run_app(
         if approvals is not None:
             approvals.bind_executor(orchestrator.dispatcher)
             approvals.bind_promoter(memory_promoter(sf, embedder))
+            # P3.9 (ADR-0022): candidate commitments from the user's own messages, confirmed
+            # by card only. Trusted user text only: the untrusted route needs P3.0 MED-D.
+            ledger = CommitmentLedgerStore(sf, clock)
+            approvals.bind_confirmer(commitment_confirmer(ledger))
+            parts.extract_handler.bind_commitments(CommitmentIntake(ledger, approvals))
         rt = Runtime(
             cfg=cfg,
             gateway=be.gateway,

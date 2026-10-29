@@ -15,6 +15,7 @@ from src.memory.schemas.commitment import Commitment
 from src.memory.schemas.decision import Decision
 from src.memory.schemas.event import Event
 from src.memory.schemas.graph import GraphEdge, GraphNode
+from src.memory.schemas.ledger import CommitmentLedger
 from src.memory.schemas.memory_chunk import MemoryChunk
 from src.memory.schemas.ops import (
     InboundUpdate,
@@ -36,6 +37,7 @@ for _table in Base.metadata.tables.values():
 __all__ = [
     "Base",
     "Commitment",
+    "CommitmentLedger",
     "Decision",
     "Event",
     "GraphEdge",

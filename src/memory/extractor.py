@@ -66,7 +66,10 @@ class ExtractedRelation(_Item):
 class ExtractedCommitment(_Item):
     description: str = Field(max_length=_TEXT)
     owner_label: str | None = Field(default=None, max_length=64)  # speaker_label
-    due_at: datetime | None = None
+    due_at: datetime | None = None  # ignored by the ledger (P3.9): code resolves due_phrase
+    # The speaker's own words for the deadline, quoted verbatim ("by Friday"). Never a
+    # computed date: the ledger checks the quote is in the message and resolves it itself.
+    due_phrase: str | None = Field(default=None, max_length=60)
     source_segment_index: _Idx
     confidence: _Conf
 
@@ -206,7 +209,8 @@ _COMMITMENT_SYSTEM_PROMPT = (
     "Extract commitments (things a speaker said they will do) from this "
     "diarized conversation transcript. For each commitment give: "
     "description, owner_label (the speaker_label who made the commitment, "
-    "or null if unclear), due_at (ISO 8601 datetime, or null if unstated), "
+    "or null if unclear), due_phrase (the speaker's own words for the deadline, "
+    "quoted exactly, e.g. 'by Friday'; null if none; never compute a date), "
     "source_segment_index, and confidence (0.0-1.0). Respond only via "
     "the given JSON schema; return an empty list if none are found."
 )
@@ -258,8 +262,8 @@ _COMBINED_SYSTEM_PROMPT = (
     "long-term, in three lists. relations: factual statements about the user's "
     "world as subject_name, predicate, and exactly one of object_name/object_literal, "
     "plus valid_from (ISO 8601; use {created_at} if no time is stated). commitments: "
-    "things the user said they will do (description, owner_label or null, due_at or "
-    "null). decisions: conclusions the user reached (decision_text, reasoning). Every "
+    "things the user said they will do (description, owner_label or null, due_phrase: "
+    "the user's own words for the deadline quoted exactly, or null; never compute a date). decisions: conclusions the user reached (decision_text, reasoning). Every "
     "item needs source_segment_index (0) and confidence (0.0-1.0). At most 3 items per "
     "list; use empty lists when there is nothing. Respond only via the given JSON schema."
 )
