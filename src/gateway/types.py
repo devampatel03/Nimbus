@@ -89,3 +89,7 @@ class FileTooLarge(TelegramError):
 
 class MessageTooLong(TelegramError):
     """An approval payload cannot be shown in full in one message."""
+
+
+class OutboundBlocked(TelegramError):
+    """The exfil filter (P4.3) refused a code-built text (keypad prompt)."""

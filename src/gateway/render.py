@@ -11,8 +11,8 @@ counts characters after entity parsing, so this is conservative). A
 `MarkdownV2` escaper is provided too, escaping the full reserved set from the
 Bot API docs.
 
-Exfil-oriented stripping (markdown images, URL allowlist) is P4.3's job and
-extends this module.
+Exfil-oriented stripping (markdown images, URL allowlist) is P4.3 and lives
+in `exfil.py`; `TelegramGateway.send_text` runs it before chunking here.
 """
 
 from __future__ import annotations

@@ -71,9 +71,8 @@ async def test_hostile_text_is_escaped_on_the_wire() -> None:
     (body,) = fake.sent
     assert "<a" not in body["text"] and "<b>" not in body["text"]
     assert (
-        body["text"]
-        == '&lt;a href="https://evil.example"&gt;x&lt;/a&gt; &amp; &lt;b&gt;bold&lt;/b&gt;'
-    )
+        body["text"] == '&lt;a href="[link removed]"&gt;x&lt;/a&gt; &amp; &lt;b&gt;bold&lt;/b&gt;'
+    )  # P4.3: the URL itself is also neutralised before escaping
 
 
 async def test_long_message_is_chunked_under_4096_and_in_order() -> None:

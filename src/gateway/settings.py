@@ -15,6 +15,8 @@ import re
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.gateway.exfil import ReplyUrlPolicy
+
 TELEGRAM_FILE_HARD_CAP = 20 * 1024 * 1024  # Bot API getFile limit
 _TOKEN_RE = re.compile(r"^[0-9]{3,20}:[A-Za-z0-9_-]{20,128}$")
 
@@ -43,6 +45,19 @@ class GatewaySettings(BaseSettings):
     # Clock used for the HH:MM in the "could not process your message" notice.
     # A fixed offset (default IST, +05:30) needs no tz database.
     notice_utc_offset_minutes: int = Field(default=330, ge=-720, le=840)
+    # P4.3: hosts a reply may link to (exact lowercase ASCII host, https, no
+    # query). Default none. JSON list in env, e.g. '["docs.python.org"]'.
+    # Display only: the app never fetches these, so no egress change (R13).
+    reply_url_allowlist: tuple[str, ...] = ()
+
+    @field_validator("reply_url_allowlist")
+    @classmethod
+    def _reply_hosts(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        ReplyUrlPolicy(frozenset(v))  # raises ValueError without echoing the value
+        return v
+
+    def reply_url_policy(self) -> ReplyUrlPolicy:
+        return ReplyUrlPolicy(frozenset(self.reply_url_allowlist))
 
     @field_validator("bot_token")
     @classmethod
