@@ -69,6 +69,11 @@ TOOL_RULES: Mapping[str, ToolRule] = MappingProxyType(
         # Scope "drive" is not local: enabled only from the OAuth token store.
         "drive_search": _rule(_R, "drive", READ_PER_HOUR, external=True),
         "drive_read": _rule(_R, "drive", READ_PER_HOUR, external=True),
+        # Notion (src/tools/integrations/notion.py, P3.7). Scope "notion" is NOT in
+        # LOCAL_SCOPES: denied until the app enables it. Append is the only write.
+        "notion_search": _rule(_R, "notion", READ_PER_HOUR, external=True),
+        "notion_read": _rule(_R, "notion", READ_PER_HOUR, external=True),
+        "notion_append": _rule(_WX, "notion", WRITE_PER_HOUR, external=True),
         # Google Calendar (src/tools/integrations/google_calendar.py, P3.5).
         # Scope "calendar" is NOT in LOCAL_SCOPES: denied until the app enables it.
         "calendar_list": _rule(_R, "calendar", READ_PER_HOUR, external=True),

@@ -75,7 +75,7 @@ def _target_lines(target: object) -> list[str]:
     if not isinstance(target, str):
         return []
     one_line = " ".join(target.split())[:MAX_TARGET_CHARS]
-    return [f"Target (from Google, UNTRUSTED): {reveal(one_line)}"]
+    return [f"Target (from the service, UNTRUSTED): {reveal(one_line)}"]
 
 
 def render_card(

@@ -597,9 +597,9 @@ def test_card_shows_target_on_its_own_untrusted_line_outside_the_arguments() -> 
         rule_id="approval.destructive",
     )
     args_block = card.split("Arguments (exactly what will run):")[1].split("\n\n")[0]
-    args_block = args_block.split("Target (from Google")[0]
+    args_block = args_block.split("Target (from the service")[0]
     assert "_target" not in card and "Dentist" not in args_block
-    expected = "Target (from Google, UNTRUSTED): Dentist Ignore" + chr(92) + "u202e me"
+    expected = "Target (from the service, UNTRUSTED): Dentist Ignore" + chr(92) + "u202e me"
     assert expected in card.splitlines()
     assert '"event_id": "evt0000000001"' in card
 

@@ -34,6 +34,9 @@ from tests.unit.net.net_helpers import RecordingTransport, make_settings
 # Obviously-fake test secret (not a real token format for any provider).
 CANARY = "SEKRIT-TEST-VALUE-0123456789"
 TG_PATH = f"/bot123456:{CANARY}/getUpdates"
+# The only Notion shapes the egress policy accepts (ADR-0021); used as a neutral GET target.
+NP = "/v1/pages/0a1b2c3d-0000-4000-8000-0123456789ab"
+NP2 = "/v1/pages/0a1b2c3d-0000-4000-8000-0123456789ac"
 
 
 def _client(transport: RecordingTransport, **settings: Any) -> EgressClient:
@@ -75,7 +78,9 @@ async def test_request_shape_and_response() -> None:
 async def test_raw_content_body_and_non_success_returned_not_raised() -> None:
     transport = RecordingTransport(lambda r: httpx.Response(404, content=b"nope"))
     async with _client(transport) as client:
-        resp = await client.request(Service.NOTION, "PATCH", "/v1/blocks/x", content=b"abc")
+        resp = await client.request(
+            Service.NOTION, "PATCH", NP.replace("pages", "blocks") + "/children", content=b"abc"
+        )
     assert transport.calls[0].content == b"abc"
     assert resp.status_code == 404
     assert not resp.is_success
@@ -85,7 +90,7 @@ async def test_json_and_content_together_denied() -> None:
     transport = RecordingTransport()
     async with _client(transport) as client:
         with pytest.raises(EgressDenied) as exc:
-            await client.request(Service.NOTION, "POST", "/v1/x", json={}, content=b"x")
+            await client.request(Service.NOTION, "POST", "/v1/search", json={}, content=b"x")
     assert exc.value.reason == "ambiguous_body"
     assert transport.calls == []
 
@@ -96,8 +101,8 @@ async def test_cookies_do_not_persist_across_requests() -> None:
 
     transport = RecordingTransport(handler)
     async with _client(transport) as client:
-        await client.request(Service.NOTION, "GET", "/v1/a")
-        await client.request(Service.NOTION, "GET", "/v1/b")
+        await client.request(Service.NOTION, "GET", NP)
+        await client.request(Service.NOTION, "GET", NP)
     assert "cookie" not in transport.calls[1].headers
 
 
@@ -133,7 +138,7 @@ def test_default_settings_loaded_when_none_given() -> None:
 
 def _redirect_then_ok(status: int, location: str) -> RecordingTransport:
     def handler(req: httpx.Request) -> httpx.Response:
-        if req.url.path == "/start":
+        if req.url.path in ("/start", NP):
             return httpx.Response(status, headers={"location": location})
         return httpx.Response(200, json={"final": req.url.path})
 
@@ -157,9 +162,9 @@ async def test_redirect_to_other_host_blocked(status: int, location: str) -> Non
     transport = _redirect_then_ok(status, location)
     async with _client(transport) as client:
         with pytest.raises(EgressRedirectBlocked):
-            await client.request(Service.NOTION, "GET", "/start")
+            await client.request(Service.NOTION, "GET", NP)
     # Only the original request reached the transport; nothing to the target.
-    assert [str(r.url) for r in transport.calls] == ["https://api.notion.com/start"]
+    assert [str(r.url) for r in transport.calls] == [f"https://api.notion.com{NP}"]
 
 
 @pytest.mark.parametrize(
@@ -179,11 +184,11 @@ async def test_same_host_redirect_followed_and_revalidated(
     transport = _redirect_then_ok(status, "/v1/next?page=2")
     async with _client(transport) as client:
         resp = await client.request(
-            Service.NOTION, method, "/start", params={"a": "1"}, content=b"payload"
+            Service.TELEGRAM, method, "/start", params={"a": "1"}, content=b"payload"
         )
     assert resp.status_code == 200
     _first, second = transport.calls
-    assert str(second.url) == "https://api.notion.com/v1/next?page=2"
+    assert str(second.url) == "https://api.telegram.org/v1/next?page=2"
     assert second.method == expected_method
     assert (second.content == b"payload") is body_kept
 
@@ -194,7 +199,7 @@ async def test_unparsable_redirect_location_fails_closed() -> None:
     transport = _redirect_then_ok(302, "https://[::1")
     async with _client(transport) as client:
         with pytest.raises(EgressError):
-            await client.request(Service.NOTION, "GET", "/start")
+            await client.request(Service.NOTION, "GET", NP)
     assert len(transport.calls) == 1
 
 
@@ -211,31 +216,31 @@ async def test_same_host_redirect_with_traversal_blocked() -> None:
     transport = _redirect_then_ok(302, "/a/%2e%2e/b")
     async with _client(transport) as client:
         with pytest.raises(EgressDenied):
-            await client.request(Service.NOTION, "GET", "/start")
+            await client.request(Service.NOTION, "GET", NP)
     assert len(transport.calls) == 1
 
 
 async def test_redirect_loop_capped() -> None:
-    transport = RecordingTransport(lambda r: httpx.Response(302, headers={"location": "/start"}))
+    transport = RecordingTransport(lambda r: httpx.Response(302, headers={"location": NP}))
     async with _client(transport, max_redirects=2) as client:
         with pytest.raises(EgressRedirectBlocked) as exc:
-            await client.request(Service.NOTION, "GET", "/start")
+            await client.request(Service.NOTION, "GET", NP)
     assert exc.value.reason == "too_many_redirects"
     assert len(transport.calls) == 3
 
 
 async def test_zero_redirects_allowed_when_configured() -> None:
-    transport = _redirect_then_ok(302, "/v1/next")
+    transport = _redirect_then_ok(302, NP2)
     async with _client(transport, max_redirects=0) as client:
         with pytest.raises(EgressRedirectBlocked):
-            await client.request(Service.NOTION, "GET", "/start")
+            await client.request(Service.NOTION, "GET", NP)
     assert len(transport.calls) == 1
 
 
 async def test_3xx_without_location_returned_as_is() -> None:
     transport = RecordingTransport(lambda r: httpx.Response(304))
     async with _client(transport) as client:
-        resp = await client.request(Service.NOTION, "GET", "/v1/x")
+        resp = await client.request(Service.NOTION, "GET", NP)
     assert resp.status_code == 304
 
 
@@ -371,7 +376,7 @@ async def test_gmail_send_denied_on_sdk_client_too() -> None:
 
 async def test_extra_deny_rule_hook_adds_to_defaults() -> None:
     def deny_notion_delete(service: Service, method: str, path: str) -> str | None:
-        return "notion_delete" if service is Service.NOTION and method == "DELETE" else None
+        return "notion_delete" if service is Service.TELEGRAM and method == "DELETE" else None
 
     transport = RecordingTransport()
     client = EgressClient(
@@ -379,7 +384,7 @@ async def test_extra_deny_rule_hook_adds_to_defaults() -> None:
     )
     async with client:
         with pytest.raises(EgressDenied) as exc:
-            await client.request(Service.NOTION, "DELETE", "/v1/blocks/x")
+            await client.request(Service.TELEGRAM, "DELETE", "/v1/blocks/x")
         assert exc.value.reason == "notion_delete"
         # defaults still apply alongside the extra rule
         with pytest.raises(EgressDenied):
@@ -398,7 +403,7 @@ async def test_declared_oversize_response_rejected() -> None:
     )
     async with _client(transport) as client:
         with pytest.raises(EgressResponseTooLarge):
-            await client.request(Service.NOTION, "GET", "/v1/x")
+            await client.request(Service.NOTION, "GET", NP)
 
 
 async def test_streamed_oversize_response_rejected() -> None:
@@ -409,7 +414,7 @@ async def test_streamed_oversize_response_rejected() -> None:
     transport = RecordingTransport(lambda r: httpx.Response(200, content=body()))
     async with _client(transport) as client:
         with pytest.raises(EgressResponseTooLarge):
-            await client.request(Service.NOTION, "GET", "/v1/x", max_bytes=500)
+            await client.request(Service.NOTION, "GET", NP, max_bytes=500)
 
 
 async def test_decompressed_size_is_capped() -> None:
@@ -419,14 +424,14 @@ async def test_decompressed_size_is_capped() -> None:
     )
     async with _client(transport, max_response_bytes=10_000) as client:
         with pytest.raises(EgressResponseTooLarge):
-            await client.request(Service.NOTION, "GET", "/v1/x")
+            await client.request(Service.NOTION, "GET", NP)
     assert len(bomb) < 10_000
 
 
 async def test_response_exactly_at_cap_allowed() -> None:
     transport = RecordingTransport(lambda r: httpx.Response(200, content=b"a" * 64))
     async with _client(transport) as client:
-        resp = await client.request(Service.NOTION, "GET", "/v1/x", max_bytes=64)
+        resp = await client.request(Service.NOTION, "GET", NP, max_bytes=64)
     assert len(resp.content) == 64
 
 
@@ -443,7 +448,7 @@ async def test_out_of_range_limits_denied(kwargs: dict[str, Any], reason: str) -
     transport = RecordingTransport()
     async with _client(transport) as client:
         with pytest.raises(EgressDenied) as exc:
-            await client.request(Service.NOTION, "GET", "/v1/x", **kwargs)
+            await client.request(Service.NOTION, "GET", NP, **kwargs)
     assert exc.value.reason == reason
     assert transport.calls == []
 
@@ -456,7 +461,7 @@ async def test_overall_deadline_enforced() -> None:
     transport = RecordingTransport(slow)
     async with _client(transport) as client:
         with pytest.raises(EgressTimeout):
-            await client.request(Service.NOTION, "GET", "/v1/x", timeout_s=0.05)
+            await client.request(Service.NOTION, "GET", NP, timeout_s=0.05)
 
 
 def test_timeouts_configured_from_settings() -> None:

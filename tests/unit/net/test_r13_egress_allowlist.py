@@ -180,7 +180,7 @@ async def test_header_injection_denied(headers: dict[str, str]) -> None:
     transport = RecordingTransport()
     async with EgressClient(make_settings(), transport=transport) as client:
         with pytest.raises(EgressDenied) as exc:
-            await client.request(Service.NOTION, "GET", "/v1/users/me", headers=headers)
+            await client.request(Service.NOTION, "POST", "/v1/search", headers=headers)
     assert exc.value.reason == "bad_header_value"
     assert transport.calls == []
 
@@ -202,6 +202,8 @@ async def test_allowlisted_service_reaches_its_host_over_https(service: Service)
         # oauth2.googleapis.com only serves POST /token and /revoke (ADR-0019).
         if service is Service.GOOGLE_OAUTH:
             resp = await client.request(service, "POST", "/token")
+        elif service is Service.NOTION:  # only four Notion calls exist (ADR-0021)
+            resp = await client.request(service, "POST", "/v1/search")
         else:
             resp = await client.request(service, "GET", "/ok")
     assert resp.status_code == 200
