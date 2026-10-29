@@ -336,7 +336,7 @@ class Dispatcher:
         if decision is None or decision.verdict == "deny" or not is_exposed:
             res = await self._conclude(name, tool, args, decision, False, tainted, "decided")
             return replace(res, tainted=tainted)
-        await self._record(
+        audited = await self._record(
             AuditRecord(
                 kind="decision",
                 event="args_rejected",
@@ -348,6 +348,14 @@ class Dispatcher:
                 executed=False,
             )
         )
+        if not audited:
+            return DispatchResult(
+                name,
+                "denied",
+                "Denied: audit unavailable.",
+                rule_id="deny.audit_unavailable",
+                tainted=tainted,
+            )
         return replace(rejected, tainted=tainted)
 
     async def execute_approved(self, approval: ConsumedApproval) -> DispatchResult:

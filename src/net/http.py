@@ -111,9 +111,14 @@ class EgressResponse:
         return jsonlib.loads(self.content)
 
 
-def _param_pairs(params: QueryParams | None) -> list[tuple[str, object]]:
+def _param_pairs(params: object, *, service: Service, method: str) -> list[tuple[str, object]]:
+    """Flatten the `params` mapping; any other shape is refused (fail closed)."""
+    if params is None:
+        return []
+    if not isinstance(params, Mapping):
+        raise EgressDenied("bad_params", service=service.value, method=method)
     pairs: list[tuple[str, object]] = []
-    for key, value in (params or {}).items():
+    for key, value in params.items():
         if isinstance(value, Sequence) and not isinstance(value, str | bytes):
             pairs.extend((key, v) for v in value)
         else:
@@ -235,7 +240,9 @@ class EgressClient:
         verb = check_method(method, service=service)
         normalised = normalise_path(path, service=service, method=verb)
         check_headers(headers, service=service, method=verb)
-        check_query(_param_pairs(params), service=service, method=verb)
+        check_query(
+            _param_pairs(params, service=service, method=verb), service=service, method=verb
+        )
         apply_deny_rules(self._rules, service=service, method=verb, normalised_path=normalised)
         if json is not None and content is not None:
             raise EgressDenied("ambiguous_body", service=service.value, method=verb)

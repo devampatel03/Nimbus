@@ -73,10 +73,12 @@ def _guard(exc: CalendarError) -> ToolError:
 # code maps back to the real id BEFORE the policy and approval see the call
 # (`resolve_args`), so the stored approval payload carries the real id and
 # survives a restart, while a handle is only valid in this process. Each
-# process draws a random 4-hex nonce (`h<nonce><list>_<n>`), so after a restart
-# a stale handle (the counters start again) fails closed instead of silently
-# naming a different event.
-HANDLE_RE = re.compile(r"h[0-9a-f]{4}\d{1,9}_\d{1,2}")
+# process draws a random 6-digit decimal nonce (`h<nonce><list>_<n>`), so after
+# a restart a stale handle (the counters start again) fails closed instead of
+# silently naming a different event (collision odds 1e-6). ASCII digits only.
+HANDLE_RE = re.compile(r"h[0-9]{6}[0-9]{1,3}_[0-9]{1,2}")
+_NONCE_RE = re.compile(r"[0-9]{6}")
+MAX_LISTS = 999  # at this point the nonce is redrawn: older handles stop resolving
 MAX_HANDLES = 256
 
 
@@ -84,11 +86,21 @@ class HandleBook:
     def __init__(self, nonce: str | None = None) -> None:
         self._ids: OrderedDict[str, str] = OrderedDict()
         self._lists = 0
-        self._nonce = nonce if nonce is not None else secrets.token_hex(2)
-        if re.fullmatch(r"[0-9a-f]{4}", self._nonce) is None:
-            raise ValueError("handle nonce must be 4 lowercase hex characters")
+        self._fixed = nonce is not None
+        self._nonce = nonce if nonce is not None else self._draw()
+        if _NONCE_RE.fullmatch(self._nonce) is None:
+            raise ValueError("handle nonce must be 6 ASCII digits")
+
+    @staticmethod
+    def _draw() -> str:
+        return f"{secrets.randbelow(10**6):06d}"
 
     def issue(self, event_ids: list[str]) -> list[str]:
+        if self._lists >= MAX_LISTS:  # keep the handle shape; invalidate older handles
+            self._lists = 0
+            self._ids.clear()
+            if not self._fixed:
+                self._nonce = self._draw()
         self._lists += 1
         handles = [f"h{self._nonce}{self._lists}_{i}" for i, _ in enumerate(event_ids, 1)]
         self._ids.update(zip(handles, event_ids, strict=True))
