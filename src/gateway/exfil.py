@@ -32,10 +32,27 @@ empty): exact lowercase ASCII hosts. An allowed URL must be `https`, have no
 userinfo, port, query, fragment or `%`-escape, and a short plain path; so even
 an allowlisted host (open redirect, search query) cannot carry encoded data.
 
+Top-level domains: any letter run (ASCII or not: `.\u0440\u0444`, `.\u4e2d\u56fd`, `.\u0938\u0902\u0917\u0920\u0928`,
+`.\u307f\u3093\u306a`) or `xn--` counts, so IDN TLDs are caught; the cost is that some
+non-URLs (`node.js`, `main.py`, `St.Louis`) are shown defanged.
+
+IP forms (decided, pinned by tests): with any scheme every form is removed
+(dotted, integer, hex, octal, IPv6). Without a scheme: dotted IPv4 is removed
+(port/path) or defanged; bracketed IPv6 with a port or path is removed; bare
+short/hex/octal/integer IPv4 (`127.1`, `0x7f000001`, `0177.0.0.1/x`) and bare
+unbracketed IPv6 are left as text: no scheme and no TLD, so not auto-linked.
+
+Input above `MAX_FILTER_CHARS` (8 Telegram messages) is blocked unscanned.
+
 Known limits: `@mentions`, `#hashtags` and `/commands` are left as they are
 (they open Telegram entities, not attacker URLs). Look-alike letters are not
 mapped to ASCII; a homoglyph host is still a host and is neutralised like any
 other. NFKC can change the look of some characters (ligatures, super-scripts).
+An ideographic full stop between two CJK characters is kept (it is prose
+punctuation), so a fully CJK host written with `\u3002` (`\u4f8b\u5b50\u3002\u4e2d\u56fd`) is not
+caught. Hosts spelled out in text (`evil dot com`, `evil[.]com`,
+`e v i l . c o m`) are left: they are not clickable, but a user who retypes
+one sends whatever data it holds; that social channel no filter closes.
 """
 
 from __future__ import annotations
@@ -44,6 +61,9 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from src.gateway.render import MAX_MESSAGE_CHARS
+
+MAX_FILTER_CHARS = 8 * MAX_MESSAGE_CHARS
 LINK_REMOVED = "[link removed]"
 IMAGE_REMOVED = "[image removed]"
 BLOCKED_NOTICE = (
@@ -53,7 +73,10 @@ BLOCKED_NOTICE = (
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _JOINERS = {"\u200c", "\u200d"}
-_DOT_FOLD = re.compile(r"(?<=\w)[\u3002\uff61](?=[A-Za-z0-9])")
+_DOT_FOLD = re.compile(r"(?<=\w)[\u3002\uff61](?=\w)")
+_CJK = re.compile(
+    r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
+)
 _TRAIL = ".,;:!?)]}*_~"
 _TAIL = r"[^\s<>\"'`]*"
 
@@ -67,11 +90,19 @@ _IPV4 = (
     + _TAIL
     + r")?)"
 )
+# TLD: `xn--`, or a letter followed by letters / digits / combining marks of
+# any script. ASCII punctuation, Latin-1 symbols, general and CJK/full-width
+# punctuation end it.
+_TLD = (
+    r"(?:xn--[a-z0-9\-]{1,59}|[^\W\d_]"
+    r"[^\s!-/:-@\[-`{-~\u00a0-\u00bf\u2000-\u206f\u3000-\u303f\ufe30-\ufe4f\uff00-\uffef]{1,62})"
+)
+_IPV6 = r"(?P<ip6>\[[0-9a-f:.]{2,45}\](?::\d{1,5})?[/?#\\]" + _TAIL + r")"
 _DOMAIN = (
-    r"(?<!\w)(?P<host>(?:[\w\-]{1,63}\.){1,127}(?:[a-z]{2,63}|xn--[a-z0-9\-]{1,59}))(?![\w\-])"
+    r"(?<!\w)(?P<host>(?:[\w\-]{1,63}\.){1,127}" + _TLD + r")(?![\w\-])"
     r"(?P<rest>(?::\d{1,5})?(?:[/?#\\]" + _TAIL + r")?)"
 )
-_LINK_ALTS = rf"(?P<scheme>{_SCHEME})|{_IPV4}|{_DOMAIN}"
+_LINK_ALTS = rf"(?P<scheme>{_SCHEME})|{_IPV6}|{_IPV4}|{_DOMAIN}"
 
 _ALL_RE = re.compile(
     r"(?P<refdef>^[ \t]{0,3}\[[^\[\]\n]{1,1000}\]:[ \t]*\S[^\n]*)"
@@ -129,7 +160,16 @@ def normalise(text: str) -> str:
             if not (ch in _JOINERS and ord(prev) > 0x7F and ord(nxt) > 0x7F):
                 continue
         out.append(ch)
-    return _DOT_FOLD.sub(".", "".join(out))
+    # Fold an ideographic full stop used as a host dot; keep it between two
+    # CJK characters, where it is sentence punctuation.
+    return _DOT_FOLD.sub(_fold_dot, "".join(out))
+
+
+def _fold_dot(m: re.Match[str]) -> str:
+    s, i = m.string, m.start()
+    if _CJK.match(s, i - 1) and _CJK.match(s, i + 1):
+        return m.group(0)
+    return "."
 
 
 def _split_trail(token: str) -> tuple[str, str]:
@@ -167,6 +207,9 @@ def _neutralise(text: str, policy: ReplyUrlPolicy) -> tuple[str, int]:
                 return m.group(0)
             count += 1
             return LINK_REMOVED + trail
+        if m.group("ip6") is not None:
+            count += 1
+            return LINK_REMOVED + _split_trail(m.group("ip6"))[1]
         if m.group("ip") is not None:
             core, trail = _split_trail(m.group("iprest"))
             count += 1
@@ -194,7 +237,7 @@ def find_links(text: str, policy: ReplyUrlPolicy) -> list[str]:
         if m.group("scheme") is not None:
             if not policy.allows(_split_trail(m.group("scheme"))[0]):
                 hits.append("scheme")
-        elif m.group("ip") is not None:
+        elif m.group("ip6") is not None or m.group("ip") is not None:
             hits.append("ip")
         else:
             core = _split_trail(m.group("rest"))[0]
@@ -205,6 +248,8 @@ def find_links(text: str, policy: ReplyUrlPolicy) -> list[str]:
 
 def filter_reply(text: str, policy: ReplyUrlPolicy) -> FilterResult:
     """Fail closed: any post-check hit or internal error blocks the reply."""
+    if len(text) > MAX_FILTER_CHARS:
+        return FilterResult(BLOCKED_NOTICE, 0, True)  # bounded work, fail closed
     try:
         clean, removed = _neutralise(normalise(text), policy)
         if find_links(clean, policy):

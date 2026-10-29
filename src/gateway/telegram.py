@@ -14,8 +14,12 @@
 - P4.3: every `send_text` (model replies, reminders, notices) and keypad
   prompt passes the exfil filter (`exfil.py`); each chunk is re-checked and a
   failing reply is replaced by a fixed notice. Approval cards are NOT filtered:
-  they must show the exact payload being approved; it is rendered inside a
-  `<pre>` entity (not auto-linked by Telegram), previews off.
+  they must show the exact payload being approved; it is rendered inside one
+  `<pre>` entity, previews off, and a payload holding a non-allowlisted link
+  gets a fixed warning line outside the `<pre>` (host never echoed). That
+  Telegram clients do not make a URL inside `<pre>` tappable is a live check
+  (HUMAN_TODO). Callback toasts (`answer_callback`) carry code constants only
+  (static test).
 - Transcription is NOT done here: voice bytes are handed to the ingest layer,
   which calls the `llm` module.
 """
@@ -62,6 +66,11 @@ _MAX_BACKOFF_S = 30.0
 _CALLBACK_DATA_MAX_BYTES = 64
 # Fixed text: no message content, only the time the user sent it (M1).
 _POISON_NOTICE = "I couldn't process a message you sent at {hhmm}, please resend"
+# Fixed line shown above an approval card whose payload holds a link or web
+# address not on the reply allowlist. Never names the host (M2).
+APPROVAL_LINK_WARNING = (
+    "Warning: this payload contains a web address. Check it before approving; do not open it."
+)
 
 
 class TelegramGateway:
@@ -225,18 +234,23 @@ class TelegramGateway:
             raise TelegramError("bad_response")
         return MessageRef(mid)
 
-    async def send_text(self, text: str, *, reply_to: MessageRef | None = None) -> list[MessageRef]:
+    def _outbound_chunks(self, text: str) -> list[str]:
+        """Every outbound text check, in one place (P4.3 link filter; later
+        outbound checks such as P4.4 canaries belong here). Returns raw chunks;
+        a failing reply becomes the fixed notice. Logs counts only: the reply
+        may hold the very data being exfiltrated."""
         result = filter_reply(text, self._reply_policy)
         chunks = chunk_text(result.text)
-        blocked = result.blocked or any(find_links(c, self._reply_policy) for c in chunks)
-        if blocked:
-            # Counts only: the reply may hold the very data being exfiltrated.
+        if result.blocked or any(find_links(c, self._reply_policy) for c in chunks):
             logger.warning("outbound reply blocked by link filter removed=%d", result.removed)
-            chunks = chunk_text(BLOCKED_NOTICE)
-        elif result.removed:
+            return chunk_text(BLOCKED_NOTICE)
+        if result.removed:
             logger.info("outbound links neutralised count=%d", result.removed)
+        return chunks
+
+    async def send_text(self, text: str, *, reply_to: MessageRef | None = None) -> list[MessageRef]:
         refs: list[MessageRef] = []
-        for i, chunk in enumerate(chunks):
+        for i, chunk in enumerate(self._outbound_chunks(text)):
             refs.append(
                 await self._send_one(escape_html(chunk), reply_to=reply_to if i == 0 else None)
             )
@@ -247,8 +261,14 @@ class TelegramGateway:
             n = len(data.encode("utf-8"))
             if not 1 <= n <= _CALLBACK_DATA_MAX_BYTES:
                 raise ValueError("callback_data must be 1..64 bytes")
+        # Fixed text outside one <pre>; the payload only inside it. A payload
+        # with a non-allowlisted link gets a fixed warning (host never echoed).
+        warn = APPROVAL_LINK_WARNING + "\n" if find_links(card.text, self._reply_policy) else ""
         body = (
-            "Approval needed. Exact payload:\n<pre>" + escape_html(sanitize(card.text)) + "</pre>"
+            warn
+            + "Approval needed. Exact payload:\n<pre>"
+            + escape_html(sanitize(card.text))
+            + "</pre>"
         )
         if utf16_len(body) > MAX_MESSAGE_CHARS:
             # Never truncate what the user is approving.

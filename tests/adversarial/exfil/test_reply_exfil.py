@@ -75,7 +75,7 @@ CORPUS: list[tuple[str, str, str]] = [
     ("bare_single_slash", "bare_url", f"https:/{E}/{S}"),
     ("bare_protocol_relative", "bare_url", f"//{E}/{S}"),
     ("bare_dot_prefix", "bare_url", f"..{E}/{S}"),
-    ("bare_ellipsis_prefix", "bare_url", f"…{E}/{S}"),
+    ("bare_ellipsis_prefix", "bare_url", f"\u2026{E}/{S}"),
     ("bare_dot_scheme", "bare_url", f".https://{E}/{S}"),
     ("bare_dot_ip", "ip_literal", f"see..203.0.113.9/{S}"),
     ("bare_ftp", "bare_url", f"ftp://{E}/{S}"),
@@ -129,6 +129,28 @@ CORPUS: list[tuple[str, str, str]] = [
     ("one_dot_leader", "unicode", f"evil\u2024example/{S}"),
     ("math_letters", "unicode", f"\U0001d5f5\U0001d601\U0001d601\U0001d5fd\U0001d600://{E}/{S}"),
     ("tag_chars", "unicode", f"evil\U000e0041.example/{S}"),
+    ("idn_rf_query", "idn_tld", f"evil.\u0440\u0444/?d={S}"),
+    ("idn_rf_bare", "idn_tld", "evil.\u0440\u0444"),
+    ("idn_cyr_label", "idn_tld", "\u0441\u0435\u043a\u0440\u0435\u0442.\u0440\u0444"),
+    ("idn_cyr_label_path", "idn_tld", f"\u0441\u0435\u043a\u0440\u0435\u0442.\u0440\u0444/{S}"),
+    (
+        "idn_online_query",
+        "idn_tld",
+        f"\u043f\u0440\u0438\u043c\u0435\u0440.\u043e\u043d\u043b\u0430\u0439\u043d/?d={S}",
+    ),
+    ("idn_china", "idn_tld", "evil.\u4e2d\u56fd"),
+    ("idn_china_path", "idn_tld", f"evil.\u4e2d\u56fd/{S}"),
+    ("idn_devanagari", "idn_tld", "evil.\u0938\u0902\u0917\u0920\u0928"),
+    ("idn_devanagari_path", "idn_tld", f"evil.\u0938\u0902\u0917\u0920\u0928/{S}"),
+    ("idn_minna", "idn_tld", "evil.\u307f\u3093\u306a"),
+    ("idn_minna_path", "idn_tld", f"evil.\u307f\u3093\u306a/{S}"),
+    ("idn_greek", "idn_tld", "evil.\u03b5\u03bb"),
+    ("idn_greek_path", "idn_tld", f"evil.\u03b5\u03bb/{S}"),
+    ("idn_upper_rf", "idn_tld", "Evil.\u0420\u0424/x"),
+    ("idn_ideo_dot_rf", "idn_tld", "evil\u3002\u0440\u0444/x"),
+    ("idn_ideo_dot_cyr", "idn_tld", f"\u0441\u0435\u043a\u0440\u0435\u0442\u3002\u0440\u0444/{S}"),
+    ("ip_v6_bare_path", "ip_literal", f"[2001:db8::1]/{S}"),
+    ("ip_v6_bare_port", "ip_literal", f"[::1]:8080/{S}"),
     ("html_entity_dot", "html_entities", f"evil&#46;example/{S} and https&#58;//{E}/{S}"),
     ("html_entity_named", "html_entities", f"&lt;img src=https://{E}/{S}&gt;"),
     ("html_comment", "html_entities", f"<!-- https://{E}/{S} -->"),
@@ -153,7 +175,8 @@ _LINKISH = re.compile(
     r"(?i)[a-z][a-z0-9+.\-]*:[/\\]"
     r"|\b(?:javascript|data|vbscript|mailto|tel|tg|intent|file|blob|https?|ftp):\S"
     r"|www\."
-    r"|[\w\-]\.(?:[a-z]{2,63}|xn--)(?![\w])"
+    r"|[\w\-]\.(?:xn--|[^\W\d_][^\W\d_]|[^\W\d_][\u0900-\u0dff])"
+    r"|\[[0-9a-f:.]{2,45}\](?::\d+)?/"
     r"|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:[:/]|$)"
 )
 

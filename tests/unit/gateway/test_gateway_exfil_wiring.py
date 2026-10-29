@@ -10,12 +10,14 @@ from __future__ import annotations
 import ast
 import logging
 import pathlib
+from html import unescape as html_unescape
 
 import pytest
 
 from src.gateway import exfil
 from src.gateway.exfil import BLOCKED_NOTICE, LINK_REMOVED
 from src.gateway.render import MAX_MESSAGE_CHARS
+from src.gateway.telegram import APPROVAL_LINK_WARNING
 from src.gateway.types import ApprovalCard, MessageRef, OutboundBlocked
 from tests.unit.gateway.fake_telegram import FakeTelegram
 from tests.unit.gateway.test_gateway_outbound import build
@@ -153,21 +155,124 @@ def test_only_one_send_call_site_in_src() -> None:
 
 
 def test_send_text_runs_the_filter() -> None:
-    """Static tripwire: `send_text` calls `filter_reply` (the gateway has no
-    other text-send entry point besides approval cards and keypads)."""
-    src = pathlib.Path("src/gateway/telegram.py").read_text(encoding="utf-8")
-    fn = next(
-        n
-        for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_text"
-    )
+    """Static tripwire: `send_text` sends only `_outbound_chunks` output, and
+    that runs `filter_reply` plus the per-chunk `find_links` (the gateway has
+    no other text-send entry point besides approval cards and keypads)."""
+    tree = ast.parse(pathlib.Path("src/gateway/telegram.py").read_text(encoding="utf-8"))
+    fns = {
+        n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
     names = {
-        n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        n.func.id
+        for n in ast.walk(fns["_outbound_chunks"])
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
     }
     assert {"filter_reply", "find_links"} <= names
+    attrs = {
+        n.func.attr
+        for n in ast.walk(fns["send_text"])
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "_outbound_chunks" in attrs
 
 
 @pytest.mark.parametrize("bad", [("*.evil.example",), ("https://x.org",), ("10.0.0.1",)])
 def test_settings_reject_bad_allowlist(bad: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):
         build(FakeTelegram(), reply_url_allowlist=bad)
+
+
+# ---- M2: approval card layout and link warning ----
+
+APPROVAL_HEADER = "Approval needed. Exact payload:\n"
+
+
+def _card_parts(body: str) -> tuple[str, str]:
+    """Split a card into (text outside <pre>, text inside). Exactly one <pre>."""
+    assert body.count("<pre>") == 1 and body.count("</pre>") == 1
+    assert body.endswith("</pre>")
+    outside, inside = body[: -len("</pre>")].split("<pre>")
+    return outside, inside
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "create_event(title='Dinner')",
+        "append(text='see https://evil.example/?d=SECRET')",
+        "note(text='</pre><b>x</b> evil.com')",
+        "line1\nline2 <pre>",
+    ],
+)
+async def test_approval_card_is_header_plus_one_pre(payload: str) -> None:
+    fake = FakeTelegram()
+    await build(fake).send_approval(ApprovalCard(payload, "ap:a", "rj:a"))
+    (body,) = fake.sent
+    outside, inside = _card_parts(body["text"])
+    assert outside in (APPROVAL_HEADER, APPROVAL_LINK_WARNING + "\n" + APPROVAL_HEADER)
+    # Nothing from the payload outside the <pre>: the outside is fixed text.
+    assert "evil" not in outside and "SECRET" not in outside
+    assert html_unescape(inside) == payload
+    assert body["link_preview_options"] == {"is_disabled": True}
+
+
+async def test_approval_card_warns_on_link_without_echoing_host() -> None:
+    fake = FakeTelegram()
+    gw = build(fake)
+    await gw.send_approval(ApprovalCard("go https://evil.example/x", "ap:a", "rj:a"))
+    await gw.send_approval(ApprovalCard("plain text", "ap:b", "rj:b"))
+    with_link, plain = (_card_parts(b["text"])[0] for b in fake.sent)
+    assert with_link.startswith(APPROVAL_LINK_WARNING)
+    assert plain == APPROVAL_HEADER
+    assert exfil.find_links(APPROVAL_LINK_WARNING, exfil.ReplyUrlPolicy()) == []
+
+
+async def test_approval_card_allowlisted_link_has_no_warning() -> None:
+    fake = FakeTelegram()
+    gw = build(fake, reply_url_allowlist=("docs.python.org",))
+    await gw.send_approval(ApprovalCard("read https://docs.python.org/3/", "ap:a", "rj:a"))
+    assert _card_parts(fake.sent[0]["text"])[0] == APPROVAL_HEADER
+
+
+# ---- L3: callback toasts carry only code-written text ----
+
+
+def test_answer_callback_text_is_constants_only() -> None:
+    """`answerCallbackQuery` text is not filtered (toasts are not linkified),
+    so every caller must pass a constant, a module UPPER_CASE name, or an
+    f-string built only from those and numbers -- never model or payload text."""
+    calls = 0
+    for p in pathlib.Path("src").rglob("*.py"):
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call) or not isinstance(n.func, ast.Attribute):
+                continue
+            if n.func.attr not in {"answer_callback", "_answer"}:
+                continue
+            args = n.args[1:] + [k.value for k in n.keywords if k.arg == "text"]
+            for a in args:
+                calls += 1
+                assert _code_text(a), f"{p}:{n.lineno} passes non-constant callback text"
+    assert calls >= 10
+
+
+def _code_text(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return node.value is None or isinstance(node.value, str)
+    if isinstance(node, ast.Name):
+        return node.id.isupper() or node.id == "text"  # `text`: pass-through wrappers
+    if isinstance(node, ast.JoinedStr):
+        return all(_code_text_part(v) for v in node.values)
+    return False
+
+
+def _code_text_part(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.FormattedValue):
+        v = node.value
+        if isinstance(v, ast.Name):
+            return v.id.isupper()
+        # len(...) -> a number, e.g. the keypad "3/6" progress
+        return isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "len"
+    return False
