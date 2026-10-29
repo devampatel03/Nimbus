@@ -25,14 +25,14 @@ target line (`describe_args`) is the page title, labelled UNTRUSTED.
 
 Quarantine budget (P3.0 MED-D): `notion_search` costs up to 5 quarantine calls
 (one per page, `MAX_SEARCH_RESULTS` = loop `MAX_EXTERNAL_ITEMS`), `notion_read`
-1, `notion_append` 0. With the loop cap of 8 tool calls per turn the worst case
-is 8 x 5 = 40 quarantine calls for one turn of searches.
+1, `notion_append` 0. The turn's `QuarantineBudget` (default 10, shared with
+memory and every other tool) caps the total; items past it are withheld.
 
 `ToolRegistry` builds groups with no arguments; until `bind()` hands over the
 client every tool fails closed. Scope `notion` is not in `LOCAL_SCOPES`, so the
 policy denies these tools (`deny.scope_disabled`) until the app enables it. Live
 use needs H5 (`NOTION_TOKEN`, pages shared with the integration); the group is
-not wired in `src/app/runtime.py` (HUMAN_TODO H26).
+bound by `src.app.integrations` only when `NOTION_TOKEN` is set (HUMAN_TODO H26).
 """
 
 from __future__ import annotations

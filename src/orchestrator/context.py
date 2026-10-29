@@ -10,7 +10,9 @@ P3.0 (ADR-0010, H18 interim default): a recalled UNTRUSTED item (lane
 untrusted, or any source other than plain "memory") goes through the
 quarantine lane; without a quarantine, or if quarantine fails, its content is
 withheld behind a fixed notice. Either way the turn's taint is set. Trusted
-memory is data-framed for defence in depth and does not taint.
+memory is data-framed for defence in depth and does not taint. Quarantine calls
+are bounded by the turn's `QuarantineBudget` (P3.0 MED-D); over budget, the
+item is withheld (`over_budget`).
 """
 
 from __future__ import annotations
@@ -23,7 +25,13 @@ from uuid import UUID
 
 from src.contracts.memory_query import MemoryQuery
 from src.lanes.data import BlockOrigin, DataBlock, SourceKind, UntrustedText
-from src.lanes.quarantine import Quarantine, QuarantineError, local_data_block, withheld_block
+from src.lanes.quarantine import (
+    Quarantine,
+    QuarantineBudget,
+    QuarantineError,
+    local_data_block,
+    withheld_block,
+)
 from src.lanes.schemas import SCHEMA_FOR_SOURCE
 from src.lanes.taint import Taint, TaintSource
 from src.llm.types import ChatMessage
@@ -88,7 +96,11 @@ class TurnContext:
 
 
 async def _memory_block(
-    m: RecalledMemory, quarantine: Quarantine | None, taint: Taint, turn_id: UUID | None
+    m: RecalledMemory,
+    quarantine: Quarantine | None,
+    taint: Taint,
+    turn_id: UUID | None,
+    budget: QuarantineBudget,
 ) -> DataBlock:
     text = str(m.text or "")
     if not m.is_untrusted:
@@ -102,7 +114,10 @@ async def _memory_block(
     source = SourceKind.UNTRUSTED_MEMORY
     try:
         out = await quarantine.extract(
-            UntrustedText(text, source=source), SCHEMA_FOR_SOURCE[source], turn_id=turn_id
+            UntrustedText(text, source=source),
+            SCHEMA_FOR_SOURCE[source],
+            turn_id=turn_id,
+            budget=budget,
         )
     except QuarantineError as e:
         return withheld_block(label, reason=e.code)
@@ -122,9 +137,13 @@ async def build_context(
     nonce_factory: Callable[[], str] | None = None,
     quarantine: Quarantine | None = None,
     turn_id: UUID | None = None,
+    budget: QuarantineBudget | None = None,
 ) -> TurnContext:
     blocks: list[DataBlock] = []
     taint = Taint()
+    # P3.0 MED-D: always bounded. The loop passes its per-turn budget (shared
+    # with tool output); a direct caller gets the default cap.
+    turn_budget = budget if budget is not None else QuarantineBudget()
     if recall is not None:
         try:
             memories = await recall.recall(user_text, limit=memory_limit)
@@ -132,7 +151,7 @@ async def build_context(
             log.warning("memory recall failed; continuing without memory")
             memories = []
         for m in list(memories)[:memory_limit]:
-            block = await _memory_block(m, quarantine, taint, turn_id)
+            block = await _memory_block(m, quarantine, taint, turn_id, turn_budget)
             taint.absorb(block)
             blocks.append(block)
     if nonce_factory is None:

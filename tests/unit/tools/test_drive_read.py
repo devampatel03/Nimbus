@@ -208,8 +208,9 @@ async def test_quarantine_failure_on_a_middle_search_item_leaves_a_withheld_bloc
     group = DriveReadTool()
     group.bind(drive.reader())
     good = json.dumps({"summary": "GOODSUMMARY"})
-    # quarantine replies, in file order: ok, garbage (and its repair try), ok
-    qfake = FakeLLM([good, "not json", "still not json", good])
+    # quarantine replies, in file order: ok, garbage, ok (no repair retry on the
+    # quarantine lane since P3.0 MED-D)
+    qfake = FakeLLM([good, "not json", good])
     main = FakeLLM(
         [
             ProviderResponse(

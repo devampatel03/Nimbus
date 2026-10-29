@@ -7,9 +7,13 @@
 `lane=QUARANTINE`, `purpose=QUARANTINE_EXTRACT`, no tools (the guard refuses
 tools on this lane and drops provider-invented tool calls), no memory (the
 request is exactly a fixed system prompt plus the input rendered as one DATA
-block; this class holds nothing but the LLM client). The guard may make one
-audited, spend-capped repair retry on malformed JSON; that is still one
-`extract`.
+block; this class holds nothing but the LLM client). The guard makes NO repair
+retry on this lane (P3.0 MED-D): a malformed reply fails closed after one call.
+
+Per-turn budget (P3.0 MED-D): every `extract` given a `QuarantineBudget` takes
+one slot BEFORE the model call (a failed call still spends it); a spent budget
+raises `QuarantineError("over_budget")` with no model call. The orchestrator
+makes one budget per turn, shared by recalled memory and all tool output.
 
 * The input is capped BEFORE the call: raw slice, NFKC fold, slice again, then
   an explicit marker. A 2M-char document therefore costs one bounded call and
@@ -83,7 +87,62 @@ QUARANTINE_SYSTEM_PROMPT: Final = (
     "present, leave it at its default. Reply with one JSON object only."
 )
 
-_CODES: Final = frozenset({"unregistered_schema", "refused", "unavailable", "schema_invalid"})
+_CODES: Final = frozenset(
+    {"unregistered_schema", "refused", "unavailable", "schema_invalid", "over_budget"}
+)
+
+# Quarantine calls per turn (P3.0 MED-D). Bounded both ways in code so a
+# setting cannot remove the cap; 0 withholds every untrusted item.
+MAX_QUARANTINE_CALLS_PER_TURN: Final = 10
+QUARANTINE_CALLS_RANGE: Final = (0, 25)
+
+
+@final
+class QuarantineBudget:
+    """Hard per-turn cap on `Quarantine.extract` calls. Deterministic and
+    monotonic: `take()` only ever counts up; the limit is fixed at creation."""
+
+    __slots__ = ("_limit", "_used")
+
+    _limit: int
+    _used: int
+
+    def __init__(self, limit: int = MAX_QUARANTINE_CALLS_PER_TURN) -> None:
+        if type(limit) is not int:
+            raise TypeError("quarantine budget must be an int")
+        lo, hi = QUARANTINE_CALLS_RANGE
+        if not lo <= limit <= hi:
+            raise ValueError("quarantine budget out of range")
+        object.__setattr__(self, "_limit", limit)
+        object.__setattr__(self, "_used", 0)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("QuarantineBudget is read-only")
+
+    def __init_subclass__(cls, **kw: Any) -> None:
+        raise TypeError("QuarantineBudget cannot be subclassed")
+
+    def take(self) -> bool:
+        """Spend one slot. False (and nothing spent) once the budget is used up."""
+        if self._used >= self._limit:
+            return False
+        object.__setattr__(self, "_used", self._used + 1)
+        return True
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @property
+    def used(self) -> int:
+        return self._used
+
+    @property
+    def remaining(self) -> int:
+        return self._limit - self._used
+
+    def __repr__(self) -> str:
+        return f"QuarantineBudget(used={self._used}, limit={self._limit})"
 
 
 class QuarantineError(Exception):
@@ -224,12 +283,22 @@ class Quarantine:
         self._max_output = max_output_tokens
 
     async def extract(
-        self, text: UntrustedText, schema: type[T], *, turn_id: UUID | None = None
+        self,
+        text: UntrustedText,
+        schema: type[T],
+        *,
+        turn_id: UUID | None = None,
+        budget: QuarantineBudget | None = None,
     ) -> Quarantined[T]:
         if not isinstance(text, UntrustedText):
             raise TypeError("Quarantine.extract takes UntrustedText")
+        if budget is not None and not isinstance(budget, QuarantineBudget):
+            raise TypeError("budget must be a QuarantineBudget")
         if schema not in REGISTERED_SCHEMAS:
             raise QuarantineError("unregistered_schema")
+        if budget is not None and not budget.take():
+            log.warning("quarantine failed code=over_budget source=%s", text.source.value)
+            raise QuarantineError("over_budget")
         body, truncated = prepare_input(text, self._max_input)
         block = _mint_block(
             _MINT,
@@ -287,6 +356,7 @@ class _WithheldReason(StrEnum):
     SCHEMA_INVALID = "schema_invalid"
     UNREGISTERED_SCHEMA = "unregistered_schema"
     OVER_ITEM_CAP = "over_item_cap"  # too many items, or not UntrustedText
+    OVER_BUDGET = "over_budget"  # per-turn quarantine budget spent (P3.0 MED-D)
 
 
 def withheld_block(label: str, *, reason: str) -> DataBlock:
@@ -336,12 +406,15 @@ def local_data_block(label: str, text: str, *, origin: BlockOrigin, untrusted: b
 
 
 __all__ = [
+    "MAX_QUARANTINE_CALLS_PER_TURN",
     "MAX_QUARANTINE_INPUT_CHARS",
+    "QUARANTINE_CALLS_RANGE",
     "QUARANTINE_MAX_OUTPUT_TOKENS",
     "QUARANTINE_SYSTEM_PROMPT",
     "TRUNCATED_INPUT_MARKER",
     "LocalTextFields",
     "Quarantine",
+    "QuarantineBudget",
     "QuarantineError",
     "Quarantined",
     "local_data_block",
