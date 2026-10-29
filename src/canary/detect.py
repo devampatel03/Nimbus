@@ -16,13 +16,14 @@ value is caught, and a value spread over several outbound messages is caught
 by the guard's rolling tail (`src.canary.guard`). The chance that unrelated
 text contains one such run is about n * 300 / 25**10 (~1e-8 per 4 KB message).
 Operator-configured literals (`LLM_CANARIES`) are not random, so only their
-whole skeleton counts. For the guard's stream check, `scattered` also flags
+whole skeleton counts. Letter-substitution forms are precomputed on the
+canary side: every ROT-N (also of the reversed value) and Atbash. For the guard's stream check, `scattered` also flags
 two different 6-character pieces of the same value (pieces sent out of order).
 
 Decoded candidates are scanned too (two levels deep): HTML entities, percent
 and backslash escapes; base64 / base64url (also with the whitespace removed);
-hex (with `0x`, `\\x`, `%`, space, colon or dash separators); base32; decimal
-character codes.
+hex (with `0x`, `\\x`, `%`, space, colon or dash separators); base32; decimal,
+octal and binary character codes.
 
 Fail closed: text over `MAX_SCAN_CHARS` is a hit (`oversize`). Top-level
 decoding is linear in the text; nested decoding (only of mostly printable
@@ -109,6 +110,8 @@ _HEX_SEPS = re.compile(r"(?i)0x|\\x|%|[\s:,;.\-]")
 _HEX_RUN = re.compile(r"[0-9A-Fa-f]{20,}")
 _B32_RUN = re.compile(r"[A-Za-z2-7]{16,}=*")
 _CODES_RUN = re.compile(r"(?:\b\d{2,3}\b[\s,;]+){9,}\b\d{2,3}\b")
+_BIN_RUN = re.compile(r"(?:\b[01]{7,8}\b[\s,;]*){10,}")
+_OCT_ESC_RUN = re.compile(r"(?:\\0?[0-7]{3}){10,}")
 _U_ESC = re.compile(r"\\u([0-9A-Fa-f]{4})|\\x([0-9A-Fa-f]{2})")
 _WS = re.compile(r"\s+")
 
@@ -122,6 +125,30 @@ def skeleton(text: str) -> str:
 
 def _rot13(text: str) -> str:
     return codecs.encode(text, "rot13")
+
+
+_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ATBASH = str.maketrans(_LOWER, _LOWER[::-1])
+
+
+def _rot(text: str, n: int) -> str:
+    return text.translate(str.maketrans(_LOWER, _LOWER[n:] + _LOWER[:n]))
+
+
+def _forms(value: str) -> list[tuple[str, str, bool]]:
+    """(suffix, transformed value, primary) for every letter-substitution form
+    a model can apply without a tool: identity, reversed, every ROT-N (also of
+    the reversed value) and Atbash (also reversed). Only the primary forms
+    (identity, reversed, ROT13) feed the stream piece check, so its false-hit
+    rate stays unchanged; all forms feed the 10-character fragment check."""
+    v = value.casefold()
+    out = [("", v, True), ("+reversed", v[::-1], True)]
+    for n in range(1, 26):
+        out.append((f"+rot{n}", _rot(v, n), n == 13))
+        out.append((f"+reversed+rot{n}", _rot(v[::-1], n), False))
+    out.append(("+atbash", v.translate(_ATBASH), False))
+    out.append(("+reversed+atbash", v[::-1].translate(_ATBASH), False))
+    return out
 
 
 @dataclass(frozen=True)
@@ -138,6 +165,10 @@ class _TooComplex(Exception):
 
 def _bytes_text(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore").replace("\x00", "")
+
+
+def _from_codes(codes: Iterable[int]) -> str:
+    return "".join(chr(c) for c in codes if 32 <= c < 127)
 
 
 def _mostly_printable(text: str) -> bool:
@@ -171,17 +202,15 @@ class CanaryDetector:
         for site, value, fragments in entries:
             if not isinstance(value, str):
                 continue
-            forms = (
-                ("", skeleton(value)),
-                ("+reversed", skeleton(value[::-1])),
-                ("+rot13", skeleton(_rot13(value.casefold()))),
-            )
-            for suffix, form in forms:
+            for suffix, raw, primary in _forms(value):
+                form = skeleton(raw)
                 if len(form) < MIN_LITERAL_CHARS:
                     continue
                 if fragments and len(form) >= FRAGMENT_CHARS:
                     for i in range(len(form) - FRAGMENT_CHARS + 1):
                         self._grams.setdefault(form[i : i + FRAGMENT_CHARS], (site, suffix))
+                    if not primary:
+                        continue
                     for i in range(len(form) - PIECE_CHARS + 1):
                         self._pieces.setdefault(form[i : i + PIECE_CHARS], []).append(
                             (site, suffix, i)
@@ -320,5 +349,15 @@ class CanaryDetector:
                         continue
             for m in _CODES_RUN.finditer(src):
                 count(len(m.group()))
-                codes = [int(x) for x in re.findall(r"\d{2,3}", m.group())]
-                yield "charcodes", "".join(chr(c) for c in codes if 32 <= c < 127)
+                digits = re.findall(r"\d{2,3}", m.group())
+                yield "charcodes", _from_codes(int(x) for x in digits)
+                if all(set(x) <= set("01234567") for x in digits):
+                    yield "octal", _from_codes(int(x, 8) for x in digits)
+            for m in _BIN_RUN.finditer(src):
+                count(len(m.group()))
+                bits = re.findall(r"[01]{7,8}", m.group())
+                yield "binary", _from_codes(int(x, 2) for x in bits)
+            for m in _OCT_ESC_RUN.finditer(src):
+                count(len(m.group()))
+                octs = re.findall(r"\\0?([0-7]{3})", m.group())
+                yield "octal", _from_codes(int(x, 8) for x in octs)

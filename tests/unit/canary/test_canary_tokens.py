@@ -70,3 +70,17 @@ def test_seed_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     s = CanarySettings(_env_file=None)  # type: ignore[call-arg]
     assert s.seed is not None and s.alert_telegram is False
     assert derive_canaries(s.seed.get_secret_value()).values() == canaries().values()
+
+
+@pytest.mark.parametrize("bad", [0, 5, 29.9, 86_401])
+def test_alert_cooldown_has_a_floor_and_a_ceiling(bad: float) -> None:
+    with pytest.raises(ValidationError):
+        CanarySettings(_env_file=None, alert_cooldown_s=bad)  # type: ignore[call-arg]
+    assert CanarySettings(_env_file=None, alert_cooldown_s=30).alert_cooldown_s == 30  # type: ignore[call-arg]
+
+
+def test_telegram_notice_and_guard_reply_are_one_text() -> None:
+    from src.canary.guard import BLOCKED_REPLY
+    from src.gateway.telegram import CANARY_NOTICE
+
+    assert CANARY_NOTICE == BLOCKED_REPLY and CANARY_NOTICE is BLOCKED_REPLY

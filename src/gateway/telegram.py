@@ -38,6 +38,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import timedelta, timezone
 from typing import Any, Protocol
 
+# Fixed text sent instead of a reply that held a canary (P4.4): single-sourced.
+from src.canary.guard import BLOCKED_REPLY as CANARY_NOTICE
 from src.gateway.api import TelegramApi
 from src.gateway.exfil import BLOCKED_NOTICE, filter_reply, find_links
 from src.gateway.parse import parse_update
@@ -75,13 +77,6 @@ _POISON_NOTICE = "I couldn't process a message you sent at {hhmm}, please resend
 # address not on the reply allowlist. Never names the host (M2).
 APPROVAL_LINK_WARNING = (
     "Warning: this payload contains a web address. Check it before approving; do not open it."
-)
-
-
-# Fixed text sent instead of a reply that held a canary (P4.4).
-CANARY_NOTICE = (
-    "I didn't send my reply: it contained protected internal data, which can mean "
-    "something I read was trying to make me leak it. Nothing else was sent."
 )
 
 

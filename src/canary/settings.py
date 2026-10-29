@@ -11,7 +11,8 @@
   Never committed: it lives in the env/secret store with the other secrets.
 - `CANARY_ALERT_TELEGRAM`: send the allowlisted user a fixed-text notice when a
   canary is blocked (default on).
-- `CANARY_ALERT_COOLDOWN_S`: at most one notice per window (default 10 min).
+- `CANARY_ALERT_COOLDOWN_S`: at most one notice per window (default 10 min,
+  minimum 30 s).
 
 There is deliberately no "disable" switch: the check always runs (fail closed).
 """
@@ -22,6 +23,8 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_SEED_CHARS = 32
+# Floor: a tripped canary must not be able to flood the user with alerts.
+MIN_ALERT_COOLDOWN_S = 30.0
 
 
 class CanarySettings(BaseSettings):
@@ -36,7 +39,7 @@ class CanarySettings(BaseSettings):
 
     seed: SecretStr | None = None
     alert_telegram: bool = True
-    alert_cooldown_s: float = Field(default=600.0, ge=0, le=86_400)
+    alert_cooldown_s: float = Field(default=600.0, ge=MIN_ALERT_COOLDOWN_S, le=86_400)
 
     @field_validator("seed")
     @classmethod

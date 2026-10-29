@@ -106,3 +106,49 @@ def test_skeleton_folds_case_space_zero_width_homoglyph_and_leet() -> None:
     assert skeleton("A\u200bb-C d") == "abcd"
     assert skeleton("сорех") == skeleton("copex")  # Cyrillic look-alikes
     assert skeleton("h3ll0") == skeleton("hello")
+
+
+@pytest.mark.parametrize("n", range(1, 26))
+def test_every_rot_n_and_reversed_rot_n_is_detected(n: int) -> None:
+    from tests._canary_helpers import _rot
+
+    v = CS.value(Site.TOOL_FRAME)
+    assert detector().detect(f"x {_rot(v, n)} y") is not None
+    assert detector().detect(f"x {_rot(v[::-1], n)} y") is not None
+
+
+def test_benign_corpus_stays_clean_with_all_forms() -> None:
+    """False-positive recheck after widening (ROT-N/Atbash forms on the canary side)."""
+    import random
+
+    rng = random.Random(7)
+    words = [
+        "remind",
+        "call",
+        "mum",
+        "dentist",
+        "tomorrow",
+        "meeting",
+        "budget",
+        "review",
+        "project",
+        "alpha",
+        "notes",
+        "lunch",
+        "asha",
+        "train",
+        "ticket",
+        "bangalore",
+        "pune",
+        "invoice",
+        "deadline",
+        "friday",
+        "report",
+        "draft",
+    ]
+    d = detector()
+    for _ in range(300):
+        text = " ".join(rng.choice(words) for _ in range(600))
+        assert d.detect(text) is None
+    for _ in range(50):
+        assert d.detect(" ".join(f"{rng.getrandbits(8):08b}" for _ in range(200))) is None

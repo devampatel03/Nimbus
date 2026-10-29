@@ -3,6 +3,9 @@
 
 """INV-7 / INV-6 (P4.4, ADR-0023): planted canaries never leave the process.
 
+Staged in tests/unit/canary until promotion to tests/eval/invariants is
+approved (HUMAN_TODO H31); assertions are unchanged.
+
 Structural pins on the production wiring (`src/app/runtime.py::run_app`):
   1. no component is handed the raw `be.gateway`; only `wire_canary` sees it,
      and everything else gets the `CanaryGateway` it returns;
