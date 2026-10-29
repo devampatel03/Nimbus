@@ -204,6 +204,31 @@ def deny_google_calendar_unexpected(service: Service, method: str, path: str) ->
     return None
 
 
+# Notion (P3.7, ADR-0021): exactly four calls. Search, one page's properties,
+# one block's children (read) and append children. Every id is a dashed
+# lowercase UUID; there is no update/archive/delete/share/comment/database
+# endpoint. Matched on the ORIGINAL path in `normalise_path` (case-sensitive)
+# and on the normalised path here (method check).
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_NOTION_SEARCH_RE = re.compile(r"/v1/search")
+_NOTION_PAGE_RE = re.compile(rf"/v1/pages/{_UUID}")
+_NOTION_CHILDREN_RE = re.compile(rf"/v1/blocks/{_UUID}/children")
+_NOTION_METHODS: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
+    (_NOTION_SEARCH_RE, frozenset({"POST"})),
+    (_NOTION_PAGE_RE, frozenset({"GET"})),
+    (_NOTION_CHILDREN_RE, frozenset({"GET", "PATCH"})),
+)
+
+
+def deny_notion_unexpected(service: Service, method: str, path: str) -> str | None:
+    if service is not Service.NOTION:
+        return None
+    for pattern, methods in _NOTION_METHODS:
+        if pattern.fullmatch(path):
+            return None if method in methods else "notion_method"
+    return "notion_path"
+
+
 DEFAULT_DENY_RULES: tuple[DenyRule, ...] = (
     deny_gmail_send,
     deny_gmail_settings_write,
@@ -211,6 +236,7 @@ DEFAULT_DENY_RULES: tuple[DenyRule, ...] = (
     deny_google_oauth_unexpected,
     deny_drive_write,
     deny_google_calendar_unexpected,
+    deny_notion_unexpected,
 )
 
 
@@ -259,6 +285,11 @@ def normalise_path(path: object, *, service: Service, method: str) -> str:
     # case-sensitively (ADR-0019 addendum).
     if _CALENDAR_PREFIX_RE.search(lowered) and _CALENDAR_OK_RE.fullmatch(path) is None:
         raise deny("google_calendar_path")
+    # Notion: the ORIGINAL path must match an allowed shape exactly, so '/V1/search'
+    # or an upper-case id is refused rather than lowercased into a match.
+    if service is Service.NOTION and not any(p.fullmatch(path) for p, _ in _NOTION_METHODS):
+        send = deny_gmail_send(service, method, lowered)
+        raise deny(send if send is not None else "notion_path")
     return lowered
 
 

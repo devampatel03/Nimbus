@@ -14,7 +14,7 @@ from src.policy import LOCAL_SCOPES, TOOL_RULES, PolicyConfig, PolicyEngine, Ris
 from src.policy.registry import DELETE_PER_HOUR, READ_PER_HOUR, WRITE_PER_HOUR
 from src.tools.registry import ToolRegistry
 
-GOOGLE_SCOPES = frozenset({"drive", "calendar"})
+GOOGLE_SCOPES = frozenset({"drive", "calendar", "notion"})  # external, not local
 FETCH_LIKE = re.compile(r"fetch|http|url|browse|web|scrape|curl|download|request", re.IGNORECASE)
 
 

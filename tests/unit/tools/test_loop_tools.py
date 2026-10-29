@@ -41,6 +41,9 @@ EXPECTED_RISKS: dict[str, Risk] = {
     "calendar_create": Risk.WRITE_EXTERNAL,
     "calendar_update": Risk.WRITE_EXTERNAL,
     "calendar_delete": Risk.DESTRUCTIVE,
+    "notion_search": Risk.READ,
+    "notion_read": Risk.READ,
+    "notion_append": Risk.WRITE_EXTERNAL,
 }
 
 

@@ -281,6 +281,24 @@ class Dispatcher:
             return False
         return True
 
+    async def _audit_args_rejected(self, name: str, tainted: bool) -> None:
+        """A `resolve_args` rejection happens before the policy runs but is still a
+        decision about a model-proposed call: it gets a `policy_audit` row (the
+        tool never ran). A failed audit write changes nothing, the call is
+        already refused."""
+        await self._record(
+            AuditRecord(
+                kind="decision",
+                event="args_rejected",
+                tool=safe_name(name),
+                rule_id="tool.args",
+                outcome="deny",
+                tainted=tainted,
+                step_up=False,
+                executed=False,
+            )
+        )
+
     async def dispatch(
         self,
         name: str,
@@ -299,11 +317,13 @@ class Dispatcher:
                 try:
                     args = await resolver(args)
                 except ToolError as e:
+                    await self._audit_args_rejected(name, tainted)
                     msg = str(e)[:MAX_TOOL_ERROR_CHARS]
                     return DispatchResult(
                         name, "error", f"Tool error: {msg}", untrusted=True, rule_id="tool.args"
                     )
                 except Exception:  # noqa: BLE001 - fail closed
+                    await self._audit_args_rejected(name, tainted)
                     return DispatchResult(name, "error", "Tool error: failed.", rule_id="tool.args")
         is_exposed = tool is not None and name in exposed
         call = ProposedCall(tool=name, args=args, risk=tool.risk if tool is not None else None)
