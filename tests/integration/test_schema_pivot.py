@@ -375,25 +375,40 @@ async def test_untrusted_cannot_be_promoted_without_approval(engine: AsyncEngine
         e=eid,
         v=VEC,
     )
-    assert "ck_memory_chunk_untrusted_promotion" in msg
+    # P4.6: the promotion-guard trigger fires before the CHECK; either refuses.
+    assert "ck_memory_chunk_untrusted_promotion" in msg or "cannot be born promoted" in msg
     cid = await mk_chunk(engine, eid, lane="untrusted", promoted=False)
     msg = await fails(engine, "UPDATE memory_chunk SET promoted=true WHERE id=:i", i=cid)
-    assert "ck_memory_chunk_untrusted_promotion" in msg
-    # a fabricated approval id is rejected by the FK ...
-    assert "fk_memory_chunk_promoted_approval_id" in await fails(
+    assert "ck_memory_chunk_untrusted_promotion" in msg or "promotion needs a consumed" in msg
+    # a fabricated approval id is refused (trigger first, FK behind it) ...
+    bad = await fails(
         engine,
         "UPDATE memory_chunk SET promoted=true, promoted_approval_id=gen_random_uuid() WHERE id=:i",
         i=cid,
     )
-    # ... a real pending_action row is accepted
+    assert "fk_memory_chunk_promoted_approval_id" in bad or "promotion needs a consumed" in bad
+    # ... and (P4.6) so is a real but merely PENDING pending_action row: it must be
+    # consumed, in time, and name exactly this chunk.
     aid = uuid.uuid4()
     await run(
         engine,
         "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
-        "expires_at) VALUES (:i, 'n', 'promote', '{}'::jsonb, :h, '\\x00'::bytea, "
-        "now() + interval '10 minutes')",
+        "expires_at) VALUES (:i, 'memory', 'promote', jsonb_build_object('item_id', "
+        "CAST(:c AS text)), :h, decode('00', 'hex'), now() + interval '10 minutes')",
         i=aid,
+        c=str(cid),
         h="c" * 64,
+    )
+    assert "promotion needs a consumed" in await fails(
+        engine,
+        "UPDATE memory_chunk SET promoted=true, promoted_approval_id=:a WHERE id=:i",
+        i=cid,
+        a=aid,
+    )
+    await run(
+        engine,
+        "UPDATE pending_action SET status='consumed', consumed_at=now() WHERE id=:i",
+        i=aid,
     )
     await run(
         engine,

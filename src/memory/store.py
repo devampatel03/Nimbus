@@ -81,7 +81,8 @@ class ApprovalRequiredError(StoreError):
 
 
 class EventConflictError(StoreError):
-    """`source_key` replayed with a different lane or kind (lane laundering)."""
+    """`source_key` replayed with a different lane, kind, source or confidence
+    (lane laundering, or a silently merged conflicting claim)."""
 
 
 class ChunkIn(BaseModel):
@@ -176,8 +177,10 @@ RETURNING id
 # `memory`/`promote` action whose payload names exactly this item; the chunk must
 # be live and still unpromoted. Single use: the partial UNIQUE index on
 # promoted_approval_id (migration c4e8a1d92b37) backs this at the database.
-_PROMOTE_SQL = """
-UPDATE memory_chunk c SET promoted = true, promoted_approval_id = :a
+# P4.6: the same binding promotes graph edges (`GraphRepository.promote_edge`) and
+# is re-checked by the `nimbus_promotion_guard` trigger on both tables.
+_PROMOTE_TEMPLATE = """
+UPDATE {table} c SET promoted = true, promoted_approval_id = :a
 WHERE c.id = :i AND c.promoted = false AND c.invalidated_at IS NULL
   AND EXISTS (
     SELECT 1 FROM pending_action p
@@ -188,6 +191,9 @@ WHERE c.id = :i AND c.promoted = false AND c.invalidated_at IS NULL
   )
 RETURNING c.id
 """
+_PROMOTE_SQL = _PROMOTE_TEMPLATE.format(table="memory_chunk")
+PROMOTE_CHUNK_SQL = _PROMOTE_SQL
+PROMOTE_EDGE_SQL = _PROMOTE_TEMPLATE.format(table="graph_edge")  # fixed table names only
 
 _GET_SCAN = "SELECT current_setting('hnsw.iterative_scan', true)"
 _SET_SCAN = "SELECT set_config('hnsw.iterative_scan', :v, true)"
@@ -241,12 +247,23 @@ class PgVectorMemoryStore:
             return new_id
         row = (
             await self._session.execute(
-                select(EventRow.id, EventRow.lane, EventRow.kind).where(
-                    EventRow.source_key == event.source_key
-                )
+                select(
+                    EventRow.id,
+                    EventRow.lane,
+                    EventRow.kind,
+                    EventRow.source,
+                    EventRow.confidence,
+                ).where(EventRow.source_key == event.source_key)
             )
         ).one()  # conflict implies the row exists
-        if row.lane != event.lane or row.kind != event.kind.value:
+        # P4.6: same key with a different lane, kind, source or confidence is a
+        # different claim, not a replay: refuse instead of merging silently.
+        if (
+            row.lane != event.lane
+            or row.kind != event.kind.value
+            or row.source != event.source
+            or row.confidence != event.confidence
+        ):
             raise EventConflictError("event_source_key_conflict")
         row_id: uuid.UUID = row.id
         return row_id
