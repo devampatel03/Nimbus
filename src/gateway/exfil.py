@@ -78,6 +78,9 @@ _CJK = re.compile(
     r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
 )
 _URL_AFTER_HOST = frozenset("/?#:")
+_URL_ASCII_NEXT = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/?=&#%._~-"
+)
 _TRAIL = ".,;:!?)]}*_~"
 _TAIL = r"[^\s<>\"'`]*"
 
@@ -169,12 +172,14 @@ def normalise(text: str) -> str:
 def _fold_dot(m: re.Match[str]) -> str:
     s, i = m.string, m.start()
     if _CJK.match(s, i - 1) and _CJK.match(s, i + 1):
-        # Sentence punctuation only if the CJK run after it is not followed by
-        # a URL delimiter: `例子。中国/x` is a host with a path, not prose.
+        # Sentence punctuation unless the CJK run after it is followed by a URL
+        # delimiter and then an ASCII URL character: `例子。中国/x` and
+        # `例子。中国:8080` are hosts; `你是谁?`, `注意:明天`, `中国/台湾` (NFKC
+        # has already folded full-width `？` `：`) are prose.
         j = i + 1
         while j < len(s) and _CJK.match(s, j):
             j += 1
-        if j >= len(s) or s[j] not in _URL_AFTER_HOST:
+        if not (j + 1 < len(s) and s[j] in _URL_AFTER_HOST and s[j + 1] in _URL_ASCII_NEXT):
             return m.group(0)
     return "."
 

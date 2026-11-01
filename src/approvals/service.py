@@ -444,7 +444,11 @@ class ApprovalService:
             return
         now = self._now()
         if now >= row.expires_at:
-            await self._store.close(aid, "expired")
+            if not await self._store.close(aid, "expired"):
+                # Lost a race: the row was closed or consumed after our load.
+                await self._audit("callback_rejected", reason="status_changed", action_id=aid)
+                await self._answer(cb, DONE_ALREADY)
+                return
             await self._audit("expired", action_id=aid, tool=row.tool)
             await self._answer(cb, EXPIRED)
             await self._close_card(ref, "expired")

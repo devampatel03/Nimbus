@@ -228,12 +228,43 @@ IDN: list[tuple[str, str, str]] = [
     ("cjk_prose_space_slash", "\u4eca\u65e5\u3002\u660e\u65e5 / x", "same"),
     ("cjk_prose_comma", "\u4eca\u65e5\u3002\u660e\u65e5\u3001\u5f8c", "same"),
     ("cjk_host_query", "\u4f8b\u5b50\u3002\u4e2d\u56fd/?d=S", LINK_REMOVED),
+    ("cjk_host_port", "\u4f8b\u5b50\u3002\u4e2d\u56fd:8080", LINK_REMOVED),
+    ("cjk_host_fragment", "\u4f8b\u5b50\u3002\u4e2d\u56fd#S", LINK_REMOVED),
+    ("cjk_host_bare_query", "\u4f8b\u5b50\u3002\u4e2d\u56fd?d=S", LINK_REMOVED),
     ("cjk_host_kana", "\u30c6\u30b9\u30c8\u3002\u30c6\u30b9\u30c8/x", LINK_REMOVED),
     ("cjk_host_kanji", "\u65e5\u672c\u8a9e\u3002\u65e5\u672c/x", LINK_REMOVED),
     ("cjk_host_hangul", "\ud55c\uad6d\u3002\ud55c\uad6d/x", LINK_REMOVED),
     ("cyr_prose", "\u041f\u0440\u0438\u0432\u0435\u0442. \u041a\u0430\u043a", "same"),
     ("cyr_abbrev", "\u0442.\u0435. \u0438 \u0442.\u0434.", "same"),
 ]
+
+
+# CJK prose with full-width punctuation (NFKC folds `？` `：` to ASCII before the
+# dot fold): a `。` followed by a CJK run and a delimiter that is NOT followed by
+# an ASCII URL character is sentence punctuation; the reply must pass unchanged.
+CJK_PROSE = [
+    "\u4f60\u597d\u3002\u4f60\u662f\u8c01\uff1f",  # 你好。你是谁？
+    "\u6211\u4eec\u53bb\u5317\u4eac\u3002\u6ce8\u610f\uff1a\u660e\u5929\u4e0b\u96e8\u3002",
+    "\u4eca\u5929\u5f88\u597d\u3002\u771f\u7684\u5417\uff1f",  # 今天很好。真的吗？
+    "\u3053\u308c\u306f\u30da\u30f3\u3067\u3059\u3002\u672c\u5f53\u3067\u3059\u304b\uff1f",
+    "\u4ef7\u683c\u662f100\u5143\u3002\u5bf9\u5417\uff1f\u597d\u7684\u3002",  # 价格是100元。对吗？好的。
+    "\u6211\u7231\u4e2d\u56fd\u3002\u4e2d\u56fd/\u53f0\u6e7e\u95ee\u9898",  # 我爱中国。中国/台湾问题
+    "\u5317\u4eac\u3002\u4e0a\u6d77/\u5e7f\u5dde",  # 北京。上海/广州
+    "\u4f60\u662f\u8c01?",  # 你是谁?
+    "\u5bf9\u5417?\u597d\u7684",  # 对吗?好的
+    "\u6ce8\u610f:\u660e\u5929",  # 注意:明天
+    "\u4e2d\u56fd/\u53f0\u6e7e",  # 中国/台湾
+]
+
+
+@pytest.mark.parametrize("src", CJK_PROSE)
+def test_cjk_prose_with_fullwidth_punctuation_is_unchanged(src: str) -> None:
+    out = filter_reply(src, NONE)
+    assert not out.blocked
+    assert out.removed == 0
+    assert out.text == exfil.normalise(src)  # only NFKC (？ -> ?), no defang
+    assert "[.]" not in out.text and find_links(out.text, NONE) == []
+    assert out.text.count("。") == src.count("。")  # never folded to "."
 
 
 @pytest.mark.parametrize(("case", "src", "want"), IDN, ids=[c[0] for c in IDN])

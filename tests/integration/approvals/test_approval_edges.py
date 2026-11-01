@@ -165,6 +165,34 @@ async def test_reject_that_loses_the_race_to_approve_notifies_nothing(
     assert await h.status(await h.only_action_id()) == "consumed"
 
 
+async def test_expiry_that_loses_the_race_to_reject_notifies_nothing(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A late tap finds the row expired, but a concurrent Reject closes it
+    first: the late tap must not report or notify `expired` for it."""
+    await h.propose("tasks_update", {"task_id": "1"})
+    card = h.last_card()
+    heard: list[str] = []
+
+    async def listener(tool: str, action: str, payload: Any, outcome: str) -> None:
+        heard.append(outcome)
+
+    h.service.bind_listener(listener)
+    h.clock.advance(h.settings.ttl_s + 1)
+    real_close = h.store.close
+
+    async def close_after_other(aid: uuid.UUID, status: str) -> bool:
+        assert status == "expired"
+        assert await real_close(aid, "rejected")  # the other tap won
+        return await real_close(aid, status)
+
+    monkeypatch.setattr(h.store, "close", close_after_other)
+    assert await h.tap(card.approve_data) == svc.DONE_ALREADY
+    assert heard == []
+    assert await h.status(await h.only_action_id()) == "rejected"
+    assert h.tools["tasks_update"].runs == 0
+
+
 async def test_consume_refused_at_the_last_moment_runs_nothing(
     h: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
