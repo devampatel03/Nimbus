@@ -21,7 +21,7 @@ The model is assumed compromised by any text it reads (Brief §2, §8). A prompt
 ## Consequences
 - Detection is a tripwire, not a boundary. Not detected: a cipher the model invents, pieces shorter than 6 characters, pieces more than the window apart, or pieces mixed with other text inside a contiguous run under 10 characters. Policy, approvals, taint and the egress allowlist remain the bounds.
 - Stream-window limits: the window is process-local and global (all Telegram sends and tool-argument values share it), holds the last 2048 skeleton characters only, is lost on restart, and is not cleared on a hit. So a canary is caught across items only while its pieces are within 2048 characters of each other; an attacker who spaces pieces further apart, sends them across a restart, or keeps each piece under 6 characters is not caught. Approval-card, keypad and egress checks are per item (no window).
-- The chance of a false hit on unrelated text is about 1e-8 per 4 KB message (fragment check) and 1e-7 per stream item (piece check). A false hit replaces one reply or denies one tool call and sends one alert.
+- The chance of a false hit on unrelated text is about 2e-7 per 4 KB message (fragment check; estimate, measured 0/1500) and 1e-7 per stream item (piece check). A false hit replaces one reply or denies one tool call and sends one alert.
 - The stream window keeps up to 2048 skeleton characters of recent outbound text in process memory (never logged). It is lost on restart.
 - New setting names `CANARY_SEED`, `CANARY_ALERT_TELEGRAM`, `CANARY_ALERT_COOLDOWN_S` need `.env.example` entries (orchestrator-owned file).
 - The sweep is a CLI only; scheduling it (weekly) is a follow-up. It cannot read encrypted columns (`llm_audit` payload, OAuth tokens).

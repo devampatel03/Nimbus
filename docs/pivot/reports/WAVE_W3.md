@@ -108,7 +108,7 @@ Runtime and cost numbers: none measured. No live model call, no live Google, Not
 
 Gate verdict: **GO with conditions** for W4 security work. Conditions:
 
-1. Human decisions: H18 (ADR-0010), H16 (Gmail), H23, acceptance of ADR-0020, ADR-0021 and ADR-0022 (H24, H26, H27).
+1. Human decisions: H18 (ADR-0010), H16 (Gmail), H23; acceptance of ADR-0020 (H32), ADR-0021 (H26) and ADR-0022 (H27); H24 is only the approval env names. These gates block only the items that depend on them (P4.1 email category, P3.6, P3.3b), not the start of W4.
 2. Start only unblocked work: P4.1 (email/invite/doc/recorded-speech red team; needs P3.6 for the email category, so the email category waits on H16), P4.3 (exfil: markdown/URL stripping), P4.4 (canary strings, outbound blocking), P4.5 (container egress), P4.6 (memory poisoning: untrusted never auto-promoted).
 3. P4.7 (red-team corpus, protected) needs a new approval; the H14 approval covers only the TARGET_DESIGN Q1 scope.
 4. Before any staging run with a real key: price table, cap at most 100 INR, alert hook, cost re-projection.
