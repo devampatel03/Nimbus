@@ -1,0 +1,72 @@
+#!/usr/sbin/nft -f
+# Nimbus container egress backstop (P4.5, R13, ADR-0004). UNTESTED ON A VM (H6).
+#
+# Scope: traffic from the Docker bridge `nimbus_egress` (the app container only;
+# Postgres is on an internal network with no route). This is a COARSE control:
+# nftables cannot filter by hostname, so "443 to the public internet" is all it
+# can say. The real allowlist is src/net (hostnames, paths, methods). What this
+# adds: no non-443 TCP, no raw sockets to odd ports, no private/metadata ranges,
+# no inbound-from-container to host services, no IPv6, even if app code is
+# compromised or bypasses src/net.
+#
+# Load:  sudo nft -c -f deploy/nftables/nimbus-egress.nft   (syntax check)
+#        sudo nft -f  deploy/nftables/nimbus-egress.nft
+# Remove: sudo nft delete table inet nimbus_egress
+# Docker's own iptables-nft rules sit at priority 0; ours are at -10 so a drop
+# here wins, and an accept here does NOT bypass Docker's later chains.
+
+define BRIDGE    = "nimbus_egress"
+# Must match `dns:` for the app service in docker-compose.yml. On OCI the VCN
+# resolver is 169.254.169.254 (link-local): if you use it, put it here AND in
+# compose `dns:`; the allow below is port 53 only, ahead of the private drop.
+define RESOLVERS = { 1.1.1.1, 9.9.9.9 }
+define NTP_PORT  = 123
+
+table inet nimbus_egress
+delete table inet nimbus_egress
+
+table inet nimbus_egress {
+    set never_dest_v4 {
+        type ipv4_addr; flags interval
+        elements = {
+            0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
+            169.254.0.0/16,            # link-local incl. cloud metadata 169.254.169.254
+            172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15,
+            224.0.0.0/4, 240.0.0.0/4
+        }
+    }
+
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        iifname != $BRIDGE jump return_traffic
+        iifname $BRIDGE jump from_app
+    }
+
+    # Replies to the app's own connections (and nothing else) may go back in.
+    chain return_traffic {
+        oifname $BRIDGE ct state established,related accept
+        oifname $BRIDGE drop
+    }
+
+    chain from_app {
+        ct state invalid drop
+        ct state established,related accept
+        meta nfproto ipv6 counter drop
+        # DNS to the configured resolvers only (before the private-range drop,
+        # because the OCI resolver is link-local).
+        ip daddr $RESOLVERS udp dport 53 accept
+        ip daddr $RESOLVERS tcp dport 53 accept
+        ip daddr @never_dest_v4 counter drop
+        udp dport $NTP_PORT accept
+        tcp dport 443 accept
+        limit rate 5/minute log prefix "nimbus-egress-drop " level warn
+        counter drop
+    }
+
+    # Container -> host itself (sshd, host services, docker.sock proxies...).
+    chain input {
+        type filter hook input priority -10; policy accept;
+        iifname $BRIDGE ct state established,related accept
+        iifname $BRIDGE counter drop
+    }
+}
