@@ -138,6 +138,33 @@ async def test_rejecting_the_card_while_the_keypad_is_open_wins(h: Harness) -> N
     assert h.tools["tasks_delete"].runs == 0
 
 
+async def test_reject_that_loses_the_race_to_approve_notifies_nothing(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P3.9 LOW-A: Approve consumes the row between Reject's load and close.
+    The listener must not hear `rejected` for an action that was approved."""
+    await h.propose("tasks_update", {"task_id": "1"})
+    card = h.last_card()
+    heard: list[str] = []
+
+    async def listener(tool: str, action: str, payload: Any, outcome: str) -> None:
+        heard.append(outcome)
+
+    h.service.bind_listener(listener)
+    real_close = h.store.close
+
+    async def close_after_approve(aid: uuid.UUID, status: str) -> bool:
+        monkeypatch.setattr(h.store, "close", real_close)
+        await h.tap(card.approve_data)  # the concurrent Approve wins
+        return await real_close(aid, status)
+
+    monkeypatch.setattr(h.store, "close", close_after_approve)
+    assert await h.tap(card.reject_data) == svc.DONE_ALREADY
+    assert h.tools["tasks_update"].runs == 1
+    assert "rejected" not in heard
+    assert await h.status(await h.only_action_id()) == "consumed"
+
+
 async def test_consume_refused_at_the_last_moment_runs_nothing(
     h: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:

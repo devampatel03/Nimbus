@@ -224,6 +224,13 @@ IDN: list[tuple[str, str, str]] = [
     ("ideo_dot_ascii", "evil\u3002\u0440\u0444/x", LINK_REMOVED),
     ("ideo_dot_cyr", "\u0441\u0435\u043a\u3002\u0440\u0444/x", LINK_REMOVED),
     ("cjk_prose_kept", "\u4eca\u65e5\u3002\u660e\u65e5", "\u4eca\u65e5\u3002\u660e\u65e5"),
+    ("cjk_prose_end", "\u4eca\u65e5\u3002\u660e\u65e5\u3002", "same"),
+    ("cjk_prose_space_slash", "\u4eca\u65e5\u3002\u660e\u65e5 / x", "same"),
+    ("cjk_prose_comma", "\u4eca\u65e5\u3002\u660e\u65e5\u3001\u5f8c", "same"),
+    ("cjk_host_query", "\u4f8b\u5b50\u3002\u4e2d\u56fd/?d=S", LINK_REMOVED),
+    ("cjk_host_kana", "\u30c6\u30b9\u30c8\u3002\u30c6\u30b9\u30c8/x", LINK_REMOVED),
+    ("cjk_host_kanji", "\u65e5\u672c\u8a9e\u3002\u65e5\u672c/x", LINK_REMOVED),
+    ("cjk_host_hangul", "\ud55c\uad6d\u3002\ud55c\uad6d/x", LINK_REMOVED),
     ("cyr_prose", "\u041f\u0440\u0438\u0432\u0435\u0442. \u041a\u0430\u043a", "same"),
     ("cyr_abbrev", "\u0442.\u0435. \u0438 \u0442.\u0434.", "same"),
 ]

@@ -43,3 +43,5 @@ different source/confidence merged silently.
   (UUIDs do not collide across tables). Adding a `kind` to the payload would change the
   approval shape shared with the card renderer; deferred.
 - Card listeners are isolated: one failing listener is logged (type name) and the rest run.
+- The `decision` and legacy `commitment` tables have no writer today and rely only on a
+  CHECK constraint, not on `nimbus_promotion_guard`.

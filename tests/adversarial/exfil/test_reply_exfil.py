@@ -149,6 +149,11 @@ CORPUS: list[tuple[str, str, str]] = [
     ("idn_upper_rf", "idn_tld", "Evil.\u0420\u0424/x"),
     ("idn_ideo_dot_rf", "idn_tld", "evil\u3002\u0440\u0444/x"),
     ("idn_ideo_dot_cyr", "idn_tld", f"\u0441\u0435\u043a\u0440\u0435\u0442\u3002\u0440\u0444/{S}"),
+    # CJK label + ideographic dot + CJK TLD + URL delimiter: a host, not prose.
+    ("cjk_ideo_dot_china", "idn_tld", f"例子。中国/?d={S}"),
+    ("cjk_ideo_dot_jp_test", "idn_tld", "テスト。テスト/x"),
+    ("cjk_ideo_dot_nihon", "idn_tld", "日本語。日本/x"),
+    ("cjk_ideo_dot_korea", "idn_tld", "한국。한국/x"),
     ("ip_v6_bare_path", "ip_literal", f"[2001:db8::1]/{S}"),
     ("ip_v6_bare_port", "ip_literal", f"[::1]:8080/{S}"),
     ("html_entity_dot", "html_entities", f"evil&#46;example/{S} and https&#58;//{E}/{S}"),

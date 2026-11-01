@@ -14,7 +14,8 @@ A planted canary is random, so ANY 10-character run of its skeleton (also of
 the reversed and the ROT13 value) is treated as a leak: half or a third of a
 value is caught, and a value spread over several outbound messages is caught
 by the guard's rolling tail (`src.canary.guard`). The chance that unrelated
-text contains one such run is about n * 300 / 25**10 (~1e-8 per 4 KB message).
+text contains one such run is about 2e-7 per 4 KB message (estimate;
+measured 0/1500).
 Operator-configured literals (`LLM_CANARIES`) are not random, so only their
 whole skeleton counts. Letter-substitution forms are precomputed on the
 canary side: every ROT-N (also of the reversed value) and Atbash. For the guard's stream check, `scattered` also flags

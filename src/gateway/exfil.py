@@ -77,6 +77,7 @@ _DOT_FOLD = re.compile(r"(?<=\w)[\u3002\uff61](?=\w)")
 _CJK = re.compile(
     r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
 )
+_URL_AFTER_HOST = frozenset("/?#:")
 _TRAIL = ".,;:!?)]}*_~"
 _TAIL = r"[^\s<>\"'`]*"
 
@@ -161,14 +162,20 @@ def normalise(text: str) -> str:
                 continue
         out.append(ch)
     # Fold an ideographic full stop used as a host dot; keep it between two
-    # CJK characters, where it is sentence punctuation.
+    # CJK characters, where it is sentence punctuation (see `_fold_dot`).
     return _DOT_FOLD.sub(_fold_dot, "".join(out))
 
 
 def _fold_dot(m: re.Match[str]) -> str:
     s, i = m.string, m.start()
     if _CJK.match(s, i - 1) and _CJK.match(s, i + 1):
-        return m.group(0)
+        # Sentence punctuation only if the CJK run after it is not followed by
+        # a URL delimiter: `例子。中国/x` is a host with a path, not prose.
+        j = i + 1
+        while j < len(s) and _CJK.match(s, j):
+            j += 1
+        if j >= len(s) or s[j] not in _URL_AFTER_HOST:
+            return m.group(0)
     return "."
 
 

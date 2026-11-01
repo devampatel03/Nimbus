@@ -471,3 +471,9 @@ Authority: `docs/pivot/00_PIVOT_BRIEF.md`, ADR-0001..0018, `docs/pivot/STATE.md`
 - A hit writes `policy_audit` (`event=canary_blocked`, fixed codes only) and sends one fixed-text alert per cooldown. `python -m src.app canary-sweep` is the INV-7 DB sweep (counts only).
 - Limits: a model-invented cipher, or pieces under 6 chars, are not detected. It is a tripwire, not a boundary.
 
+## 2026-11-01 - P4.6: memory poisoning controls (ADR-0024, Proposed; PR #48)
+- Trigger `nimbus_promotion_guard()` (migration e5b1c7a3d902) on `memory_chunk` and `graph_edge`: untrusted rows are never born promoted, become promoted only with a consumed, in-time `memory`/`promote` approval naming the row id, are never demoted; a trusted row cannot cite a non-trusted source event. `GraphRepository.promote_edge` reuses the chunk binding; `ReviewQueue` asks one card per item (no bulk approve), reject retracts via `invalidated_at`. `record_event` refuses a replayed `source_key` with different lane/kind/source/confidence.
+- Limits: a superuser role can still disable the trigger (HIGH, P6.1/P6.2); `decision` and legacy `commitment` have no writer and only a CHECK constraint, not the guard.
+## 2026-11-01 - P4.3/P4.4 follow-ups (W4 small fixes)
+- Exfil CJK fold: the ideographic full stop between two CJK characters is kept only if the CJK run after it is not followed by `/`, `?`, `#` or `:`; so `例子。中国/x` is a host (removed) while CJK prose is kept. Closes the "fully-CJK host" limit noted in the P4.3 review-fix entry for the delimiter case; a fully-CJK `。` host with no path, port, query or fragment is still kept as text (documented limit).
+- Canary false-hit estimate corrected to about 2e-7 per 4 KB message (measured 0/1500); approvals: Reject notifies listeners `rejected` only when the close actually happened (Approve/Reject race, P3.9 LOW-A).

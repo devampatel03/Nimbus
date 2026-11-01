@@ -451,7 +451,12 @@ class ApprovalService:
             await self._notify(row.tool, row.action, row.payload, "expired")
             return
         if parsed.verb is tok.Verb.REJECT:
-            await self._store.close(aid, "rejected")
+            if not await self._store.close(aid, "rejected"):
+                # Lost a race (e.g. Approve consumed it after our load): the
+                # row is not rejected, so nobody may be told it was.
+                await self._audit("callback_rejected", reason="status_changed", action_id=aid)
+                await self._answer(cb, DONE_ALREADY)
+                return
             await self._audit("rejected_by_user", action_id=aid, tool=row.tool)
             await self._answer(cb, REJECTED)
             await self._close_card(ref, "rejected")
