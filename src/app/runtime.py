@@ -333,8 +333,11 @@ def chain_card_listeners(
     *listeners: Callable[[str, str, Mapping[str, Any], str], Awaitable[None]],
 ) -> Callable[[str, str, Mapping[str, Any], str], Awaitable[None]]:
     async def listen(tool: str, action: str, payload: Mapping[str, Any], outcome: str) -> None:
-        for fn in listeners:
-            await fn(tool, action, payload, outcome)
+        for fn in listeners:  # one listener failing must not starve the others
+            try:
+                await fn(tool, action, payload, outcome)
+            except Exception as exc:  # noqa: BLE001 - log the type name only (INV-7)
+                log.warning("card listener failed err=%s", type(exc).__name__)
 
     return listen
 

@@ -1,4 +1,4 @@
-# ADR-0023: Memory poisoning controls (P4.6)
+# ADR-0024: Memory poisoning controls (P4.6)
 
 Status: Proposed (reviewer sign-off)
 Date: 2026-10-30
@@ -33,3 +33,13 @@ different source/confidence merged silently.
   fix remains the non-superuser role (P6.1/P6.2).
 - Out of scope: commitments/decisions tables (their own guard, ADR-0022), quarantine
   extraction route (P3.0 MED-D), retract of a successor reopening the old fact (P5.2).
+
+## Known limits (review LOWs, accepted)
+- Lane spoofing is checked only when `source_event_id` is set. `memory_chunk` always has
+  one; `graph_edge.source_event_id` is nullable (legacy writers pass a session only), so a
+  trusted edge without an event is not cross-checked. Making it required is a follow-up
+  once every edge writer supplies the event.
+- The promotion payload is `{"item_id"}` only; chunk vs edge is resolved by id lookup
+  (UUIDs do not collide across tables). Adding a `kind` to the payload would change the
+  approval shape shared with the card renderer; deferred.
+- Card listeners are isolated: one failing listener is logged (type name) and the rest run.
