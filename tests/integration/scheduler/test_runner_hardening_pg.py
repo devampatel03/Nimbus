@@ -50,9 +50,13 @@ async def test_concurrent_claim_never_double_claims_while_a_claim_tx_is_open(
             {"n": clock.now()},
         )
         b_task = asyncio.create_task(qb.claim(kinds=frozenset({"t"}), limit=3))
-        await asyncio.sleep(0.5)
         # SKIP LOCKED: B must not WAIT for A's open transaction either (plain
-        # FOR UPDATE would block here until A commits).
+        # FOR UPDATE would block here until A commits). Poll up to 5 s so a
+        # loaded machine does not flake; a blocked B never finishes in time.
+        for _ in range(50):
+            if b_task.done():
+                break
+            await asyncio.sleep(0.1)
         b_finished_while_a_open = b_task.done()
         await s.commit()
     got = await asyncio.wait_for(b_task, 5)

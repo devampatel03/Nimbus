@@ -1,3 +1,14 @@
+# Production-shaped base (P4.5). `docker compose up -d` ALSO loads
+# docker-compose.override.yml (dev: loopback-published Postgres). On the VM use
+#   docker compose -f docker-compose.yml [--profile app] up -d
+# so the override is NOT applied. See docs/runbooks/egress.md.
+#
+# Networks:
+#   db      internal: true  -> no route off the host, no published ports possible.
+#                              Postgres lives ONLY here. It has no reason to egress.
+#   egress  normal bridge   -> only the app (profile "app") joins it; host nftables
+#                              (deploy/nftables/nimbus-egress.nft) filters it.
+# Secrets never live in this file: the app reads an env file outside the repo.
 services:
   postgres:
     build:
@@ -6,8 +17,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-nimbus}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nimbus}
       POSTGRES_DB: ${POSTGRES_DB:-nimbus}
-    ports:
-      - "5432:5432"
+    networks: [db]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,6 +25,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # STUB. P6.1 owns the Dockerfile, hardening (non-root, read-only FS, limits)
+  # and the final definition. Only the network wiring is fixed here. Not started
+  # by a plain `up` (profile), and `nimbus-app:local` does not exist yet.
+  app:
+    profiles: ["app"]
+    image: nimbus-app:local
+    env_file: /etc/nimbus/app.env # mode 0600, outside the repo (never baked in)
+    networks: [db, egress]
+    dns: [1.1.1.1, 9.9.9.9] # must match RESOLVERS in nimbus-egress.nft
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  db:
+    internal: true
+  egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: nimbus_egress # referenced by nftables
+    enable_ipv6: false
 
 volumes:
   postgres_data:

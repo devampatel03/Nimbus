@@ -47,6 +47,7 @@ from typing import Any, Self
 
 import httpx
 
+from src.net.addrcheck import PublicAddressTransport
 from src.net.errors import (
     EgressDenied,
     EgressError,
@@ -197,7 +198,8 @@ def _timeout(settings: NetSettings) -> httpx.Timeout:
 
 
 def _default_transport() -> httpx.AsyncBaseTransport:
-    return httpx.AsyncHTTPTransport(retries=0, verify=True, trust_env=False)
+    # Post-DNS non-public address block (P4.5); see src/net/addrcheck.py.
+    return PublicAddressTransport(httpx.AsyncHTTPTransport(retries=0, verify=True, trust_env=False))
 
 
 class EgressClient:

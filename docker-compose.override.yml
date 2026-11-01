@@ -1,0 +1,12 @@
+# DEV ONLY. Auto-loaded by a plain `docker compose up -d`; never pass it on the
+# VM (use `-f docker-compose.yml`). A published port needs a non-internal
+# network, so dev joins Postgres to a throwaway bridge and binds loopback only.
+services:
+  postgres:
+    networks: [db, devhost]
+    ports:
+      - "127.0.0.1:5432:5432"
+
+networks:
+  devhost:
+    driver: bridge
