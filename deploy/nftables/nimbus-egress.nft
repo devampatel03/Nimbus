@@ -1,6 +1,8 @@
 #!/usr/sbin/nft -f
 # Nimbus container egress backstop (P4.5, R13, ADR-0004). UNTESTED ON A VM (H6).
 #
+# NTP is NOT allowed from the container: time comes from the host's chrony.
+#
 # Scope: traffic from the Docker bridge `nimbus_egress` (the app container only;
 # Postgres is on an internal network with no route). This is a COARSE control:
 # nftables cannot filter by hostname, so "443 to the public internet" is all it
@@ -20,7 +22,6 @@ define BRIDGE    = "nimbus_egress"
 # resolver is 169.254.169.254 (link-local): if you use it, put it here AND in
 # compose `dns:`; the allow below is port 53 only, ahead of the private drop.
 define RESOLVERS = { 1.1.1.1, 9.9.9.9 }
-define NTP_PORT  = 123
 
 table inet nimbus_egress
 delete table inet nimbus_egress
@@ -57,7 +58,6 @@ table inet nimbus_egress {
         ip daddr $RESOLVERS udp dport 53 accept
         ip daddr $RESOLVERS tcp dport 53 accept
         ip daddr @never_dest_v4 counter drop
-        udp dport $NTP_PORT accept
         tcp dport 443 accept
         limit rate 5/minute log prefix "nimbus-egress-drop " level warn
         counter drop

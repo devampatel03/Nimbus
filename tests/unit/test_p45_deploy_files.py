@@ -90,6 +90,7 @@ def test_nft_policy_shape() -> None:
     # No other TCP port is ever accepted.
     accepts = [ln.strip() for ln in body.splitlines() if "tcp dport" in ln and "accept" in ln]
     assert all(("443" in ln) or ("53" in ln) for ln in accepts), accepts
+    assert "dport 123" not in body and "NTP" not in body
     assert "dport 22" not in body and "dport 80 " not in body
 
 

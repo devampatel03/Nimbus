@@ -37,15 +37,33 @@ _METADATA = frozenset(
 )
 
 
+# IPv6 ranges that embed an IPv4 address and report is_global=True: NAT64,
+# IPv4-compatible, IPv4-translated, 6to4, Teredo. Refused outright.
+_EMBEDDED_V4_NETS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "64:ff9b::/96",
+        "64:ff9b:1::/48",
+        "::/96",
+        "::ffff:0:0:0/96",
+        "2002::/16",
+        "2001::/32",
+    )
+)
+
+
 def is_public_address(raw: str) -> bool:
     """True only for a globally routable unicast address. Fails closed on
     anything unparsable. IPv4-mapped IPv6 is judged by its embedded IPv4."""
     try:
-        ip = ipaddress.ip_address(raw.split("%", 1)[0])
+        ip = ipaddress.ip_address(raw)
     except ValueError:
-        return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+        return False  # includes any '%zone' suffix
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif any(ip in net for net in _EMBEDDED_V4_NETS):
+            return False
     if ip in _METADATA:
         return False
     if ip.is_multicast or ip.is_unspecified or ip.is_loopback or ip.is_link_local:

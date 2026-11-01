@@ -10,7 +10,7 @@ as evidence before the P6 staging gate.
 |---|-------|-------|------------------|----------|
 | 1 | `src/net` allowlist | app | Service -> fixed host, https:443 only, path/method/header deny rules, same-host redirects, no env proxy | The real control. Hostname-aware. Bypassed by any code that opens its own socket. |
 | 2 | Post-DNS address check | app (`src/net/addrcheck.py`) | Resolved address must be globally routable; loopback, RFC1918, CGNAT, link-local, `169.254.169.254`, multicast, v4-mapped v6 are refused | Closes "allowed name resolves to internal IP". Check-then-connect: a resolver that answers differently the second time is not closed here (layer 3 is the backstop). |
-| 3 | Host nftables | VM (`deploy/nftables/nimbus-egress.nft`) | From the app bridge only: DNS to the configured resolvers, NTP 123, TCP 443, nothing to private/metadata ranges, no IPv6, no container-to-host | Coarse. IP level only. |
+| 3 | Host nftables | VM (`deploy/nftables/nimbus-egress.nft`) | From the app bridge only: DNS to the configured resolvers, TCP 443 (no NTP: the container uses the host clock, chrony on the host), nothing to private/metadata ranges, no IPv6, no container-to-host | Coarse. IP level only. |
 | 4 | Compose networks | `docker-compose.yml` | Postgres is on `db` (`internal: true`: no route out, no published port). Only the app joins `egress`. | Strong for Postgres. |
 | 5 | OCI security list / NSG | cloud console (H6) | Inbound SSH only. Egress rules optional. | Out of repo; document what was set. |
 
@@ -47,8 +47,7 @@ direct route at all), or a DNS-based allowlist feeding an nft set.
 
 `api.telegram.org`, the configured LLM host (`NET_LLM_BASE_URL`), `oauth2.googleapis.com`,
 `www.googleapis.com`, `gmail.googleapis.com`, `api.notion.com`, optional healthcheck and
-backup hosts. Plus DNS (53) to the pinned resolvers and NTP (123, normally the host's
-chrony, not the container; kept open for the container in case it runs its own).
+backup hosts. Plus DNS (53) to the pinned resolvers. No NTP from the container: time comes from the host's chrony.
 
 ## Install on the VM (UNRUN)
 
