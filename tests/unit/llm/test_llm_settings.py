@@ -45,3 +45,76 @@ def test_key_is_hidden_in_repr_and_validation_errors(
 def test_defaults_are_bounded() -> None:
     s = LLMSettings(_env_file=None)  # type: ignore[call-arg]
     assert s.max_retries <= 3 and s.daily_spend_cap_inr > 0 and "*" in s.price_table
+
+
+# ---------------------------------------------- free-tier pricing warning (ADR-0025)
+
+_KEY = "sk-free-never-logged-0123456789"  # pragma: allowlist secret
+
+
+def _s(**kw: object) -> LLMSettings:
+    return LLMSettings(_env_file=None, api_key=_KEY, **kw)  # type: ignore[arg-type, call-arg]
+
+
+@pytest.mark.parametrize(
+    ("kw", "free"),
+    [
+        ({}, ()),  # placeholder `*` price
+        ({"price_in_per_mtok_inr": "0.0001", "price_out_per_mtok_inr": "0.0001"}, ("m",)),
+        ({"price_in_per_mtok_inr": "5", "price_out_per_mtok_inr": "0.0099"}, ("m",)),
+        ({"price_in_per_mtok_inr": "0.01", "price_out_per_mtok_inr": "0.01"}, ()),  # boundary
+        (
+            {
+                "model_cheap": "c",
+                "cheap_price_in_per_mtok_inr": "0.0001",
+                "cheap_price_out_per_mtok_inr": "0.0001",
+            },
+            ("c",),
+        ),
+        (
+            {"price_table": {"*": {"in_per_mtok_inr": "0.001", "out_per_mtok_inr": "0.001"}}},
+            ("m",),  # an unlisted model falls back to a free-tier `*`
+        ),
+    ],
+)
+def test_free_tier_priced_models(kw: dict[str, object], free: tuple[str, ...]) -> None:
+    assert _s(model="m", **kw).free_tier_priced_models() == free
+
+
+def test_free_tier_pricing_logs_one_warning_without_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src.llm.settings import warn_if_free_tier_pricing
+
+    s = _s(
+        model="secret-model-name",
+        base_url="https://llm.example.com/v1",
+        price_in_per_mtok_inr="0.0001",
+        price_out_per_mtok_inr="0.0001",
+        rpm_limit=10,
+        daily_request_limit=900,
+    )
+    with caplog.at_level("WARNING", logger="src.llm.settings"):
+        assert warn_if_free_tier_pricing(s) is True
+    (rec,) = caplog.records
+    msg = rec.getMessage()
+    assert rec.levelname == "WARNING"
+    assert "NOT a real bound" in msg and "request limits" in msg
+    assert "rpm=10" in msg and "daily=900" in msg
+    for leak in (_KEY, "secret-model-name", "llm.example.com"):
+        assert leak not in msg
+
+
+def test_paid_pricing_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    from src.llm.settings import warn_if_free_tier_pricing
+
+    with caplog.at_level("DEBUG", logger="src.llm.settings"):
+        assert warn_if_free_tier_pricing(_s(model="m")) is False
+    assert caplog.records == []
+
+
+def test_runtime_warns_at_startup() -> None:
+    """The check is wired into `run` before the one GuardedLLM is built."""
+    src = (Path(__file__).parents[3] / "src" / "app" / "runtime.py").read_text(encoding="utf-8")
+    body = src[src.index("async def run_app(") :]
+    assert body.index("warn_if_free_tier_pricing(cfg.llm)") < body.index("build_guarded_llm(")

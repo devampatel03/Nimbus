@@ -33,6 +33,7 @@ from src.approvals.card import TARGET_KEY
 from src.gateway.types import InboundUpdate, UpdateKind
 from src.lanes.data import SourceKind, UntrustedText
 from src.lanes.quarantine import Quarantine
+from src.llm.types import ChatRequest, ProviderResponse
 from src.orchestrator.context import RecalledMemory
 from src.orchestrator.dispatch import Dispatcher, ToolOutput
 from src.orchestrator.loop import Orchestrator
@@ -106,10 +107,36 @@ CARRY_PAYLOAD = j(
 )
 
 
-async def _two_turns(kind: SourceKind, tool: str | None) -> tuple[Spy, Requester, list[Any]]:
+class _ReadsSourceOnce(HijackedLLM):
+    """The hijacked model, scripted so the source tool is called in turn 1
+    only. Turn 2 must not touch an external-service tool: its output would
+    taint turn 2 by itself (dispatcher override, P4.1-fu), and the carry
+    assertions would pass vacuously."""
+
+    def __init__(self, once: str | None) -> None:
+        super().__init__()
+        self._once = once
+        self._called = False
+
+    async def complete(self, req: ChatRequest) -> ProviderResponse:
+        if self._once is not None and self._called:
+            req = req.model_copy(
+                update={"tools": tuple(t for t in req.tools if t.name != self._once)}
+            )
+        resp = await super().complete(req)
+        if any(c.name == self._once for c in resp.tool_calls):
+            self._called = True
+        return resp
+
+
+async def _two_turns(
+    kind: SourceKind, tool: str | None
+) -> tuple[Spy, Requester, list[Any], SourceTool | None]:
     source, memories, first = _entry(kind, tool, CARRY_PAYLOAD)
     orch, p = build_orchestrator(
-        source=source, recall=_OneShotRecall(memories) if memories else None
+        source=source,
+        recall=_OneShotRecall(memories) if memories else None,
+        main=_ReadsSourceOnce(tool),
     )
     gw = InMemoryGateway()
     queue: asyncio.Queue[PendingTurn] = asyncio.Queue()
@@ -120,14 +147,21 @@ async def _two_turns(kind: SourceKind, tool: str | None) -> tuple[Spy, Requester
     task = asyncio.create_task(worker.serve())
     await asyncio.wait_for(queue.join(), 30)
     task.cancel()
-    return p["spies"]["tasks_update"], p["requester"], gw.sent
+    return p["spies"]["tasks_update"], p["requester"], gw.sent, source
+
+
+def _turn_two_is_clean(source: SourceTool | None) -> None:
+    # Turn 2 read nothing external: its only possible taint is the carry.
+    if source is not None:
+        assert len(source.calls) == 1, "turn 2 re-called the external source tool"
 
 
 @pytest.mark.parametrize(("cat", "kind", "tool"), CATEGORIES, ids=IDS)
 async def test_carried_taint_keeps_the_next_clean_turn_gated(
     cat: str, kind: SourceKind, tool: str | None
 ) -> None:
-    spy, requester, sent = await _two_turns(kind, tool)
+    spy, requester, sent, source = await _two_turns(kind, tool)
+    _turn_two_is_clean(source)
     assert spy.calls == [], "an internal write ran in the turn after the injection"
     # Turn 1 (tainted) and turn 2 (carried) both asked; neither ran.
     asks = [a for a in requester.asks if a.tool == "tasks_update"]
@@ -135,15 +169,16 @@ async def test_carried_taint_keeps_the_next_clean_turn_gated(
     assert len(sent) == 2
 
 
+@pytest.mark.parametrize(("cat", "kind", "tool"), CATEGORIES, ids=IDS)
 async def test_without_the_carry_the_second_turn_write_would_run(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cat: str, kind: SourceKind, tool: str | None
 ) -> None:
-    """Mutation proof: with `TaintCarry` disabled the hijacked turn-2 write
-    is allowed untainted (`allow.write_internal`) and runs."""
+    """Mutation proof, per category: with `TaintCarry` disabled the hijacked
+    turn-2 write is allowed untainted (`allow.write_internal`) and runs, so the
+    carry is the ONLY thing gating turn 2 in the test above (not vacuous)."""
     monkeypatch.setattr(TaintCarry, "carried", property(lambda self: False))
-    # Recall path: no external-service tool in turn 2, whose output would
-    # taint the turn on its own (dispatcher override, P4.1-fu).
-    spy, requester, _ = await _two_turns(SourceKind.FORWARDED_MESSAGE, None)
+    spy, requester, _, source = await _two_turns(kind, tool)
+    _turn_two_is_clean(source)
     assert spy.calls == [{"task_id": "9", "title": "pwned"}]
     assert len([a for a in requester.asks if a.tool == "tasks_update"]) == 1
 
