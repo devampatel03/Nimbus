@@ -9,10 +9,17 @@ Every call runs, in this order, before the provider is touched:
 2. lane check (QUARANTINE => no tools)   -> LLMRefused("lane_violation")
 3. scrub outbound text                   -> LLMRefused("scrub_blocked") on a
    secret/canary; card/Aadhaar/OTP are redacted in place
+3b. request limiter (RPM, daily requests, background yields; P5.5)
+                                         -> LLMRefused("rate_limited")
 4. spend cap (daily, INR, IST day)       -> SpendCapExceeded; flips the spend
    mode to READ_ONLY for the rest of the IST day and fires the alert hook once
 5. provider call (the only transport use)
 6. audit row (`llm_audit` shape) + cost accounting
+
+Before step 1 the request's `max_output_tokens` is clamped to the per-lane cap
+(`LLMSettings.output_cap`), and the provider is chosen by purpose: the
+optional cheap provider (`LLM_MODEL_CHEAP`) serves `CHEAP_PURPOSES`; chat
+always uses the main model. A provider 429 starts the limiter's cool-down.
 
 A refusal in steps 1-4 writes a `blocked` audit row and makes ZERO provider
 calls. Any unexpected guard failure also refuses (fail closed). If the audit
@@ -50,6 +57,7 @@ from src.llm.protocols import (
     Provider,
     SpendLedger,
 )
+from src.llm.ratelimit import RequestLimiter
 from src.llm.scrub import Scrubber, ScrubBlocked, redact_secrets
 from src.llm.settings import DEFAULT_API_KEY, LLMSettings
 from src.llm.types import (
@@ -63,6 +71,7 @@ from src.llm.types import (
     LLMRefused,
     LLMResponseError,
     ProviderResponse,
+    Purpose,
     SpendCapExceeded,
     Usage,
 )
@@ -75,6 +84,8 @@ SPEND_MODE_KEY = "llm_spend_mode"  # value {"mode": "read_only", "day": "YYYY-MM
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 _NOT_SENT_CODES = frozenset({"egress_denied", "egress_failed", "egress_config"})
 _SENT_STATUSES = frozenset({408, 504})
+# Served by the cheap model when one is configured (P5.5). Never CHAT.
+CHEAP_PURPOSES = frozenset({Purpose.QUARANTINE_EXTRACT, Purpose.MEMORY_EXTRACT, Purpose.FRICTION})
 _REPAIR_PROMPT = (
     "Your previous reply was not valid JSON for the required schema. "
     "Reply again with only the corrected JSON object."
@@ -408,8 +419,11 @@ class GuardedLLM:
         alert: AlertHook | None = None,
         clock: Clock | None = None,
         payload_redact: Sequence[str] = (),
+        cheap_provider: Provider | None = None,
+        limiter: RequestLimiter | None = None,
     ) -> None:
         self._provider = provider
+        self._cheap = cheap_provider
         # P4.4: planted canaries reach the model on purpose; they are still
         # redacted from the stored (encrypted) audit payload (INV-7).
         self._payload_redact = tuple(payload_redact)
@@ -424,6 +438,17 @@ class GuardedLLM:
         )
         self._pricing = pricing if pricing is not None else PriceTable(self._settings.price_table)
         self._clock: Clock = clock if clock is not None else _utc_now
+        self._limiter = (
+            limiter
+            if limiter is not None
+            else RequestLimiter(
+                rpm=self._settings.rpm_limit,
+                daily=self._settings.daily_request_limit,
+                background_share=self._settings.background_share,
+                max_wait_s=self._settings.rate_limit_max_wait_s,
+                clock=self._clock,
+            )
+        )
         self._acct = CallAccountant(
             flags=flags,
             audit=audit,
@@ -472,17 +497,31 @@ class GuardedLLM:
     async def mode(self) -> LLMMode:
         return await self._acct.mode()
 
+    @property
+    def limiter(self) -> RequestLimiter:
+        return self._limiter
+
+    def _provider_for(self, purpose: Purpose) -> Provider:
+        if self._cheap is not None and purpose in CHEAP_PURPOSES:
+            return self._cheap
+        return self._provider
+
     # ------------------------------------------------------------ the guard
 
     async def _guarded_call(self, req: ChatRequest) -> ChatResult:
         started = self._clock()
-        model = self._provider.model
-        meta = CallMeta(req.purpose.value, self._provider.name, model, started, req.turn_id)
+        cap = self._settings.output_cap(req.lane.value)
+        if req.max_output_tokens > cap:
+            req = req.model_copy(update={"max_output_tokens": cap})
+        provider = self._provider_for(req.purpose)
+        model = provider.model
+        meta = CallMeta(req.purpose.value, provider.name, model, started, req.turn_id)
 
         async def checks() -> tuple[ChatRequest, str | None, Decimal]:
             await self._acct.check_kill_switch()
             self._check_lane(req)
             scrubbed, payload = self._scrub(req)
+            await self._limiter.acquire(req.purpose)
             chars = sum(len(_message_text(m)) for m in req.messages) + sum(
                 len(t.description) + len(json.dumps(t.parameters)) for t in req.tools
             )
@@ -498,9 +537,15 @@ class GuardedLLM:
                 resp = resp.model_copy(update={"tool_calls": ()})
             return await self._finish(req, meta, resp, payload)
 
-        return await self._acct.billed(
-            meta, reserved, lambda: self._provider.complete(scrubbed), finish
-        )
+        async def send() -> ProviderResponse:
+            try:
+                return await provider.complete(scrubbed)
+            except LLMProviderError as exc:
+                if exc.status == 429:
+                    self._limiter.note_rate_limited(exc.retry_after_s)
+                raise
+
+        return await self._acct.billed(meta, reserved, send, finish)
 
     @staticmethod
     def _check_lane(req: ChatRequest) -> None:
@@ -593,6 +638,7 @@ def _parse_schema(text: str | None, schema: type[BaseModel]) -> BaseModel | None
 
 
 __all__ = [
+    "CHEAP_PURPOSES",
     "KILL_SWITCH_KEY",
     "SPEND_MODE_KEY",
     "CallAccountant",

@@ -279,12 +279,45 @@ async def test_secrets_never_reach_memory(sf: SF) -> None:
     assert "[REDACTED" in stored
 
 
-@pytest.mark.parametrize("reason", ["kill_switch", "spend_cap"])
+@pytest.mark.parametrize("reason", ["kill_switch", "spend_cap", "rate_limited"])
 async def test_kill_switch_and_spend_cap_defer_without_an_attempt(sf: SF, reason: str) -> None:
     eid = await make_event(sf)
     with pytest.raises(JobDeferred) as ei:
         await handler(sf, ScriptedLLM(error=LLMRefused(reason))).handle(ctx(eid))
     assert ei.value.run_at > T0
+
+
+async def test_provider_429_defers_so_extraction_yields_to_chat(sf: SF) -> None:
+    """P5.5: a free-tier 429 on a background call is a deferral, not a failure."""
+    eid = await make_event(sf)
+    err = LLMProviderError("rate_limited", status=429, retry_after_s=20.0)
+    with pytest.raises(JobDeferred) as ei:
+        await handler(sf, ScriptedLLM(error=err)).handle(ctx(eid))
+    assert ei.value.run_at > T0
+
+
+async def test_cue_mode_skips_messages_without_a_memory_cue(sf: SF) -> None:
+    """P5.5 cost lever: `mode="cue"` spends only on first-person facts/plans."""
+    plain = await make_event(sf, "What is the weather like in Shimla during the December holidays?")
+    cued = await make_event(sf, "My sister Priya is moving to Shimla in December this year.")
+    llm = ScriptedLLM()
+    h = MemoryExtractHandler(sf, DeterministicStubEmbedder(), llm, clock=FakeClock(T0), mode="cue")
+    await h.handle(ctx(plain))
+    assert llm.requests == [] and await chunks(sf, plain) == []
+    await h.handle(ctx(cued))
+    assert len(llm.requests) == 1
+
+
+async def test_min_chars_is_configurable(sf: SF) -> None:
+    eid = await make_event(sf, "Priya likes filter coffee a lot.")  # 32 chars < 40
+    llm = ScriptedLLM()
+    await handler(sf, llm).handle(ctx(eid))
+    assert llm.requests == []
+    h = MemoryExtractHandler(
+        sf, DeterministicStubEmbedder(), llm, clock=FakeClock(T0), min_chars=20
+    )
+    await h.handle(ctx(eid))
+    assert len(llm.requests) == 1
 
 
 async def test_other_guard_errors_are_retried_with_backoff(sf: SF) -> None:

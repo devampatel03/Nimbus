@@ -10,6 +10,15 @@ The SDK's own retries are disabled (`max_retries=0`); this module retries
 429 / 5xx with bounded exponential backoff and
 NEVER retries 4xx (auth, validation) or an egress denial.
 
+429 (P5.5, ADR-0025): the error code is `rate_limited` and carries the bounded
+Retry-After. A background purpose (extraction) never retries a 429: it yields
+at once so chat keeps the quota. A foreground call retries only while the total
+wait stays within `rate_limit_max_wait_s`, and never sooner than Retry-After.
+
+Prompt caching (P5.5): tools are sent sorted by name so the same tool set is
+the same byte prefix on every call; the system prompt starts with the static
+character card (src/personality/prompt_assembler.py).
+
 INV-7: SDK exception text can echo the key prefix ("Incorrect API key ...")
 or a response body, so provider failures are re-raised as fixed-code
 `LLMProviderError`s with `from None`. Nothing here logs prompt text or headers.
@@ -30,6 +39,7 @@ import openai
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
+from src.llm.ratelimit import is_foreground
 from src.llm.settings import LLMSettings
 from src.llm.types import (
     ChatMessage,
@@ -84,7 +94,9 @@ def _to_wire_message(m: ChatMessage) -> dict[str, Any]:
     return msg
 
 
-def build_wire_request(req: ChatRequest, model: str) -> dict[str, Any]:
+def build_wire_request(
+    req: ChatRequest, model: str, *, reasoning_effort: str | None = None
+) -> dict[str, Any]:
     messages = [_to_wire_message(m) for m in req.messages]
     kwargs: dict[str, Any] = {
         "model": model,
@@ -92,6 +104,8 @@ def build_wire_request(req: ChatRequest, model: str) -> dict[str, Any]:
         "temperature": req.temperature,
         "max_tokens": req.max_output_tokens,
     }
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
     if req.tools:
         kwargs["tools"] = [
             {
@@ -102,7 +116,7 @@ def build_wire_request(req: ChatRequest, model: str) -> dict[str, Any]:
                     "parameters": t.parameters,
                 },
             }
-            for t in req.tools
+            for t in sorted(req.tools, key=lambda t: t.name)
         ]
     if req.response_schema is not None:
         schema = json.dumps(req.response_schema.model_json_schema(), sort_keys=True)
@@ -160,16 +174,27 @@ class OpenAICompatProvider:
             self._client = None
 
     async def complete(self, req: ChatRequest) -> ProviderResponse:
-        kwargs = build_wire_request(req, self.model)
+        kwargs = build_wire_request(
+            req, self.model, reasoning_effort=self._settings.reasoning_effort
+        )
         attempts = self._settings.max_retries + 1
+        foreground = is_foreground(req.purpose)
+        waited = 0.0
         for attempt in range(attempts):
             try:
                 raw = await self._sdk().chat.completions.create(**kwargs)
             except LLMProviderError:
                 raise
             except Exception as exc:  # noqa: BLE001 - classified below, never re-raised raw
-                delay_hint = self._classify(exc, attempt, attempts)
-                await self._sleep(self._backoff(attempt, delay_hint))
+                delay_hint, limited = self._classify(exc, attempt, attempts, foreground=foreground)
+                delay = self._backoff(attempt, delay_hint)
+                if limited:
+                    if waited + delay > self._settings.rate_limit_max_wait_s:
+                        raise LLMProviderError(
+                            "rate_limited", status=429, retry_after_s=delay_hint
+                        ) from None
+                    waited += delay
+                await self._sleep(delay)
                 continue
             return self._parse(raw)
         raise LLMProviderError("retries_exhausted")  # pragma: no cover
@@ -187,7 +212,7 @@ class OpenAICompatProvider:
         except LLMProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 - classified below, never re-raised raw
-            self._classify(exc, 0, 1)  # always raises with a single attempt
+            self._classify(exc, 0, 1, foreground=False)  # always raises (no retry)
             raise LLMProviderError("unexpected") from None  # pragma: no cover
         usage = Usage()
         try:
@@ -200,9 +225,11 @@ class OpenAICompatProvider:
 
     # ------------------------------------------------------------- helpers
 
-    def _classify(self, exc: Exception, attempt: int, attempts: int) -> float | None:
-        """Return a Retry-After hint (or 0.0) if the call should be retried;
-        raise a sanitised `LLMProviderError` otherwise."""
+    def _classify(
+        self, exc: Exception, attempt: int, attempts: int, *, foreground: bool
+    ) -> tuple[float, bool]:
+        """Return (Retry-After hint or 0.0, is-a-429) if the call should be
+        retried; raise a sanitised `LLMProviderError` otherwise."""
         egress = _egress_error(exc)
         if egress is not None:
             logger.warning(
@@ -229,7 +256,9 @@ class OpenAICompatProvider:
                     hint = min(max(float(retry_after), 0.0), _MAX_RETRY_AFTER_S)
                 except ValueError:
                     hint = None
-            code = "provider_status"
+            code = "rate_limited" if status == 429 else "provider_status"
+            if status == 429 and not foreground:
+                retryable = False  # background yields its quota to chat
         elif isinstance(exc, openai.APITimeoutError):
             # Sent, no body: possibly billed. Never retried here (R5); the
             # caller retries through the guard so each send is reserved/billed.
@@ -242,12 +271,10 @@ class OpenAICompatProvider:
             code = "unexpected"
             retryable = False
 
-        if not retryable:
-            raise LLMProviderError(code, status=status) from None
-        if attempt + 1 >= attempts:
-            raise LLMProviderError(code, status=status) from None
+        if not retryable or attempt + 1 >= attempts:
+            raise LLMProviderError(code, status=status, retry_after_s=hint) from None
         logger.warning("llm provider retry code=%s status=%s attempt=%d", code, status, attempt + 1)
-        return hint if hint is not None else 0.0
+        return (hint if hint is not None else 0.0), status == 429
 
     def _backoff(self, attempt: int, hint: float | None) -> float:
         s = self._settings

@@ -81,10 +81,14 @@ async def test_roundtrip_and_ciphertext_at_rest(sf: async_sessionmaker[AsyncSess
             )
         ).scalar_one()
     assert REFRESH_TOKEN not in raw and REFRESH_TOKEN not in everything
-    assert "1//" not in raw
     value = json.loads(raw)
     assert value["v"] == 1
+    # Only the ciphertext field may hold token material, and only encrypted:
+    # the plaintext prefix must not sit anywhere else in the row (the random
+    # base64 ciphertext itself can contain "1//", so it is excluded).
+    assert "1//" not in raw.replace(value["ct"], "")
     blob = base64.b64decode(value["ct"])
+    assert REFRESH_TOKEN.encode() not in blob
     assert blob[0] == 1 and len(blob) > 40  # versioned AES-GCM blob from src/db/crypto.py
 
 

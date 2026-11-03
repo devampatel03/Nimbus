@@ -73,6 +73,17 @@ class AppSettings(BaseSettings):
     # `src.lanes.quarantine` MAX_QUARANTINE_CALLS_PER_TURN / QUARANTINE_CALLS_RANGE.
     quarantine_calls_per_turn: int = Field(default=10, ge=0, le=25)
 
+    # P5.5 cost levers (docs/pivot/reports/COST_MODEL.md). Defaults keep today's
+    # behaviour; the cheap profile is documented there and in ADR-0025.
+    memory_top_k: int = Field(default=5, ge=0, le=20)
+    memory_item_chars: int = Field(default=1200, ge=100, le=8000)
+    # memory_extract: minimum message length, and "all" (every non-trivial
+    # message) or "cue" (only messages with a first-person fact/commitment cue).
+    extract_min_chars: int = Field(default=40, ge=1, le=4000)
+    extract_mode: Literal["all", "cue"] = "all"
+    # Extraction pauses once the IST day's spend passes this share of the cap.
+    extract_max_spend_share: float = Field(default=0.30, gt=0, le=1)
+
     # DB: no statement may run longer than this (a hung audit write must not
     # block a loop forever, P1.4b follow-up).
     db_statement_timeout_s: float = Field(default=30.0, gt=0, le=600)

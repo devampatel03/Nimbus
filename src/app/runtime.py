@@ -659,6 +659,9 @@ async def run_app(
             lease_s=cfg.app.job_lease_s,
             batch=cfg.app.job_batch,
             on_progress=lambda: heartbeat.beat("worker"),
+            extract_min_chars=cfg.app.extract_min_chars,
+            extract_mode=cfg.app.extract_mode,
+            extract_max_spend_share=cfg.app.extract_max_spend_share,
         )
         # Every `running` row at boot belongs to a dead process: release them now
         # (no attempt burned) so reminders do not wait out the lease (M4).
@@ -690,7 +693,12 @@ async def run_app(
             # ToolOutput.external and untrusted memory go through the quarantine
             # lane (same guard and spend cap), bounded per turn (P3.0 MED-D).
             quarantine=Quarantine(llm),
-            config=LoopConfig(max_quarantine_calls_per_turn=cfg.app.quarantine_calls_per_turn),
+            config=LoopConfig(
+                max_quarantine_calls_per_turn=cfg.app.quarantine_calls_per_turn,
+                max_output_tokens=cfg.llm.max_output_tokens_trusted,
+                memory_top_k=cfg.app.memory_top_k,
+                memory_item_chars=cfg.app.memory_item_chars,
+            ),
             scopes_enabled=wired.scopes,
             canary=canary,
         )
