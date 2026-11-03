@@ -154,8 +154,10 @@ class TurnWorker:
         on_progress: Callable[[], None] | None = None,
         on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
         callbacks: CallbackHandler | None = None,
+        commands: Callable[[str], Awaitable[str | None]] | None = None,
     ) -> None:
         self._callbacks = callbacks
+        self._commands = commands
         self._progress = on_progress
         self._on_turn_done = on_turn_done
         self._gw = gateway
@@ -213,6 +215,12 @@ class TurnWorker:
         text, _ = clean_text(u.text or "", max_chars=MAX_TURN_TEXT_CHARS)
         if not text.strip():
             return
+        if self._commands is not None:
+            # Deterministic slash commands (/snooze, /quiet, /resume): code, never the model.
+            reply = await self._commands(text)
+            if reply is not None:
+                await self._gw.send_text(reply, reply_to=_ref(u))
+                return
         with turn_event(item.event_id):  # tools stamp what they create with this event (M5)
             result = await self._orch.run_turn(
                 text,

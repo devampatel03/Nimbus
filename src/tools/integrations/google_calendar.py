@@ -194,6 +194,11 @@ class GoogleCalendarTool(ToolGroup):
     def bind(self, client: CalendarClient, clock: Clock) -> None:
         self._client, self._clock = client, clock
 
+    @property
+    def bound_client(self) -> CalendarClient | None:
+        """The client once bound (P5.1 brief); None when Calendar is unbound."""
+        return self._client
+
     def _ready(self) -> tuple[CalendarClient, Clock]:
         if self._client is None or self._clock is None:
             raise ToolError("calendar is unavailable")

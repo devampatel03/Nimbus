@@ -223,6 +223,11 @@ class EventView:
 
     event_id: str
     external: UntrustedText
+    # Structured copies for code-built summaries (P5.1). `title` is third-party text:
+    # clean_external-sanitised, still UNTRUSTED; render it only as quoted data.
+    title: str = ""
+    start_at: datetime | None = None  # None for all-day or unparseable
+    all_day: bool = False
 
 
 def _when(node: object) -> str:
@@ -240,6 +245,24 @@ def _when(node: object) -> str:
         return datetime.fromisoformat(raw).strftime("%a %d %b %Y (all day)")
     except ValueError:
         return ""
+
+
+def _start(node: object) -> tuple[datetime | None, bool]:
+    if not isinstance(node, dict):
+        return None, False
+    raw = node.get("dateTime") or node.get("date")
+    if not isinstance(raw, str) or len(raw) > 40:
+        return None, False
+    try:
+        if "T" in raw:
+            at = datetime.fromisoformat(raw)
+            if at.tzinfo is None or at.utcoffset() is None:
+                return None, False
+            return at, False
+        datetime.fromisoformat(raw)
+        return None, True
+    except ValueError:
+        return None, False
 
 
 def to_view(item: object) -> EventView | None:
@@ -270,7 +293,14 @@ def to_view(item: object) -> EventView | None:
         f"attendees: {', '.join(att)}",
         f"description: {clean_external(item.get('description'), MAX_DESCRIPTION_CHARS)}",
     ]
-    return EventView(eid, UntrustedText("\n".join(lines), source=SourceKind.CALENDAR_INVITE))
+    start_at, all_day = _start(item.get("start"))
+    return EventView(
+        eid,
+        UntrustedText("\n".join(lines), source=SourceKind.CALENDAR_INVITE),
+        title=clean_external(item.get("summary"), MAX_TITLE_CHARS),
+        start_at=start_at,
+        all_day=all_day,
+    )
 
 
 # -- the HTTP client ---------------------------------------------------------
