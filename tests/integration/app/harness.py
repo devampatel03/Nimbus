@@ -23,6 +23,7 @@ from src.llm.protocols import Provider
 from src.llm.types import ChatRequest, ProviderResponse, Usage
 from src.memory.manager import DeterministicStubEmbedder
 from src.net import NetSettings
+from src.scheduler.settings import ProactiveSettings
 from tests.unit.gateway.fake_telegram import FakeTelegram, make_egress, make_settings
 
 CURRENT_DSN = ""  # set per test by conftest: the module's scratch database
@@ -101,6 +102,8 @@ def make_cfg(tmp_path: Path, **app: Any) -> AppConfig:
         llm=_llm(),
         net=NetSettings(_env_file=None),
         dsn=CURRENT_DSN,
+        # Wall-clock-independent: no catch-up brief may land in these runs (P5.1).
+        proactive=ProactiveSettings(_env_file=None, enabled=False),  # type: ignore[call-arg]
     )
 
 

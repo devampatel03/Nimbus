@@ -138,3 +138,21 @@ class ProactiveState:
             value["sent"] = _sent(value, today)
             value["muted_until"] = until.isoformat() if until is not None else None
             row.value = value
+
+
+class UntrustedReminderGate:
+    """ADR-0011 addendum (P5.1): a reminder is exempt from the interruption budget
+    only when a trusted user event created it. `reminders_create` is callable by
+    the model, so a reminder created from injected text counts as a proactive
+    message. `allow` reserves one budget slot; a repeat for the same reminder
+    (at-least-once retry) is allowed because its slot is already held."""
+
+    def __init__(self, state: ProactiveState, budget: int) -> None:
+        self._state = state
+        self._budget = budget
+
+    async def allow(self, reminder_id: str) -> bool:
+        got = await self._state.reserve(
+            f"reminder:{reminder_id}", "reminder_untrusted", budget=self._budget
+        )
+        return got in (Reservation.OK, Reservation.DUPLICATE)

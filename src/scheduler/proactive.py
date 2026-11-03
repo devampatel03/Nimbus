@@ -432,6 +432,7 @@ class ProactiveHandler:
         except BaseException:
             await self._state.release(ctx.dedupe_key)
             raise
+        log.info("proactive sent kind=%s key=%s", ctx.kind, ctx.dedupe_key.split(":", 2)[-1][:60])
         if after is not None:
             try:
                 await after()

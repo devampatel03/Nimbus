@@ -106,6 +106,7 @@ from src.orchestrator.loop import LoopConfig, Orchestrator
 from src.policy import PolicyEngine
 from src.scheduler.memory_extract import LedgerSpendProbe
 from src.scheduler.proactive import CalendarClientSource, ChainScheduler, build_proactive
+from src.scheduler.proactive_state import ProactiveState, UntrustedReminderGate
 from src.scheduler.settings import ProactiveSettings
 from src.scheduler.wiring import SchedulerParts, build_scheduler
 from src.tools.integrations.google_calendar import GoogleCalendarTool
@@ -142,6 +143,8 @@ class AppConfig:
     # or random per process without one.
     canary: CanarySettings | None = field(default=None, repr=False)
     canaries: CanarySet = field(default_factory=generate_canaries, repr=False)
+    # P5.1: None = defaults from the environment (`PROACTIVE_*`).
+    proactive: ProactiveSettings | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -172,6 +175,7 @@ class AppConfig:
         google: GoogleOAuthSettings | None = None,
         notion: NotionSettings | None = None,
         canary: CanarySettings | None = None,
+        proactive: ProactiveSettings | None = None,
     ) -> AppConfig:
         if dsn is None:
             from config.settings import settings as shared
@@ -217,6 +221,7 @@ class AppConfig:
             notion=notion,
             canary=canary,
             canaries=canaries,
+            proactive=proactive,
         )
 
 
@@ -640,8 +645,12 @@ async def run_app(
         # 5. Assemble and run. Reminders and tasks are persisted; the job runner
         # delivers reminders through the gateway (owner chat only, R2).
         clock = SystemClock()
+        proactive_cfg = cfg.proactive or ProactiveSettings()
         parts = build_scheduler(
             sf,
+            reminder_gate=UntrustedReminderGate(
+                ProactiveState(sf, clock), proactive_cfg.budget_per_day
+            ),
             gateway=gateway,
             embedder=embedder,
             llm=llm,
@@ -702,7 +711,6 @@ async def run_app(
                 )
             )
         # P5.1: proactive jobs. Templates from DB rows; no model call at all. Calendar section only when Calendar is bound.
-        proactive_cfg = ProactiveSettings()
         cal_tool = _calendar_tool(registry) if "calendar" in wired.scopes else None
         cal_client = cal_tool.bound_client if cal_tool is not None else None
         proactive = build_proactive(

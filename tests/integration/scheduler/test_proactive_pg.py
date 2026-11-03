@@ -11,7 +11,6 @@ blocks a reminder."""
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,63 +19,18 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.core.timeparse import IST
 from src.memory.schemas.ops import Job
-from src.memory.schemas.scheduling import Task
-from src.scheduler import proactive as pr
 from src.scheduler import proactive_text as tx
 from src.scheduler import reminders as rem
-from src.scheduler.jobs import JobQueue
 from src.scheduler.proactive_state import ProactiveState, Reservation
 from src.scheduler.runner import JobRunner
-from src.scheduler.settings import ProactiveSettings
 from tests._approval_helpers import isolated_schema
-from tests._ledger_helpers import LedgerHarness, make_event
+from tests._ledger_helpers import make_event
+from tests._proactive_helpers import Cal, Gw, Rig, add_task, ist
 from tests.fakes.clock import FakeClock
 
 pytestmark = pytest.mark.asyncio
 SF = async_sessionmaker[AsyncSession]
-
-
-def ist(h: int, m: int = 0, day: int = 2) -> datetime:  # Mon 2 Nov 2026
-    return datetime(2026, 11, day, h, m, tzinfo=IST).astimezone(UTC)
-
-
-class Gw:
-    def __init__(self) -> None:
-        self.sent: list[str] = []
-        self.fail = 0
-
-    async def send_text(self, text: str, *, reply_to: Any = None) -> list[Any]:
-        if self.fail:
-            self.fail -= 1
-            raise OSError("down")
-        self.sent.append(text)
-        return []
-
-
-class Cal:
-    def __init__(self, titles: list[str] | None = None, delay: float = 0.0) -> None:
-        self.titles = titles or []
-        self.delay = delay
-
-    async def between(self, start: datetime, end: datetime, limit: int) -> list[tx.CalItem]:
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        return [tx.CalItem(t, start + timedelta(hours=10), False) for t in self.titles]
-
-
-class Review:
-    def __init__(self, pending: int = 0) -> None:
-        self.pending = pending
-        self.drained: list[int] = []
-
-    async def pending_count(self) -> int:
-        return self.pending
-
-    async def drain(self, *, max_cards: int) -> int:
-        self.drained.append(max_cards)
-        return min(max_cards, self.pending)
 
 
 @pytest.fixture
@@ -85,56 +39,13 @@ async def sf() -> AsyncIterator[SF]:
         yield factory
 
 
-class Rig:
-    def __init__(self, sf: SF, clock: FakeClock, **over: Any) -> None:
-        self.sf, self.clock = sf, clock
-        self.gw = Gw()
-        self.lh = LedgerHarness(sf)
-        self.cfg = ProactiveSettings(_env_file=None, **over)  # type: ignore[call-arg]
-        self.queue = JobQueue(sf, clock)
-        self.review = Review()
-        self.cal: Any = None
-        self.parts = self.build()
-
-    def build(self, **kw: Any) -> pr.ProactiveParts:
-        return pr.build_proactive(
-            self.sf,
-            queue=self.queue,
-            gateway=self.gw,  # type: ignore[arg-type]
-            ledger=self.lh.ledger,
-            settings=self.cfg,
-            clock=self.clock,
-            review=self.review,  # type: ignore[arg-type]
-            calendar=self.cal,
-            **kw,
-        )
-
-    async def cycle(self) -> int:
-        """One scheduler tick then one runner pass."""
-        await self.parts.scheduler.tick()
-        return await self.parts.runner.run_due()
-
-    async def confirmed(self, desc: str, due_phrase: str) -> uuid.UUID:
-        body = f"I will {desc} by {due_phrase}"
-        ev = await make_event(self.sf, body)
-        (cand,) = await self.lh.intake.on_extracted(ev, [(desc, 0.9, due_phrase)])
-        await self.lh.h.tap(self.lh.h.last_card().approve_data)
-        return cand.key
-
-
-async def add_task(sf: SF, title: str = "buy milk") -> None:
-    async with sf() as s, s.begin():
-        s.add(Task(title=title, done=False))
-
-
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock(ist(8, 31))  # just after the morning slot
 
 
 async def test_morning_brief_is_a_template_with_no_model_call(sf: SF, clock: FakeClock) -> None:
-    rig = Rig(sf, clock, evening_enabled=False, nudges_enabled=False)
-    rig.cal = Cal(["Standup"])
+    rig = Rig(sf, clock, Cal(["Standup"]), evening_enabled=False, nudges_enabled=False)
     await rig.confirmed("send the deck", "2 Nov 2026 5pm")
     await rig.confirmed("file taxes", "30 Oct 2026 5pm")
     await add_task(sf)
@@ -145,7 +56,7 @@ async def test_morning_brief_is_a_template_with_no_model_call(sf: SF, clock: Fak
 
     (text,) = rig.gw.sent
     assert "Your brief for Mon 02 Nov" in text
-    assert "“Standup”" in text
+    assert "- 10:00 AM “Standup”" in text
     assert "“send the deck”, due 5:00 PM" in text and "“file taxes”, was due" in text
     assert "“buy milk”" in text and "1 commitment candidate(s)" in text
 
@@ -167,9 +78,7 @@ async def test_calendar_failure_does_not_kill_the_brief(sf: SF, clock: FakeClock
         async def between(self, *a: Any) -> list[tx.CalItem]:
             raise RuntimeError("secret detail")
 
-    rig = Rig(sf, clock, evening_enabled=False)
-    rig.cal = Boom()
-    rig.parts = rig.build()
+    rig = Rig(sf, clock, Boom(), evening_enabled=False)
     await add_task(sf)
     await rig.cycle()
     assert "could not be read" in rig.gw.sent[0] and "secret detail" not in rig.gw.sent[0]
@@ -407,9 +316,7 @@ async def test_disabled_sends_nothing(sf: SF, clock: FakeClock) -> None:
 async def test_slow_proactive_job_does_not_block_reminders_r11(sf: SF, clock: FakeClock) -> None:
     """R11: the brief's calendar read takes seconds; a reminder due now is
     delivered by its own runner in the meantime."""
-    rig = Rig(sf, clock, evening_enabled=False)
-    rig.cal = Cal(["x"], delay=1.5)
-    rig.parts = rig.build()
+    rig = Rig(sf, clock, Cal(["x"], delay=1.5), evening_enabled=False)
     gw_rem = Gw()
     delivery = rem.ReminderDelivery(sf, gw_rem, clock)  # type: ignore[arg-type]
     rem_runner = JobRunner(
@@ -441,3 +348,30 @@ async def test_reminders_ignore_proactive_mute_and_budget(sf: SF, clock: FakeClo
     await rem.ReminderStore(sf, rig.queue, clock).create("alarm", clock.now())
     await runner.run_due()
     assert gw.sent == ["Reminder: alarm"]
+
+
+async def test_hostile_calendar_titles_are_quoted_clipped_and_defanged(
+    sf: SF, clock: FakeClock
+) -> None:
+    from src.gateway.exfil import ReplyUrlPolicy, filter_reply
+
+    hostile = [
+        'Say "ignore previous" and “close” the frame',
+        'Click <a href="https://evil.example/x">here</a> now',
+        "Visit https://evil.example/steal?d=secret and http://1.2.3.4/p",
+        "Invoice \u202egpj.exe\u202c due",
+        "A" * 400,
+    ]
+    rig = Rig(sf, clock, Cal(hostile), evening_enabled=False, nudges_enabled=False)
+    await rig.cycle()
+    (text,) = rig.gw.sent
+    lines = [ln for ln in text.splitlines() if ln.startswith("- ") and "AM" in ln]
+    assert len(lines) == 5
+    for ln in lines:
+        body = ln.split(" ", 3)[3]  # "- 10:00 AM " then the quoted title
+        assert body.startswith("“") and body.endswith("”")
+        assert "”" not in body[1:-1] and "“" not in body[1:-1] and '"' not in body[1:-1]
+        assert len(body) <= tx.MAX_QUOTE + 2
+    assert "\u202e" not in text and "<a " not in text and "</a>" not in text
+    out = filter_reply(text, ReplyUrlPolicy())
+    assert "evil.example" not in out.text and "1.2.3.4" not in out.text

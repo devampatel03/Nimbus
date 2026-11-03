@@ -215,7 +215,7 @@ class TurnWorker:
         text, _ = clean_text(u.text or "", max_chars=MAX_TURN_TEXT_CHARS)
         if not text.strip():
             return
-        if self._commands is not None:
+        if self._commands is not None and not u.untrusted:
             # Deterministic slash commands (/snooze, /quiet, /resume): code, never the model.
             reply = await self._commands(text)
             if reply is not None:

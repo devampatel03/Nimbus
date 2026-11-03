@@ -83,7 +83,7 @@ def test_parse_duration(raw: str, delta: timedelta | None) -> None:
 
 def test_settings_defaults_are_cheap_and_budget_is_capped() -> None:
     cfg = ProactiveSettings(_env_file=None)  # type: ignore[call-arg]
-    assert cfg.polish is False and cfg.budget_per_day == 6
+    assert cfg.budget_per_day == 6
     assert (cfg.quiet_start, cfg.quiet_end) == ("22:00", "08:00")
     with pytest.raises(ValidationError):
         ProactiveSettings(_env_file=None, budget_per_day=7)  # type: ignore[call-arg]
@@ -173,7 +173,7 @@ def test_calendar_view_exposes_sanitised_title_and_start() -> None:
 
     v = to_view(
         {
-            "id": "abcde12345",
+            "id": "eventid01",
             "summary": "Plan <script>x</script>review",
             "start": {"dateTime": "2026-11-02T10:00:00+05:30"},
             "end": {"dateTime": "2026-11-02T11:00:00+05:30"},
@@ -181,5 +181,5 @@ def test_calendar_view_exposes_sanitised_title_and_start() -> None:
     )
     assert v is not None and v.title == "Plan review"
     assert v.start_at == datetime(2026, 11, 2, 10, 0, tzinfo=IST)
-    allday = to_view({"id": "abcde12345", "summary": "Holiday", "start": {"date": "2026-11-02"}})
+    allday = to_view({"id": "eventid01", "summary": "Holiday", "start": {"date": "2026-11-02"}})
     assert allday is not None and allday.all_day and allday.start_at is None

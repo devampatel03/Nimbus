@@ -61,9 +61,10 @@ def build_scheduler(
     lease_s: float = DEFAULT_LEASE_S,
     batch: int = DEFAULT_BATCH,
     on_progress: Callable[[], None] | None = None,
+    reminder_gate: rem.ReminderGate | None = None,
 ) -> SchedulerParts:
     queue = JobQueue(session_factory, clock, lease_s=lease_s)
-    delivery = rem.ReminderDelivery(session_factory, gateway, clock)
+    delivery = rem.ReminderDelivery(session_factory, gateway, clock, reminder_gate)
     extract = mx.MemoryExtractHandler(session_factory, embedder, llm, clock=clock, spend=spend)
     reminder_runner = JobRunner(
         queue,

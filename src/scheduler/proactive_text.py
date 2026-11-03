@@ -40,6 +40,7 @@ def quote(raw: str, limit: int = MAX_QUOTE) -> str:
     folded = "".join(ch if ch.isprintable() else " " for ch in folded)
     for ch in '"“”‘’`':
         folded = folded.replace(ch, "'" if ch == '"' else "")
+    folded = folded.replace("<", " ").replace(">", " ")  # no markup-shaped data
     text = " ".join(redact_secrets(folded).split())
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
