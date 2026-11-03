@@ -11,8 +11,10 @@ After a TRUSTED user event, a `memory_extract` job is enqueued
    speech are `lane='untrusted'`: SKIPPED with a log line, never extracted into
    trusted memory here; the quarantine lane is P3.0). Nothing is promoted: the
    store gives a chunk its event's lane and `promoted = lane == 'trusted'`.
-2. skips what is not worth a model call: under `MIN_CHARS`, or only an
-   acknowledgement / greeting (deterministic word list, no model).
+2. skips what is not worth a model call: under `min_chars` (default
+   `MIN_CHARS`), or only an acknowledgement / greeting (deterministic word list,
+   no model). In `mode="cue"` (P5.5 cost lever) it also skips any message with
+   neither a commitment cue nor a first-person memory cue (`has_memory_cue`).
 3. defers (never fails, never burns an attempt) while the model is off
    (`llm.mode() != NORMAL`: kill switch or daily cap) or today's spend is above
    `max_spend_share` of the cap. The job comes back after `RECHECK`.
@@ -29,7 +31,8 @@ outage never loses the user's own words; the retry only redoes the extraction.
 
 Failure classes: a guard `scrub_blocked`, an unusable model answer, a missing
 event or a bad payload will never succeed on retry -> `PermanentJobError`
-(dead letter). `kill_switch` / `spend_cap` -> `JobDeferred`. Provider errors and
+(dead letter). `kill_switch` / `spend_cap` / `rate_limited` (the request
+limiter, or a provider 429: background yields to chat, P5.5) -> `JobDeferred`. Provider errors and
 other guard errors are transient -> the exception propagates and the runner
 backs off.
 
@@ -51,7 +54,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel
 from sqlalchemy import Integer, String, and_, cast, exists, func, literal, or_, select
@@ -62,7 +65,7 @@ from src.core.clock import Clock
 from src.llm.guard import ist_day_bounds
 from src.llm.protocols import LLMClient, SpendLedger
 from src.llm.scrub import redact_secrets
-from src.llm.types import LLMMode, LLMRefused, LLMResponseError
+from src.llm.types import LLMMode, LLMProviderError, LLMRefused, LLMResponseError
 from src.memory.commitments import CommitmentIntake, has_commitment_cue
 from src.memory.embedder import BatchEmbedder
 from src.memory.extractor import (
@@ -180,6 +183,19 @@ _ACK_WORDS = frozenset(
     ]
 )
 _WORD_RE = re.compile(r"[a-z']+", re.ASCII)
+# First-person facts, preferences, plans and decisions: worth remembering.
+_MEMORY_CUE_RE = re.compile(
+    r"\b(?:i|i'm|im|i've|ive|i'll|ill|i'd|my|mine|me|we|our|remember|decided|decide|"
+    r"prefer|favou?rite|birthday|anniversary|allergic|always|never|usually|"
+    r"moving|moved|started|starting|joined|quit|plan|planning|going to)\b",
+    re.IGNORECASE,
+)
+ExtractMode = Literal["all", "cue"]
+
+
+def has_memory_cue(text: str) -> bool:
+    """Deterministic cue for `mode="cue"`: a first-person or memory word."""
+    return bool(_MEMORY_CUE_RE.search(text))
 
 
 def is_low_signal(text: str) -> bool:
@@ -266,7 +282,13 @@ class MemoryExtractHandler:
         spend: SpendProbe | None = None,
         max_spend_share: float = MAX_SPEND_SHARE,
         commitments: CommitmentIntake | None = None,
+        min_chars: int = MIN_CHARS,
+        mode: ExtractMode = "all",
     ) -> None:
+        if min_chars < 1 or mode not in ("all", "cue"):
+            raise ValueError("bad extraction settings")
+        self._min_chars = min_chars
+        self._mode = mode
         self._commitments = commitments
         self._sf = session_factory
         self._embedder = embedder
@@ -337,9 +359,12 @@ class MemoryExtractHandler:
             log.info("memory_extract skipped: unsupported event kind=%s", ev.kind)
             return
         body = (ev.body or "").strip()
-        short_ok = self._commitments is not None and has_commitment_cue(body)
-        if (len(body) < MIN_CHARS and not short_ok) or is_low_signal(body):
+        commitment_cue = self._commitments is not None and has_commitment_cue(body)
+        if (len(body) < self._min_chars and not commitment_cue) or is_low_signal(body):
             log.info("memory_extract skipped: not worth a model call")
+            return
+        if self._mode == "cue" and not (commitment_cue or has_memory_cue(body)):
+            log.info("memory_extract skipped: no memory cue")
             return
 
         # Nothing below may spend (the API embedder and the model both do).
@@ -380,9 +405,13 @@ class MemoryExtractHandler:
         except LLMRefused as exc:
             if exc.reason == "scrub_blocked":
                 raise PermanentJobError("scrub_blocked") from None
-            if exc.reason in ("kill_switch", "spend_cap"):
+            if exc.reason in ("kill_switch", "spend_cap", "rate_limited"):
                 raise self._defer(exc.reason) from None
             raise  # guard_error and the like: transient, retried with backoff
+        except LLMProviderError as exc:
+            if exc.code == "rate_limited":
+                raise self._defer("rate_limited") from None
+            raise  # transient: the runner backs off
         except LLMResponseError:
             raise PermanentJobError("bad_response") from None
         log.info("memory_extract done chunks=%d", 1 + len(numbered))
@@ -408,7 +437,9 @@ class MemoryExtractSweeper:
         retry_dead_after: timedelta = RETRY_DEAD_AFTER,
         purge_after: timedelta = PURGE_AFTER,
         purge_every: timedelta = PURGE_EVERY,
+        min_chars: int = MIN_CHARS,
     ) -> None:
+        self._min_chars = min_chars
         if purge_after <= lookback:
             raise ValueError("purge_after must exceed the sweep look-back")
         self._purge_after = purge_after
@@ -469,7 +500,7 @@ class MemoryExtractSweeper:
                         EventRow.lane == "trusted",
                         EventRow.kind.in_(sorted(EXTRACTABLE_KINDS)),
                         EventRow.created_at >= now - self._lookback,
-                        func.char_length(func.coalesce(EventRow.body, "")) >= MIN_CHARS,
+                        func.char_length(func.coalesce(EventRow.body, "")) >= self._min_chars,
                         ~exists().where(Job.dedupe_key == key, blocking),
                     )
                     .order_by(EventRow.created_at)

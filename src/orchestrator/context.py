@@ -105,11 +105,12 @@ async def _memory_block(
     taint: Taint,
     turn_id: UUID | None,
     budget: QuarantineBudget,
+    max_chars: int = MAX_MEMORY_CHARS,
 ) -> DataBlock:
     text = str(m.text or "")
     if not m.is_untrusted:
         return local_data_block(
-            m.source, text[:MAX_MEMORY_CHARS], origin=BlockOrigin.LOCAL_MEMORY, untrusted=False
+            m.source, text[:max_chars], origin=BlockOrigin.LOCAL_MEMORY, untrusted=False
         )
     taint.mark(TaintSource.UNTRUSTED_MEMORY)
     label = "memory.untrusted"
@@ -138,6 +139,7 @@ async def build_context(
     recall: MemoryRecall | None = None,
     history: Sequence[ChatMessage] = (),
     memory_limit: int = 5,
+    memory_item_chars: int = MAX_MEMORY_CHARS,
     nonce_factory: Callable[[], str] | None = None,
     quarantine: Quarantine | None = None,
     turn_id: UUID | None = None,
@@ -156,14 +158,16 @@ async def build_context(
     # P3.0 MED-D: always bounded. The loop passes its per-turn budget (shared
     # with tool output); a direct caller gets the default cap.
     turn_budget = budget if budget is not None else QuarantineBudget()
-    if recall is not None:
+    if recall is not None and memory_limit > 0:
         try:
             memories = await recall.recall(user_text, limit=memory_limit)
         except Exception:  # noqa: BLE001 - fail closed
             log.warning("memory recall failed; continuing without memory")
             memories = []
         for m in list(memories)[:memory_limit]:
-            block = await _memory_block(m, quarantine, taint, turn_id, turn_budget)
+            block = await _memory_block(
+                m, quarantine, taint, turn_id, turn_budget, max(1, memory_item_chars)
+            )
             taint.absorb(block)
             blocks.append(block)
     if nonce_factory is None:

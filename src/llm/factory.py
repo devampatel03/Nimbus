@@ -8,6 +8,11 @@ stores. `default_stores()` are PROCESS-LOCAL in-memory stores, shared by every
 legacy `VLLMClient()` in the process so that they at least agree with each
 other on the kill switch and the daily cap. They are not durable: the app
 container must inject `PostgresFlagStore` / `PostgresAuditStore`.
+
+P5.5: with `LLM_MODEL_CHEAP` set (and no injected provider) a second
+`OpenAICompatProvider` for the cheap model is built on the SAME base URL, so
+the same single `Service.LLM` host serves both (no allowlist change, ADR-0025).
+Both share one guard: one kill switch, one spend cap, one request limiter.
 """
 
 from __future__ import annotations
@@ -41,11 +46,23 @@ def build_guarded_llm(
     clock: Clock | None = None,
     transport: Any = None,
     payload_redact: Sequence[str] = (),
+    cheap_provider: Provider | None = None,
 ) -> GuardedLLM:
     resolved = settings if settings is not None else LLMSettings()
     d_flags, d_audit, d_ledger = default_stores()
+    cheap = cheap_provider
+    if (
+        cheap is None
+        and provider is None
+        and resolved.model_cheap
+        and resolved.model_cheap != resolved.model
+    ):
+        cheap = OpenAICompatProvider(
+            resolved.model_copy(update={"model": resolved.model_cheap}), transport=transport
+        )
     return GuardedLLM(
         provider if provider is not None else OpenAICompatProvider(resolved, transport=transport),
+        cheap_provider=cheap,
         flags=flags if flags is not None else d_flags,
         audit=audit if audit is not None else d_audit,
         ledger=ledger if ledger is not None else d_ledger,
