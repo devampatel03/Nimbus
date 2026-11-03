@@ -44,7 +44,7 @@ class LLMError(Exception):
 
 class LLMRefused(LLMError):
     """Raised BEFORE any network I/O. `reason` is one of kill_switch,
-    spend_cap, scrub_blocked, lane_violation, guard_error."""
+    spend_cap, scrub_blocked, lane_violation, rate_limited, guard_error."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -58,11 +58,15 @@ class SpendCapExceeded(LLMRefused):
 
 class LLMProviderError(LLMError):
     """The provider call failed (after bounded retries). `status` is the HTTP
-    status when there was one."""
+    status when there was one; `retry_after_s` is a 429's bounded Retry-After
+    (code `rate_limited`), used by the guard's limiter cool-down."""
 
-    def __init__(self, code: str, *, status: int | None = None) -> None:
+    def __init__(
+        self, code: str, *, status: int | None = None, retry_after_s: float | None = None
+    ) -> None:
         self.code = code
         self.status = status
+        self.retry_after_s = retry_after_s
         super().__init__(
             f"llm provider error code={code}" + (f" status={status}" if status else "")
         )

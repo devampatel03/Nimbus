@@ -60,10 +60,12 @@ from src.llm.types import (
     ChatRequest,
     Lane,
     LLMError,
+    LLMProviderError,
+    LLMRefused,
     Purpose,
     ToolCallRequest,
 )
-from src.orchestrator.context import MemoryRecall, build_context
+from src.orchestrator.context import MAX_MEMORY_CHARS, MemoryRecall, build_context
 from src.orchestrator.dispatch import (
     CALL_CAP_MESSAGE,
     ApprovalRequester,
@@ -85,6 +87,8 @@ BUDGET_MESSAGE = (
     "I hit my limit for this request before finishing. Ask again or break it into a smaller step."
 )
 UNAVAILABLE_MESSAGE = "I can't reach my language model right now. Please try again shortly."
+# P5.5: the request limiter or a provider 429 (free tier). Fixed text, never the raw error.
+RATE_LIMITED_MESSAGE = "I'm getting a lot of requests right now. Give me a minute and ask again."
 OUTPUT_BUDGET_MESSAGE = "[tool output omitted: per-turn output budget reached]"
 EMPTY_MESSAGE = "I have nothing to add."
 
@@ -99,19 +103,30 @@ class LoopConfig:
     max_tool_output_chars_per_turn: int = 16000
     # P3.0 MED-D: hard cap on quarantine calls per turn (memory + tool output).
     max_quarantine_calls_per_turn: int = MAX_QUARANTINE_CALLS_PER_TURN
+    # P5.5 cost levers: recalled-memory items per turn and characters per trusted item.
+    memory_top_k: int = 5
+    memory_item_chars: int = MAX_MEMORY_CHARS
 
     def __post_init__(self) -> None:
         QuarantineBudget(self.max_quarantine_calls_per_turn)  # validates type and range
+        if not 0 <= self.memory_top_k <= 20 or not 1 <= self.memory_item_chars <= 8000:
+            raise ValueError("memory limits out of range")
 
 
 @dataclass(frozen=True)
 class TurnResult:
     text: str
-    status: str  # ok | budget_exceeded | unavailable | canary_blocked
+    status: str  # ok | budget_exceeded | unavailable | rate_limited | canary_blocked
     tool_events: tuple[DispatchResult, ...] = ()
     tokens_used: int = 0
     messages: tuple[ChatMessage, ...] = field(default=())
     tainted: bool = False  # untrusted-derived data entered this turn (ADR-0010)
+
+
+def _is_rate_limited(e: LLMError) -> bool:
+    return (isinstance(e, LLMRefused) and e.reason == "rate_limited") or (
+        isinstance(e, LLMProviderError) and e.code == "rate_limited"
+    )
 
 
 class Orchestrator:
@@ -213,6 +228,8 @@ class Orchestrator:
             quarantine=self._quarantine,
             turn_id=turn_id,
             budget=budget,
+            memory_limit=self._cfg.memory_top_k,
+            memory_item_chars=self._cfg.memory_item_chars,
             memory_canary=self._canary.plant(Site.MEMORY) if self._canary is not None else None,
         )
         taint = ctx.taint
@@ -260,6 +277,8 @@ class Orchestrator:
                 res = await self._llm.chat(req)
             except LLMError as e:
                 log.warning("llm unavailable for turn: %s", type(e).__name__)
+                if _is_rate_limited(e):
+                    return done(RATE_LIMITED_MESSAGE, "rate_limited")
                 return done(UNAVAILABLE_MESSAGE, "unavailable")
             except Exception as e:  # noqa: BLE001 - fail closed, type name only
                 log.warning("unexpected error in turn: %s", type(e).__name__)
