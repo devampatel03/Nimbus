@@ -5,26 +5,35 @@ To reproduce every number below, run `uv run python scripts/cost_projection.py` 
 `--help` lists the options). The workload figures are **assumptions** until the bake-off
 (P5.4) measures real `llm_audit` rows. They are not measurements.
 
-## 1. Prices (verified 2026-11-03; INR at 95/USD)
+## 1. Prices (first-party pages, fetched 2026-11-03; INR at 95/USD)
 
-| Profile | USD/Mtok in / cached in / out | INR/Mtok in / cached / out | Source (checked 2026-11-03) |
+Every price row below was read from the provider's own pricing page on 2026-11-03
+(standard tier, text, per 1M tokens). No row relies on a third-party blog.
+
+| Profile | USD/Mtok in / cached in / out | INR/Mtok in / cached / out | First-party source (fetched 2026-11-03) |
 |---|---|---|---|
 | placeholder `*` (today's default) | n/a | 250 / 250 / 1000 | `src/llm/settings.py` |
-| OpenAI gpt-5-nano | 0.05 / 0.005 / 0.40 | 4.75 / 0.48 / 38 | [Glamdring, 2026-09-28 check of OpenAI pricing](https://www.glamdringresearch.com/post/gpt-5-api-pricing), [costperprompt](https://costperprompt.com/models/openai-gpt-5-nano) |
-| Gemini 2.5 Flash-Lite (paid) | 0.10 / 0.01 / 0.40 | 9.5 / 0.95 / 38 | [Google AI pricing page](https://aistudio.google.com/docs/pricing) |
-| Gemini 3.1 Flash-Lite (paid) | 0.25 / 0.025 / 1.50 | 23.75 / 2.4 / 142.5 | same |
-| DeepSeek V4.1 Flash (peak; off-peak is half) | 0.30 / 0.006 / 1.20 | 28.5 / 0.57 / 114 | [apidog](https://apidog.com/blog/deepseek-v4-1-flash-pricing/), [costgoat Nov 2026](https://costgoat.com/pricing/deepseek-api) |
+| OpenAI `gpt-5-nano` (headline profile) | 0.05 / 0.005 / 0.40 | 4.75 / 0.48 / 38 | [OpenAI API pricing](https://platform.openai.com/docs/pricing), Standard table (canonical [openai.com/api/pricing](https://openai.com/api/pricing/) returns HTTP 403 to automated fetches; same OpenAI price table) |
+| Gemini 2.5 Flash-Lite (paid) | 0.10 / 0.01 / 0.40 | 9.5 / 0.95 / 38 | [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite), Standard, paid tier |
+| Gemini 3.1 Flash-Lite (paid) | 0.25 / 0.025 / 1.50 | 23.75 / 2.4 / 142.5 | [same page](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-lite) |
+| DeepSeek `deepseek-flash` = V4.1-Flash-1017 (peak; off-peak is half) | 0.30 / 0.006 / 1.20 | 28.5 / 0.57 / 114 | [DeepSeek Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing) (peak = 01:00-04:00 and 06:00-10:00 UTC, Mon-Fri) |
 | Free tier (any) | 0 | 0.0001 (0 is rejected by settings) | quota-bound, see section 5 |
 
-Exchange rate: 1 USD was about 94.6 to 95.1 INR on 2026-11-02 ([Trading Economics](https://tradingeconomics.com/india/currency), [OFX](https://www.ofx.com/en-au/exchange-rates/usd-to-inr/)).
+Exchange rate (not a price row): 1 USD was about 94.6 to 95.1 INR on 2026-11-02
+([Trading Economics](https://tradingeconomics.com/india/currency),
+[OFX](https://www.ofx.com/en-au/exchange-rates/usd-to-inr/)).
 
 Caveats:
-- The Gemini page says Gemini 2.5 Flash requests route to and bill as 3.5 Flash-Lite
-  from 2026-12-01. Treat the 2.5 generation as short-lived.
-- The Gemini free tier is marked "used to improve our products". See section 6.
+- The Gemini pricing page says requests to `gemini-2.5-flash` route to and bill as
+  Gemini 3.5 Flash-Lite from 2026-12-01. Treat the 2.5 generation as short-lived.
+- The Gemini free tier is marked "used to improve our products" (paid tier: "No") on the
+  same page. See section 6.
+- Gemini output prices include thinking tokens. DeepSeek `deepseek-flash` defaults to
+  thinking mode. See the reasoning row in section 4.
 - Free-tier RPM/RPD are not published on the rate-limits page. They are shown per
-  project in AI Studio ([rate limits](https://aistudio.google.com/docs/rate-limits)), and
-  third-party figures for Flash-Lite range from 5 to 30 RPM and 1,000 to 1,500 RPD.
+  project in AI Studio ([rate limits](https://aistudio.google.com/docs/rate-limits)).
+  **UNVERIFIED (third-party):** figures of 5 to 30 RPM and 1,000 to 1,500 RPD for
+  Flash-Lite. Read the real numbers off your own key before setting the limits in section 5.
   Daily quotas reset at midnight Pacific.
 
 ## 2. Token model, derived from the call sites
@@ -62,6 +71,12 @@ the quarantine prompt 433 chars, the data-block header 183 chars.
 | cheap | DeepSeek V4.1 Flash (peak) | 134 | 268 | 536 |
 | cheap | Gemini 3.1 Flash-Lite | 138 | 276 | 551 |
 | either | free tier | ~0 | ~0 | ~0 (quota-bound) |
+
+**Headline: 63 INR/month** (cheap profile, gpt-5-nano at the
+[OpenAI first-party price](https://platform.openai.com/docs/pricing), 100 msgs/day), which
+assumes **no reasoning tokens** (`LLM_REASONING_EFFORT=minimal`). Sensitivity: with 300
+reasoning tokens per chat call (a "thinking" default left on) the same profile costs
+**103 INR/month (+64%)**: 52 / 103 / 207 at 50 / 100 / 200 msgs/day.
 
 The current/placeholder row (5,837 at 100/day) is consistent with the W3 figure of
 4,400 to 5,550. The difference is the history and tool sizes assumed here.
@@ -104,7 +119,7 @@ average.
 **Cheap profile (env):**
 ```
 LLM_DAILY_SPEND_CAP_INR=50            # default; <= 100 enforced
-LLM_REASONING_EFFORT=minimal          # only if the model supports it
+LLM_REASONING_EFFORT=minimal          # set explicitly; the 63 INR headline assumes it
 LLM_MAX_OUTPUT_TOKENS_TRUSTED=400
 LLM_MAX_OUTPUT_TOKENS_QUARANTINE=400
 LLM_MAX_OUTPUT_TOKENS_SYSTEM=300
@@ -117,6 +132,9 @@ APP_EXTRACT_MIN_CHARS=60
 APP_EXTRACT_MAX_SPEND_SHARE=0.3
 ```
 `max_tools` 8 is a `LoopConfig` field with no env setting yet (proposed follow-up).
+Check the chosen model's docs for the accepted `reasoning_effort` values (not verified
+here); a model that rejects the value fails the call, and `none` is the alternative where offered. Leaving it unset
+means the provider default (often thinking on), i.e. the 103 INR row, not 63.
 
 **Proposed, not built (follow-ups):**
 - Move the recalled-memory DATA blocks out of the system message into a message after the
@@ -141,7 +159,11 @@ LLM_DAILY_REQUEST_LIMIT=900      # below the key's RPD; ~2.3 requests per messag
 LLM_BACKGROUND_SHARE=0.3         # extraction gets 3 RPM / 270 a day, chat the rest
 LLM_RATE_LIMIT_MAX_WAIT_S=30
 ```
-At 100 msgs/day that is about 230 requests/day, which fits typical Flash-Lite free RPD.
+At 100 msgs/day that is about 230 requests/day, which fits the Flash-Lite free RPD
+figures above (UNVERIFIED, third-party; check your key in AI Studio). At these prices the
+INR cap bounds nothing: startup logs a WARNING saying so whenever a configured model is
+priced under 0.01 INR/Mtok (`warn_if_free_tier_pricing`, `src/llm/settings.py`), and the
+request limits are the real bound.
 A 429 cools everything down for the provider's Retry-After. Chat waits up to 30 s, then
 replies "I'm getting a lot of requests right now. Give me a minute and ask again."
 Extraction defers and retries later.
