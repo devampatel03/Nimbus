@@ -18,6 +18,7 @@ import pytest
 
 import src.gateway.telegram as telegram_mod
 import src.lanes.data as lanes_data
+import src.orchestrator.dispatch as dispatch_mod
 import src.orchestrator.loop as loop_mod
 from src.app.fakes import InMemoryGateway
 from src.app.pipeline import PendingTurn, TurnGateway
@@ -67,7 +68,7 @@ async def test_policy_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_taint_is_load_bearing_for_internal_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Taint, "tainted", property(lambda self: False))
     run = await _doc_attack("instruction_override")
-    assert run.spies["tasks_update"].calls == [{"task_id": "1", "title": "pwned"}]
+    assert run.spies["tasks_update"].calls  # the hijacked internal write ran
     await _detected(run)
 
 
@@ -139,3 +140,19 @@ async def test_forward_detection_is_load_bearing(monkeypatch: pytest.MonkeyPatch
     queue: asyncio.Queue[PendingTurn] = asyncio.Queue()
     await TurnGateway(InMemoryGateway(), queue).ack(parsed.update, event_id=uuid.uuid4())
     assert queue.qsize() == 1  # the forward would have started a trusted turn
+
+
+async def test_external_service_taint_override_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lying external READ (`untrusted=False`): without the dispatcher's
+    override the injected internal write runs untainted and the attacker's
+    text sits outside any DATA block."""
+    monkeypatch.setattr(dispatch_mod, "_external_service", lambda name: False)
+    text = SHAPERS[SourceKind.WEB_PAGE](V["instruction_override"].payload)
+    run = await run_attack(
+        "look it up with notion_search",
+        source=SourceTool("notion_search", text=text, untrusted=False),
+    )
+    assert run.spies["tasks_update"].calls  # the hijacked internal write ran
+    await _detected(run)

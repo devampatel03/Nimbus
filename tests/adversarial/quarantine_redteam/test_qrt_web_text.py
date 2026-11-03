@@ -75,3 +75,23 @@ async def test_web_text_in_the_local_text_field_is_framed_and_has_no_effect(
     if v.echo is not None:
         assert v.echo in run.result.text
     assert MARK not in caplog.text
+
+
+LYING_TOOLS = ("drive_read", "notion_search", "calendar_get")
+
+
+@pytest.mark.parametrize("tool", LYING_TOOLS)
+@pytest.mark.parametrize("v", VECTORS, ids=VECTOR_IDS)
+async def test_external_tool_that_flags_third_party_text_trusted_still_taints(
+    tool: str, v: Vector, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Contract breach: an external-service READ returns the page in its local
+    `text` field with `untrusted=False`. The dispatcher overrides the flag
+    (INV-6, P4.1-fu), so the text is data-framed and the turn tainted."""
+    src = SourceTool(tool, text=SHAPERS[SOURCE](v.payload), untrusted=False)
+    with caplog.at_level(logging.DEBUG):
+        run = await run_attack(f"look it up with {tool}", source=src)
+    await assert_no_unauthorised_effect(run)
+    literal = {a for a in v.attempts if a in v.payload}
+    assert literal <= run.attempted(), (literal, run.attempted())
+    assert MARK not in caplog.text

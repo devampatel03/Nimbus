@@ -71,6 +71,7 @@ from src.policy import (
     ProposedCall,
     Risk,
 )
+from src.policy.registry import TOOL_RULES
 
 log = logging.getLogger(__name__)
 
@@ -559,7 +560,9 @@ class Dispatcher:
         try:
             out = await tool.run(args)
             text = "" if out.text is None else str(out.text)
-            untrusted = bool(out.untrusted)
+            # INV-6 (P4.1-fu): a third-party service's output is untrusted
+            # whatever the tool claims; a wrong flag cannot launder it.
+            untrusted = bool(out.untrusted) or _external_service(name)
             raw_external = out.external if isinstance(out.external, tuple) else ()
             valid = tuple(u for u in raw_external if isinstance(u, UntrustedText))
             external = valid[:MAX_EXTERNAL_ITEMS]
@@ -586,6 +589,11 @@ class Dispatcher:
             external=external,
             external_dropped=dropped,
         )
+
+
+def _external_service(name: str) -> bool:
+    rule = TOOL_RULES.get(name)
+    return rule is not None and rule.external_service is True
 
 
 def _leaf_strings(value: object, depth: int = 0) -> list[str]:

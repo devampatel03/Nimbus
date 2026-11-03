@@ -141,7 +141,9 @@ async def test_without_the_carry_the_second_turn_write_would_run(
     """Mutation proof: with `TaintCarry` disabled the hijacked turn-2 write
     is allowed untainted (`allow.write_internal`) and runs."""
     monkeypatch.setattr(TaintCarry, "carried", property(lambda self: False))
-    spy, requester, _ = await _two_turns(SourceKind.DOCUMENT, "drive_read")
+    # Recall path: no external-service tool in turn 2, whose output would
+    # taint the turn on its own (dispatcher override, P4.1-fu).
+    spy, requester, _ = await _two_turns(SourceKind.FORWARDED_MESSAGE, None)
     assert spy.calls == [{"task_id": "9", "title": "pwned"}]
     assert len([a for a in requester.asks if a.tool == "tasks_update"]) == 1
 
