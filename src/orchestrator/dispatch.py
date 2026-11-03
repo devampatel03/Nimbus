@@ -50,6 +50,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from src.approvals.canonical import PayloadError, payload_sha256
+from src.approvals.card import TARGET_KEY
 from src.approvals.types import (
     TOOL_CALL_ACTION,
     ApprovalAsk,
@@ -337,6 +338,11 @@ class Dispatcher:
         tainted = tainted is not False  # fail closed: only an explicit False is clean
         if not await self._args_clean(name, args):
             return self._canary_denied(name, tainted)
+        if isinstance(args, Mapping) and TARGET_KEY in args:
+            # P4.1: `_target` is the approval card's code-written target line,
+            # hidden from the card's argument list; only a tool's
+            # `describe_args` may set it, never the model (card spoofing).
+            args = {k: v for k, v in args.items() if k != TARGET_KEY}
         tool = self._tools.get(name) if isinstance(name, str) else None
         is_exposed = tool is not None and name in exposed
         if tool is not None:
