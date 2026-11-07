@@ -54,7 +54,7 @@ Task table: `docs/pivot/STATE.md`.
 - **Known violations, with severity:**
   - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. Fix: non-superuser app role. Waiver needed before any live run with production credentials.
   - **Open, staging-blocking (WAVE_W3 §5):** projected chat cost ~4,400–5,550 INR/mo at placeholder prices vs `cost.projected_monthly_inr_max` 1500 (`quality/thresholds.yaml`).
-  - **Open, not HIGH (WAVE_W2 §5):** spend cap default 200 INR, no upper bound (threshold 100); `*` price is a placeholder; no alert hook; kill switch is a `system_flag` row, no `/panic`. Before any staging run with a real key: real price table and cap ≤ 100 INR.
+  - **Open, not HIGH (WAVE_W2 §5):** spend cap default 50 INR, max 100 (ADR-0025 Proposed); `*` price is a placeholder; no alert hook; kill switch is a `system_flag` row, no `/panic`. Before any staging run with a real key: real model price (`LLM_PRICE_*`).
 
 ## Conventions
 

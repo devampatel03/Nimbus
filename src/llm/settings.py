@@ -31,11 +31,14 @@ INV-7: `api_key` is a `SecretStr`, and validation errors hide input values.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_API_KEY = (
     "not-needed"  # placeholder for key-less servers; not a secret  # pragma: allowlist secret
@@ -43,6 +46,9 @@ DEFAULT_API_KEY = (
 
 # `cost.hard_daily_cap_inr` in quality/thresholds.yaml. The setting cannot exceed it.
 MAX_DAILY_SPEND_CAP_INR = Decimal(100)
+# Below this INR/Mtok (input or output) a model is treated as free-tier priced:
+# the INR cap is then not a real bound, the request limits are (ADR-0025).
+FREE_TIER_PRICE_INR = Decimal("0.01")
 
 
 class ModelPrice(BaseModel):
@@ -130,6 +136,18 @@ class LLMSettings(BaseSettings):
         object.__setattr__(self, "price_table", table)
         return self
 
+    def free_tier_priced_models(self) -> tuple[str, ...]:
+        """The configured models (`LLM_MODEL`, `LLM_MODEL_CHEAP`) whose effective
+        price is below `FREE_TIER_PRICE_INR` per Mtok, input or output (a
+        free-tier key priced at e.g. 0.0001). For them the INR cap bounds
+        nothing; only the request limits do."""
+        out: list[str] = []
+        for model in dict.fromkeys(m for m in (self.model, self.model_cheap) if m):
+            p = self.price_table.get(model) or self.price_table.get("*") or DEFAULT_PRICE_TABLE["*"]
+            if min(p.in_per_mtok_inr, p.out_per_mtok_inr) < FREE_TIER_PRICE_INR:
+                out.append(model)
+        return tuple(out)
+
     def output_cap(self, lane: str) -> int:
         """The output-token ceiling for a `Lane` value."""
         if lane == "trusted":
@@ -137,3 +155,21 @@ class LLMSettings(BaseSettings):
         if lane == "quarantine":
             return self.max_output_tokens_quarantine
         return self.max_output_tokens_system
+
+
+def warn_if_free_tier_pricing(settings: LLMSettings) -> bool:
+    """Log one startup WARNING when a configured model is free-tier priced.
+    Fixed text plus the numeric limits only: no key, URL or model name."""
+    count = len(settings.free_tier_priced_models())
+    if count:
+        _log.warning(
+            "LLM price below %s INR/Mtok for %d configured model(s): free-tier pricing, "
+            "the daily INR spend cap is NOT a real bound; only the request limits apply "
+            "(rpm=%d daily=%d background_share=%s)",
+            FREE_TIER_PRICE_INR,
+            count,
+            settings.rpm_limit,
+            settings.daily_request_limit,
+            settings.background_share,
+        )
+    return count > 0

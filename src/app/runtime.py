@@ -90,7 +90,7 @@ from src.llm import GuardedLLM, build_guarded_llm
 from src.llm.factory import build_api_embedder
 from src.llm.pg_stores import PostgresAuditStore, PostgresFlagStore
 from src.llm.protocols import Provider
-from src.llm.settings import DEFAULT_API_KEY, LLMSettings
+from src.llm.settings import DEFAULT_API_KEY, LLMSettings, warn_if_free_tier_pricing
 from src.memory.commitments import CommitmentIntake, CommitmentLedgerStore
 from src.memory.embedder import (
     BatchEmbedder,
@@ -620,6 +620,7 @@ async def run_app(
         # 3. Backends and the one GuardedLLM.
         factory = backends or (fake_backends if cfg.app.fake_backends else real_backends)
         be = factory(cfg, sf, lambda: heartbeat.beat("gateway"))
+        warn_if_free_tier_pricing(cfg.llm)  # ADR-0025: INR cap is no bound at ~0 price
         cipher = DataCipher.from_env() if cfg.llm.store_payload else None
         audit = PostgresAuditStore(sf, cipher=cipher, retention_days=cfg.llm.payload_retention_days)
         llm = build_guarded_llm(

@@ -375,3 +375,34 @@ async def test_hostile_calendar_titles_are_quoted_clipped_and_defanged(
     assert "\u202e" not in text and "<a " not in text and "</a>" not in text
     out = filter_reply(text, ReplyUrlPolicy())
     assert "evil.example" not in out.text and "1.2.3.4" not in out.text
+
+
+async def test_canary_in_a_commitment_description_blocks_the_brief_and_held_count(
+    sf: SF, clock: FakeClock
+) -> None:
+    from src.canary.gateway import CanaryGateway
+    from src.canary.guard import BLOCKED_REPLY, CanaryGuard
+    from src.canary.tokens import derive_canaries
+
+    guard = CanaryGuard(derive_canaries("p51-test-seed-0123456789abcdef"))
+    canary = next(iter(guard.canaries)).value
+    rig = Rig(sf, clock, evening_enabled=False, nudges_enabled=False)
+    await rig.confirmed(f"send {canary}", "2 Nov 2026 5pm")
+    rig.parts = rig.build()
+    rig.parts.handler._gw = CanaryGateway(rig.gw, guard)  # type: ignore[arg-type,attr-defined]
+    await rig.cycle()
+    (text,) = rig.gw.sent
+    assert text == BLOCKED_REPLY and canary not in text
+
+
+async def test_held_back_reminders_are_reported_in_the_next_brief_once(
+    sf: SF, clock: FakeClock
+) -> None:
+    rig = Rig(sf, clock, evening_enabled=False, nudges_enabled=False)
+    await add_task(sf)
+    await rig.parts.state.add_held(2)
+    await rig.cycle()
+    assert "2 reminder(s) were held back" in rig.gw.sent[0]
+    clock.set(ist(8, 31, day=3))
+    await rig.cycle()
+    assert "held back" not in rig.gw.sent[1]

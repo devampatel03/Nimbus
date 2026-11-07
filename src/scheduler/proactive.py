@@ -417,6 +417,9 @@ class ProactiveHandler:
         if built is None:
             return  # nothing worth saying
         text, after = built
+        held = snap.held if ctx.kind == KIND_MORNING else 0
+        if held:
+            text += f"\n{held} reminder(s) were held back (daily message budget)."
 
         verdict = await self._state.reserve(
             ctx.dedupe_key,
@@ -433,6 +436,8 @@ class ProactiveHandler:
             await self._state.release(ctx.dedupe_key)
             raise
         log.info("proactive sent kind=%s key=%s", ctx.kind, ctx.dedupe_key.split(":", 2)[-1][:60])
+        if held:
+            await self._state.add_held(0)
         if after is not None:
             try:
                 await after()

@@ -42,6 +42,7 @@ class Reservation(enum.Enum):
 class Snapshot:
     sent_today: int
     muted_until: datetime | None
+    held: int = 0  # untrusted-origin reminders dropped for budget since the last brief
 
 
 def _sent(value: dict[str, Any], today: date) -> list[dict[str, str]]:
@@ -88,7 +89,16 @@ class ProactiveState:
         return Snapshot(
             sent_today=sum(1 for i in _sent(value, today) if i["day"] == today.isoformat()),
             muted_until=_muted(value),
+            held=int(value.get("held", 0) or 0),
         )
+
+    async def add_held(self, delta: int) -> None:
+        """Count (delta > 0) or reset (delta == 0) the held-back reminders."""
+        async with self._sf() as s, s.begin():
+            row = await self._row(s)
+            value = dict(row.value)
+            value["held"] = 0 if delta == 0 else int(value.get("held", 0) or 0) + delta
+            row.value = value
 
     async def sent_keys(self) -> set[str]:
         """Keys sent within the retention window (for cheap pre-checks)."""
@@ -155,4 +165,7 @@ class UntrustedReminderGate:
         got = await self._state.reserve(
             f"reminder:{reminder_id}", "reminder_untrusted", budget=self._budget
         )
-        return got in (Reservation.OK, Reservation.DUPLICATE)
+        ok = got in (Reservation.OK, Reservation.DUPLICATE)
+        if not ok:
+            await self._state.add_held(1)
+        return ok
