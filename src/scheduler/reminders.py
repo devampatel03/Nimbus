@@ -25,7 +25,7 @@ import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -158,13 +158,22 @@ class ReminderStore:
             return list(rows)
 
 
+class ReminderGate(Protocol):
+    async def allow(self, reminder_id: str) -> bool: ...
+
+
+TRUSTED_KINDS = ("text", "voice_transcript")
+
+
 class ReminderDelivery:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         gateway: Gateway,
         clock: Clock,
+        gate: ReminderGate | None = None,
     ) -> None:
+        self._gate = gate
         self._sf = session_factory
         self._gw = gateway
         self._clock = clock
@@ -185,6 +194,16 @@ class ReminderDelivery:
         if r is None or r.status != "pending" or r.remind_at.isoformat() != remind_at_iso:
             log.info("reminder skipped (deleted, fired or moved)")
             return
+        # Not created by a trusted user event (ADR-0011 addendum): it counts against
+        # the interruption budget, and is dropped when that is spent.
+        if (
+            self._gate is not None
+            and not await self._user_set(r)
+            and not await self._gate.allow(str(r.id))
+        ):
+            log.warning("untrusted-origin reminder dropped: over budget")
+            await asyncio.shield(self._mark_fired(reminder_id, r.remind_at, self._clock.now()))
+            return
         now = self._clock.now()
         late = now - r.remind_at > timedelta(seconds=LATE_AFTER_S)
         text = f"Reminder: {r.title}"
@@ -194,6 +213,17 @@ class ReminderDelivery:
         # Shielded: a shutdown that lands right after the send must still record it,
         # or the restart would repeat the reminder.
         await asyncio.shield(self._mark_fired(reminder_id, r.remind_at, now))
+
+    async def _user_set(self, r: Reminder) -> bool:
+        if r.source_event_id is None:
+            return False
+        async with self._sf() as session:
+            row = (
+                await session.execute(
+                    select(EventRow.lane, EventRow.kind).where(EventRow.id == r.source_event_id)
+                )
+            ).one_or_none()
+        return row is not None and row.lane == "trusted" and row.kind in TRUSTED_KINDS
 
     async def _mark_fired(self, reminder_id: uuid.UUID, remind_at: datetime, now: datetime) -> None:
         async with self._sf() as session, session.begin():

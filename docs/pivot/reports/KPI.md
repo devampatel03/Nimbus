@@ -1,3 +1,62 @@
+# KPI — W4 gate (current)
+
+Compiled 2026-11-08 on `task/W4-gate-docs` (worktree from `pivot` @ `e5d7780`). **No tests, lint or mypy were run at this gate** (machine memory constrained). Every number below is copied from the PR body named in its row, at that PR's head, and was not re-run. Thresholds: `quality/thresholds.yaml` (unchanged). Narrative: `docs/pivot/reports/WAVE_W4.md`.
+
+### 1. Test and quality gates (as reported in PR bodies)
+
+| KPI | Source (PR, head) | Reported | Threshold | Status |
+|---|---|---|---|---|
+| Non-adversarial suite | #46 | 3372 passed, 5 skipped | `tests_must_pass: true` | met at that head |
+| Non-adversarial suite | #47 | 3688 passed | `tests_must_pass: true` | met at that head |
+| Non-adversarial suite | #51 | 3741 passed, 1 failed (`hung_gateway_poll`, fails on baseline) | `tests_must_pass: true` | known red |
+| Non-adversarial suite (latest full run) | #53 | 3804 passed, 1 failed (same known red) | `tests_must_pass: true` | known red |
+| Targeted run | #50 | 1671 passed (gateway, adversarial, approvals, canary suites) | n/a | info |
+| Targeted run after merging pivot | #53 | 1626 passed (llm, orchestrator, app, extract, adversarial suites) | n/a | info |
+| Adversarial tests | #46 | 780 passed | `redteam_min_cases: 100` | pytest items, not corpus cases |
+| Adversarial tests | #47 | 874 passed | same | same |
+| Adversarial tests | #51 | 1182 passed, 1 skipped | same | same |
+| Adversarial tests (latest) | #52 | 1268 passed, 1 skipped | same | **not met as a corpus**; corpus is P4.7 |
+| Lint | #52, #53 | `ruff check .` clean | `lint_clean: true` | met at those heads |
+| Types | #52, #53 | `mypy src` clean | `types_clean: true` | met at those heads |
+| Coverage | not reported in W4 PR bodies | not measured | `min_coverage_security_policy: 0.95` | not measured |
+
+### 2. Measured numbers in the W4/W5 PRs
+
+| Item | Source | Number |
+|---|---|---|
+| Exfil filter, disabled in red team | #46 | 93 of 95 adversarial cases fail |
+| Exfil filter, mutants | #46 | 3, 2, 4, 4 failures (filter removed, chunk re-check removed, Cf strip removed, NFKC removed) |
+| Exfil corpus | #46 | 84 cases; 6 end to end with `CompromisedFakeLLM` |
+| Canary unit cases | #47 | about 200 |
+| Canary adversarial cases | #47 | 66, with a 14-of-14 mutant kill after review fixes (12 of 12 before) |
+| Canary speed | #47 | 100k chars 0.39 s; 4 KB 12 ms |
+| Canary false-hit rate | #50 | about 2e-7 per 4 KB message (measured 0 of 1500) |
+| Quarantine red team | #51 | 19 attack vectors x 8 entry paths = 152 end-to-end cases; 268 tests in `tests/adversarial/quarantine_redteam` |
+| Cost model, cheap profile, gpt-5-nano | #53, `COST_MODEL.md` | about 63 INR/month at 100 msgs/day. **Assumption, not measured** |
+| Cost model, placeholder price | #53 | about 5,837 INR/month. Assumption |
+| P5.5 limiter/clamp mutation | #53 | removing limiter call and output clamp: 8 tests fail |
+| Proactive jobs mutation | #54 | budget, quiet hours and dedupe mutation-proved (no count given) |
+
+### 3. Threshold status changes vs W3
+
+| Key | W4 measurement | Status |
+|---|---|---|
+| `redteam_min_cases` (100) | 1268 adversarial pytest items (#52); the 100-case corpus is P4.7 | **not met as a corpus** |
+| `secrets_in_logs` (0) | canary sweep and log matchers built (#47); no live count | tests pass; no live count |
+| `untrusted_auto_promotion` (0) | promotion guard trigger and ReviewQueue (#48); no runtime count | tests pass; no runtime count |
+| `daily_spend_cap_enforced` | cap default 50 INR, max 100, enforced as a setting range (#53) | met in code; prices are env placeholders (H3) |
+| `cost.projected_monthly_inr_max` (1500) | 5,837 INR/month at placeholder price; about 63 INR/month on gpt-5-nano (assumption) | **not re-measured**; estimate only |
+| `gmail_send_scope_present` (false) | AST guard for Gmail scope and host outside `auth.py` and `net/policy.py` (#52); no Gmail tool built | met in code |
+| `egress_allowlist_enforced` | default-deny `src/net` (#49); post-DNS address check (#49); nftables backstop **UNTESTED** | partly met (app level); host layer not run |
+| `locomo_min_accuracy_provisional` (0.70) | not measured (ADR-0018) | **not measured** |
+| `locomo_target_accuracy` (0.85) | not measured | **not measured** |
+
+### 4. Not measured at W4
+
+Coverage; live Telegram, Google, Notion or provider calls; provider cost; LoCoMo with a real embedder; nftables load and compose internal network on a host; approval-card URL tappability (H30); arm64 and runtime SLOs; personality harnesses.
+
+---
+
 # KPI — W3 gate
 
 Measured 2026-10-29 on `task/W3-gate-docs` (worktree from `pivot` @ `a1614e8`). Windows 11, `uv sync --extra dev`, compose `postgres` up, `POSTGRES_*` as in CI. No model was loaded; no provider, Google, Notion or Telegram was called. Thresholds: `quality/thresholds.yaml` (unchanged by this PR). Narrative: `docs/pivot/reports/WAVE_W3.md`.

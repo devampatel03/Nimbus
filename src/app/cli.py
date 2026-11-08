@@ -1,7 +1,7 @@
 # Copyright (c) Nimbus. All rights reserved.
 # Private, unpublished, proprietary. Do not distribute.
 
-"""Command line: `run` (default), `healthcheck` and `canary-sweep` (P4.4,
+"""Command line: `run` (default), `healthcheck`, `preflight` (`src.app.preflight`: exit 0 no FAIL, 1 a FAIL) and `canary-sweep` (P4.4,
 `src.app.sweep`: exit 0 clean, 1 findings, 2 config/database error).
 
 `healthcheck` imports only settings and the heartbeat reader: no database, no
@@ -89,6 +89,10 @@ def main(argv: Sequence[str]) -> int:
     hc = sub.add_parser("healthcheck", help="exit 1 if the heartbeat is stale")
     hc.add_argument("--heartbeat-path", type=Path, default=None)
     hc.add_argument("--stale-s", type=float, default=None)
+    pf = sub.add_parser("preflight", help="check a first local run's setup (no secrets printed)")
+    pf.add_argument(
+        "--online", action="store_true", help="one Telegram getMe and one tiny model call"
+    )
     sub.add_parser("canary-sweep", help="scan the database for canaries and secrets (P4.4)")
     sub.add_parser(
         "db-bootstrap",
@@ -97,6 +101,10 @@ def main(argv: Sequence[str]) -> int:
     args = parser.parse_args(list(argv))
     if args.cmd == "healthcheck":
         return healthcheck(args.heartbeat_path, args.stale_s)
+    if args.cmd == "preflight":
+        from src.app import preflight
+
+        return preflight.run_preflight(online=args.online)
     if args.cmd == "canary-sweep":
         from src.app.sweep import canary_sweep
 

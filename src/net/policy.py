@@ -341,3 +341,11 @@ def apply_deny_rules(
 
 def all_rules(extra: Sequence[DenyRule] = ()) -> tuple[DenyRule, ...]:
     return DEFAULT_DENY_RULES + tuple(extra)
+
+
+def llm_and_telegram_hosts(settings: NetSettings) -> tuple[str, str]:
+    """(LLM host, Telegram host) the allowlist would permit. Raises `EgressDenied`
+    when LLM egress is not configured. Lets `preflight` report the allowlist
+    without naming `Service` outside `src.net`."""
+    allow = Allowlist.from_settings(settings)
+    return allow.host_for(Service.LLM), allow.host_for(Service.TELEGRAM)

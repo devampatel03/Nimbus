@@ -8,21 +8,21 @@ Read `docs/AGENT_OPERATING_MANUAL.md` and `docs/pivot/02_ORCHESTRATION_PROTOCOL.
 
 **Privacy stance (Brief §1, §8):** Telegram, Oracle and the model provider can each see plaintext. We bound leak and injection risk by architecture, not by trusting filters. Never claim more privacy than this.
 
-## Architecture (quick reference, pivot W3 state)
+## Architecture (quick reference, pivot W5 state)
 
-- **Channel:** `src/gateway/` Telegram long polling, outbound only, allowlisted user ID (R1–R3). Offset advances on ack, at-least-once, bounded redelivery; consumer dedupes on `telegram:<update_id>` (ADR-0016).
-- **Process:** `src/app/`, one process, three supervised loops: gateway (`Ingestor.run`, turn queue), worker (job runner: reminders and `memory_extract`, plus `recover_pending`), scheduler (`MemoryExtractSweeper` backstop). Heartbeat file read by `healthcheck` (ADR-0012). Log scrubbing first (R12). Google/Notion groups bind only with credentials (`src/app/integrations.py`).
-- **Postgres 16 + pgvector:** `infra/docker/postgres/`, `migrations/` (Alembic, head `a9d4c6e2f801`), `src/db/`, ORM in `src/memory/schemas/`. Append-only triggers on fact, event, `policy_audit` and `commitment_ledger` tables (R7, INV-3). The app role is a superuser (HIGH, see Known violations).
-- **`src/llm` — the only LLM SDK importer (R4, R5).** Guard order: kill switch → scrub → spend cap (`CallAccountant`, shared with `ApiEmbedder`) → audit row → provider call.
-- **`src/net` — the only network transport importer (R13).** Default-deny host allowlist, `Service` enum in `src/net/policy.py` (ADR-0004).
+- **Channel:** `src/gateway/` Telegram long polling, outbound only, allowlisted user ID (R1–R3). At-least-once, bounded redelivery; consumer dedupes on `telegram:<update_id>` (ADR-0016). Exfil filter on sends (P4.3).
+- **Process:** `src/app/`, one process, three supervised loops: gateway (`Ingestor.run`, turn queue), worker (job runner: reminders and `memory_extract`, plus `recover_pending`), scheduler (`MemoryExtractSweeper`; proactive jobs, P5.1, no model call). Heartbeat file read by `healthcheck` (ADR-0012). Log scrubbing first (R12). Google/Notion groups bind only with credentials (`src/app/integrations.py`).
+- **Postgres 16 + pgvector:** `infra/docker/postgres/`, `migrations/` (Alembic, head `e5b1c7a3d902`), `src/db/`, ORM in `src/memory/schemas/`. Append-only triggers on fact, event, `policy_audit` and `commitment_ledger` tables (R7, INV-3); promotion guard `nimbus_promotion_guard` on `memory_chunk`/`graph_edge` (R8, P4.6). The app role is a superuser (HIGH, see Known violations).
+- **`src/llm` — the only LLM SDK importer (R4, R5).** Guard order: kill switch → lane → scrub → rate limiter → spend cap (`CallAccountant`, shared with `ApiEmbedder`) → audit row → provider call.
+- **`src/net` — the only network transport importer (R13).** Default-deny host allowlist, `Service` enum in `src/net/policy.py` (ADR-0004). Post-DNS address check (P4.5).
 - **`src/core/logging.py`:** `install_log_scrubbing` (INV-7). Module settings: `src/<module>/settings.py` (`docs/pivot/SETTINGS_PATTERN.md`).
 - **`src/personality/`:** every card load goes through `load_approved_character_card` (R9, ADR-0015).
-- **`src/memory/`:** `store.py` episodic chunks (ADR-0017); `graph.py` bi-temporal facts (supersede only); `commitments.py` commitment ledger (ADR-0022, Proposed); `embedder.py` (local Qwen3, provisional, ADR-0013).
-- **`src/policy/`, `src/approvals/`, `src/lanes/`, `src/orchestrator/`:** table-driven `PolicyEngine` (ADR-0009) wired into dispatch, creates denied (`PENDING_IDEMPOTENCY`), decisions in `policy_audit`. HMAC single-use approvals (ADR-0020, Proposed; off without H24). Untrusted text reaches the model only as DATA via `Quarantine.extract` (budget 10 per turn). Loop ≤12 tools (ADR-0006).
-- **`src/tools/`:** Tool protocol v2 and registry (`registry.py`). Gmail not built (P3.6, H16, ADR-0007 Proposed).
+- **`src/memory/`:** `store.py` episodic chunks (ADR-0017); `graph.py` bi-temporal facts (supersede only); `commitments.py` commitment ledger (ADR-0022, Proposed); `review.py` ReviewQueue (P4.6); `embedder.py` (local Qwen3, provisional, ADR-0013).
+- **`src/policy/`, `src/approvals/`, `src/lanes/`, `src/orchestrator/`:** table-driven `PolicyEngine` (ADR-0009) wired into dispatch, creates denied (`PENDING_IDEMPOTENCY`), decisions in `policy_audit`. HMAC single-use approvals (ADR-0020, Proposed; H32). Canary tripwires (`src/canary/`, ADR-0023) screen replies, args, sends, egress, logs. Untrusted text reaches the model only as DATA via `Quarantine.extract` (budget 10 per turn). Loop ≤12 tools (ADR-0006).
+- **`src/tools/`:** Tool protocol v2 and registry (`registry.py`). Calendar, Drive, Notion built; Gmail not built (P3.6, H16, ADR-0007 Proposed). External-service output is untrusted.
 - **Removed in W2, do not reintroduce:** `src/api/`, FastAPI, uvicorn, pyjwt (ADR-0012); LangGraph, `graph.py`, `approver.py` (ADR-0006). Contracts: Event, Transcript, MemoryQuery, UserProfileSlice (ADR-0014).
 - **Retired, do not reintroduce:** Redis, Qdrant, Apache AGE, local vLLM/Ollama, STT/TTS/diarization, Flutter, `src/security/`, `execute_external`, Gmail send, Gemini-as-executor, intent-builder tools.
-- **Tests:** `tests/` unit, integration (real Postgres), `eval/` (protected, rule 4), adversarial, fakes, fixtures.
+- **Tests:** `tests/` unit, integration (real Postgres), `eval/` (protected, rule 4), `tests/adversarial/` (red team), fakes, fixtures.
 
 ## Commands
 
@@ -36,7 +36,7 @@ Read `docs/AGENT_OPERATING_MANUAL.md` and `docs/pivot/02_ORCHESTRATION_PROTOCOL.
 
 ## Current phase
 
-**Pivot (Nimbus Lite): W3 built (2026-10-29), gate PR open (`docs/pivot/reports/WAVE_W3.md`).** Merged: P3.0–P3.5, P3.7–P3.9 (PRs #28–#44). Nothing ran live. No live run with production credentials until the superuser-role HIGH is waived or fixed. Open: P3.6 (H16), H23, cost gap. Next: W4 security batch (P4.1, P4.3–P4.6).
+**Pivot (Nimbus Lite): W4 gate docs open (`docs/pivot/reports/WAVE_W4.md`); W5 in progress.** Merged: P4.1, P4.3–P4.6, P5.1, P5.5 groundwork (PRs #46–#55). Not built: P4.7 (protected corpus, needs approval), P5.2, P3.6 (H16). Nothing ran live. No live run with production credentials until the superuser-role HIGH is fixed (P6.1) or waived.
 Task table: `docs/pivot/STATE.md`.
 
 ## Invariants (Brief §4, as implemented; tested in CI, never violate)
@@ -47,19 +47,19 @@ Task table: `docs/pivot/STATE.md`.
 - **INV-4: RETIRED** (was: Mode A never blocks on network; mode A/B removed).
 - **INV-5:** no LLM output grants a permission. `PolicyEngine` decides (P3.1); `user_confirmed` comes only from a sealed `ConsumedApproval` (P3.2, ADR-0020). Tests: `tests/eval/invariants/test_inv5_*.py`, `tests/unit/orchestrator/test_inv5_no_llm_permission.py`.
 - **INV-6 (built, PRs #29, #43):** untrusted text enters the trusted lane only as schema-validated DATA; Calendar and Notion give the model opaque handles only. Tests: `tests/eval/invariants/test_inv6_*.py`, `tests/adversarial/lanes/`. Interim: quarantine every untrusted field (ADR-0010, H18). Lane default `'trusted'` stays on three tables (H23).
-- **INV-7:** no secret or token value in logs, prompts, memory, audit rows or errors. Covered by the log filter, `src/llm/scrub.py`, hidden settings and `hide_parameters` (`tests/eval/invariants/test_inv7_no_secrets.py`). Canary sweep: P4.4.
+- **INV-7:** no secret or token value in logs, prompts, memory, audit rows or errors. Covered by the log filter, `src/llm/scrub.py`, hidden settings and `hide_parameters` (`tests/eval/invariants/test_inv7_no_secrets.py`). Canary tripwires and `canary-sweep` (ADR-0023): not boundaries.
 - **R7 (provenance; was repo INV-5):** every derived memory row has non-null provenance (`tests/eval/invariants/test_r7_memory_provenance.py`).
-- **R8 (untrusted memory never auto-promoted):** chunk promotion needs a consumed approval (migration `c4e8a1d92b37`). Confirmed commitments need a consumed `commitment`/`confirm` approval (trigger `nimbus_ledger_guard`, ADR-0022). Graph-edge promotion: P4.6.
+- **R8 (untrusted memory never auto-promoted):** chunk promotion needs a consumed approval (migration `c4e8a1d92b37`). Confirmed commitments need a consumed `commitment`/`confirm` approval (trigger `nimbus_ledger_guard`, ADR-0022). Graph-edge promotion: same rule (trigger `nimbus_promotion_guard`, ADR-0024).
 - **R12 (no secrets in logs):** met at the entrypoint: `src/app/runtime.py` calls `install_log_scrubbing(cfg.secrets)` before anything else logs (P2.1b).
 - **Known violations, with severity:**
   - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. **Mitigated (P6.1, ADR-0026) once `POSTGRES_APP_USER/PASSWORD` are set** (runtime uses non-owner `nimbus_app`; `db-bootstrap` grants; real-Postgres tests). With one DSN it still applies and the app logs a WARNING. Confirm the startup line before a live run.
-  - **Open, staging-blocking (WAVE_W3 §5):** projected chat cost ~4,400–5,550 INR/mo at placeholder prices vs `cost.projected_monthly_inr_max` 1500 (`quality/thresholds.yaml`).
+  - **Open, staging-blocking (WAVE_W3 §5):** projected cost over `cost.projected_monthly_inr_max` 1500 at placeholder prices (WAVE_W3 §5; H3).
   - **Open, not HIGH (WAVE_W2 §5):** spend cap default 50 INR, max 100 (ADR-0025 Proposed); `*` price is a placeholder; no alert hook; kill switch is a `system_flag` row, no `/panic`. Before any staging run with a real key: real model price (`LLM_PRICE_*`).
 
 ## Conventions
 
 - **TDD:** failing test first. For security guards, prove the test can fail (break the code, or monkeypatch in-test). Never leave a weakened security file on disk.
-- **Decisions:** architecture changes get an ADR in `docs/decisions/` (next: 0023) and a dated MEMORY.md entry. Thresholds in `quality/thresholds.yaml` change only via ADR plus reviewer sign-off.
+- **Decisions:** architecture changes get an ADR in `docs/decisions/` (next: 0026) and a dated MEMORY.md entry. Thresholds in `quality/thresholds.yaml` change only via ADR plus reviewer sign-off.
 - **Git:** task branches `task/<id>-<slug>` off `pivot`; PRs target `pivot`. Stage explicit paths only (`git add <path>`), never `git add -A`.
 - **Windows:** working tree is CRLF (`core.autocrlf`); check `git diff --stat` before committing. Do not run commit hooks in parallel.
 
@@ -79,7 +79,7 @@ Task table: `docs/pivot/STATE.md`.
 
 - Live table: `docs/pivot/STATE.md` (orchestrator-owned).
 - Pre-pivot T-rows are SUPERSEDED by the pivot task table (`git show b9fb56d:CLAUDE.md`).
-- Pivot PRs: W1 #1–#13, W2 #14–#27, W3 #28–#44 (`docs/pivot/reports/WAVE_W*.md`).
+- Pivot PRs: W1 #1–#13, W2 #14–#27, W3 #28–#45, W4–W5 #46–#55 (`docs/pivot/reports/WAVE_W*.md`).
 
 ## Rules for agents
 
