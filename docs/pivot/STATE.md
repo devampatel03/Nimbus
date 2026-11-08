@@ -2,15 +2,15 @@
 
 ```yaml
 status: RUNNING                # NOT_STARTED | RUNNING | BLOCKED | DONE
-wave: W3 (built; gate PR open)
+wave: W5 (W4 gate PR open; P5.1 and P5.5 groundwork merged) |
 mode: balanced                 # economy | balanced | turbo
 concurrency_cap: 3
 integration_branch: pivot
 final_merge_to_main: human     # human | auto
 ci: github                     # github | local-only | unknown
-last_checkpoint_utc: 2026-10-29T14:35Z
+last_checkpoint_utc: 2026-11-08T00:05Z |
 started_utc: 2026-10-24T15:16Z
-last_gate_numbers: {W3: {non_adversarial: "3280 passed/5 skipped", adversarial: "681 passed", ruff: clean, mypy: "139 files clean", coverage: "not measured at W3"}, W2: {unit: "1090 passed/4 skipped", integration: "151/1 skipped", invariants: 100, non_adversarial: "1341 passed/5 skipped", adversarial: "62 passed (redteam_min_cases 100 NOT MET)", ruff: clean, mypy: "93 files clean", coverage_total: "96%"}}
+last_gate_numbers: {W4: {non_adversarial: "3804 passed/1 failed (PR #53 head; hung_gateway_poll fails on baseline)", adversarial: "1268 passed/1 skipped (PR #52 head)", ruff: "clean (#52, #53)", mypy: "clean (#52, #53)", coverage: "not measured", source: "PR bodies, not re-run at W4 gate"}, W3: {non_adversarial: "3280 passed/5 skipped", adversarial: "681 passed", ruff: clean, mypy: "139 files clean", coverage: "not measured at W3"}, W2: {unit: "1090 passed/4 skipped", integration: "151/1 skipped", invariants: 100, non_adversarial: "1341 passed/5 skipped", adversarial: "62 passed (redteam_min_cases 100 NOT MET)", ruff: clean, mypy: "93 files clean", coverage_total: "96%"}}
 ```
 
 ## Task table
@@ -49,43 +49,53 @@ Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT
 | P3.7 | Notion tools: search/read (untrusted) + approved append | tools | P3.0, P1.4a | merged | | #40 | 710ba88 (2026-10-29). ADR-0021 Proposed (H26 sign-off). Bound only with NOTION_TOKEN (#43). OPEN: H26 (sign-off, NOTION_TOKEN in .env.example by hand), H5 for live.
 | P3.8 | Drive read-only tool | tools | P3.4, P3.0 | merged | | #36, #38 | 18734a8 (2026-10-28); #38 7f36cf6 offers only tools that can run (R16 cap). Bound with Google creds and a drive.readonly grant (#43). OPEN: H25 (grant needs drive.readonly; H4 for live).
 | P3.9 | Commitment ledger wired to chat (candidate -> user-confirmed) | memory | P3.2, P2.4 | merged | | #41, #42 | 18151ab (2026-10-29); #42 1a8fc55 (review fixes). ADR-0022 Proposed (H27). DB trigger refuses a confirmed row without a consumed commitment/confirm approval. OPEN: no chat entry for set_due/complete/cancel (store methods exist, src/memory/commitments.py); untrusted commitment route unbuilt; description is a model paraphrase (labelled untrusted on the card).
-| P4.1 | Quarantine red-team: email/invite/doc/recorded speech categories | security | P3.6, P3.7 | todo | | |  |
-| P4.3 | Exfil: markdown image/URL stripping, previews off, reply URL allowlist | security | P2.1a | todo | | |  |
-| P4.4 | Canary strings + outbound blocking + alert | security | P1.4b, P2.1a | todo | | |  |
-| P4.5 | Container egress: compose networks (pg internal-only), host nftables outbound 443/53/123 only; doc honest limit | devops | P2.1b | todo | | | ADR-0004 |
-| P4.6 | Memory poisoning: untrusted never auto-promoted; review queue | memory+security | P2.4, P3.0 | todo | | |  |
-| P4.7 | Red-team corpus ≥100 cases, 12 categories, compromised-FakeLLM, CI | eval-qa | P4.1–P4.6 | todo | | | PROT |
-| P4.8 | Security review pass over diff since baseline | security+reviewer | P4.7 | todo | | |  |
-| P5.1 | Proactive jobs: morning brief, check-in, nudges, weekly review; budget ≤6/day, quiet hours, snooze | backend | P3.3, P3.9 | todo | | | ADR-0011 |
-| P5.2 | Trait model + "forget that about me" veto | personality | P2.4 | todo | | |  |
+| P4.1 | Quarantine red-team: invite/doc/recorded speech/forward/web (email deferred) | security | P3.6, P3.7 | merged (email deferred) | | #51, #52 | PROT. cdd1ea7 (2026-11-03); 195a724 (#52: external-service output always untrusted; name-independent Gmail guard). 19 vectors x 8 entry paths = 152 end-to-end cases, 268 tests in `tests/adversarial/quarantine_redteam`. OPEN: email category (H16, P3.6); #52 full non-adversarial run not finished (memory stop). |
+| P4.3 | Exfil: markdown image/URL stripping, previews off, reply URL allowlist | security | P2.1a | merged | | #46, #50 | 9c03a0b (2026-10-29); 5538f29 (#50: CJK host fold, Reject race). `src/gateway/exfil.py`; 84-case corpus. OPEN: H30 (live check that `<pre>` card URLs are not tappable on Android, iOS, Desktop); echoing user-supplied URLs not built. |
+| P4.4 | Canary strings + outbound blocking + alert | security | P1.4b, P2.1a | merged | | #47 | 3b1ea3f (2026-10-29); ADR-0023 Proposed. Tripwire, not boundary. OPEN: H31 (promote `tests/unit/canary/test_inv7_canary_outbound.py` into tests/eval; interim unit run); `CANARY_SEED`, `CANARY_ALERT_*` names by hand in `.env.example`. |
+| P4.5 | Container egress: compose networks (pg internal-only), host nftables outbound 443/53/123 only; doc honest limit | devops | P2.1b | merged | | #49 | 4329dd9 (2026-11-01). Internal compose net, post-DNS address check (`src/net/addrcheck.py`), runbook `docs/runbooks/egress.md`. OPEN: nftables file UNTESTED (nft unavailable, never loaded); compose internal net not run; check-then-connect DNS race (ADR-0004) |
+| P4.6 | Memory poisoning: untrusted never auto-promoted; review queue | memory+security | P2.4, P3.0 | merged | | #48 | bac363c (2026-11-01). Trigger `nimbus_promotion_guard` (migration `e5b1c7a3d902`), `ReviewQueue` (one card per item), ADR-0024 Proposed. OPEN: superuser role can disable the trigger (HIGH, P6.1); `decision` and legacy `commitment` are CHECK-only. |
+| P4.7 | Red-team corpus ≥100 cases, 12 categories, compromised-FakeLLM, CI | eval-qa | P4.1–P4.6 | todo (deps merged) | | | PROT. Corpus lives in protected `tests/eval`: needs a new human approval (H14 does not cover it). Adversarial pytest items already 1268 passed (#52 head, counts items, not corpus cases). |
+| P4.8 | Security review pass over diff since baseline | security+reviewer | P4.7 | todo (waits P4.7) | | | |
+| P5.1 | Proactive jobs: morning brief, check-in, nudges, weekly review; budget ≤6/day, quiet hours, snooze | backend | P3.3, P3.9 | merged | | #54 | e5d7780 (2026-11-08). `src/scheduler/proactive*.py`; template-only, zero model calls; quiet hours 22:00–08:00 IST; ADR-0011 addendum. Mutation-proved: budget, quiet hours, dedupe. OPEN: no `PROACTIVE_*` settings; no live run. |
+| P5.2 | Trait model + "forget that about me" veto | personality | P2.4 | NOT BUILT | | | Builder stopped by human; offered again 2026-11-08. Needs go/no-go. |
 | P5.3 | Friction/stance live with real model; re-run personality evals | personality+eval-qa | P5.4 | todo | | | PROT, H3 |
 | P5.4 | Bake-off harness (evals, tool-calling, injection, transcription incl. ogg, latency/cost) | eval-qa | P4.7 | todo | | | H3 |
-| P5.5 | Model ADR + pricing table + spend cap + LoCoMo gate | architect | P5.4 | todo | | |  |
-| P6.1–P6.8 | Unchanged from SDLC (Dockerfile arm64 with HF weights baked, deploy/, backups+restore drill, observability, staging soak, UAT, PRR, runbooks) | devops/eval-qa/reviewer | W5 | todo | | | H6–H9 |
+| P5.5 | Model ADR + pricing table + spend cap + LoCoMo gate | architect | P5.4 | partial (groundwork merged) | | #53, #55 | 262ca25 and 4a46f88 (2026-11-03). Cap default 50 INR, max 100; env prices; cheap model; request limiter; ADR-0025 Proposed; `COST_MODEL.md` (assumptions, not measured). OPEN: real prices (H3); verify gpt-5-nano row against first-party page; free-tier privacy (H3); LoCoMo gate not run (ADR-0018). |
+| P6.1–P6.8 | Unchanged from SDLC (Dockerfile arm64 with HF weights baked, deploy/, backups+restore drill, observability, staging soak, UAT, PRR, runbooks). W6 in flight: P6.1 (arm64 image, deploy/, non-superuser app role = HIGH fix, nftables tested on a host) and first-run readiness | devops/eval-qa/reviewer | W5 | in flight (W6) | | | H2, H6–H9 |
 | P7.1–P7.5 | Unchanged (docs, CLAUDE/MEMORY consolidation incl. INV table §7, supersede banners, final PR, post-mortem) | docs/architect | W6 | todo | | | H10 |
 
 ## Open branches / worktrees / PRs
-- Gate PR for W3: task/W3-gate-docs (this PR). No other W3 PR is open.
-- Remote task/P3.3b-lane-default (migration e7b3a9c52d84, ORM; fails 6 protected tests; waits on H23). Do not merge.
-- Remote task/P3.3-scheduler is merged as #30. Local worktree C:/DEVAM/MY_PROJECTS/Nimbus-P3.3 may hold unpushed work: check before removing.
-- Worktrees under C:/DEVAM/MY_PROJECTS/Nimbus-* for merged tasks can be removed with git worktree remove after a clean-status check.
+- Gate PR for W4: `task/W4-gate-docs` (worktree `C:/DEVAM/MY_PROJECTS/Nimbus-W4gate`), into `pivot`. Not merged by the agent.
+- Remote `task/P3.3b-lane-default` (migration e7b3a9c52d84; fails 6 protected tests; waits on H23). Do not merge.
+- Worktrees `C:/DEVAM/MY_PROJECTS/Nimbus-*` for merged tasks can be removed with `git worktree remove` after a clean-status check.
 
 ## Decisions since last wave
-- **W3 ADR state:** ADR-0019 Accepted. ADR-0020 (approvals), ADR-0021 (Notion paths) and ADR-0022 (commitment ledger) are Proposed while their code is merged; sign-off is H24/H26/H27. ADR-0010 Proposed (H18), ADR-0007 Proposed (H16). Next ADR number: 0023.
-- **Branch naming:** protocol's `pivot/<id>-<slug>` is impossible while branch `pivot` exists (git ref D/F conflict). Task branches are `task/<id>-<slug>`, base `pivot`. PR title format unchanged.
-15 ADRs in `docs/decisions/0001-0015` (P0.4): plain Postgres+pgvector (no AGE), Brief INV numbering canonical, `src/llm`+`src/net` sole egress, LangGraph and Approver removed, Postgres SKIP LOCKED jobs, deterministic policy + HMAC approvals. Open deviations needing human OK: ADR-0007 (Gmail compose scope), ADR-0010 (short untrusted fields skip quarantine call), ADR-0004 (app-level egress allowlist).
+- **W3 ADR state (corrected at W4):** ADR-0019 Accepted. ADR-0020 (approvals) acceptance is H32; H24 covers only its env names. ADR-0021 needs H26, ADR-0022 needs H27. Human gates block only the items that depend on them (P4.1 email and P3.6 on H16; P3.3b on H23), not the wave.
+- **W4 ADRs, Proposed with code merged:** 0023 canary (P4.4), 0024 memory poisoning (P4.6), 0025 cost-minimal config (P5.5; free-tier privacy needs H3). Still Proposed from earlier: 0007 (H16), 0010 (H18, interim quarantine-all). Full list: H33. **Next ADR number: 0026.**
+- **Branch naming:** protocol's `pivot/<id>-<slug>` is impossible while branch `pivot` exists (ref D/F conflict). Task branches are `task/<id>-<slug>`, base `pivot`.
+- 15 ADRs in `docs/decisions/0001-0015` (P0.4): plain Postgres+pgvector (no AGE), Brief INV numbering canonical, `src/llm`+`src/net` sole egress, LangGraph and Approver removed, Postgres SKIP LOCKED jobs, deterministic policy + HMAC approvals. Open deviations needing human OK: ADR-0007, ADR-0010, ADR-0004 (app-level egress allowlist).
 
 ## Blockers
-- WAITING ON HUMAN (2026-10-29): superuser-DB-role waiver (no live run with production creds until waived or fixed); H16 (Gmail scope; P3.6 blocked); H18 (ADR-0010 bypass; interim default in force); H23 (protected-test edits for lane server-default removal; P3.3b waits); H17 (Q3-Q5 defaults applied unless you object); H24 (approval env names); H25 (Drive: code wired by #43, live needs H4 grant); H26 (ADR-0021 sign-off, NOTION_TOKEN, H5); H27 (ADR-0022 sign-off); H28 (.env.example names); H29 (protected test for disabled-tool offers); H1 card; H2 Telegram token; H3 model key; H4 Google consent; H5 Notion token; H6 Oracle VM; H12 .claude/settings.json; H19/H21 .env.example and docker cleanup; H22 CODEOWNERS.
-- Staging with a real key: real price table and cap at most 100 INR (WAVE_W3 section 5).
-- H14 approved by user 2026-10-25 (scope: TARGET_DESIGN Q1). Edits to tests/eval/** stay in that scope; P4.7 needs a new approval.
+WAITING ON HUMAN (2026-11-08):
+- **Superuser app DB role (HIGH):** no waiver recorded; the fix is P6.1's non-superuser role. No live run with production credentials until fixed or waived.
+- **Protected-test approvals:** H23 (lane default, P3.3b), H29 (disabled-tool offers, verdict edit), H31 (canary test into `tests/eval`). P4.7 corpus needs a new approval.
+- **Sign-offs (H33):** 0020 (H32), 0021 (H26), 0022 (H27), 0023, 0024, 0025, 0007 (H16), 0010 (H18).
+- **Model and cost:** H3 (billing key, provider budget alert, real price table, free-tier privacy decision). Verify the gpt-5-nano row (`COST_MODEL.md`) against the first-party OpenAI pricing page. Before any staging run with a real key: real prices; cap stays ≤100 INR (default now 50).
+- **Live accounts:** H2 (bot tokens, user id), H30 (approval-card URL check on Android, iOS, Desktop), H4 (Google consent), H5 (Notion token), H6 (Oracle VM), H7/H8 (backup target, ping URL), H16 (Gmail scope; P3.6 blocked).
+- **Env and card:** H1 (character card not written), H24/H28 (env names by hand in `.env.example`), H19/H21 (stale lines and docker cleanup), H22 (CODEOWNERS), H12 (`.claude/settings.json`).
+- **P5.2:** go/no-go (builder stopped by human).
 
-## Notes
-- envcheck (W0 start): REQ tools all OK (git, gh authed as devampatel03, uv 0.8.17, python 3.14.3, docker 27.0.3). All optional env vars missing (Telegram, LLM, Google, Notion, healthcheck) -> tracked H2-H8; FakeLLM/fixtures until provided.
-- `.claude/settings.json` in working tree is the kit's MERGE template and has clobbered the original hooks (pre-tool-guard, protect-files, enforce-boundary, graphify). NOT committed; HEAD version is the original. See HUMAN_TODO H12.
+## Notes (operational)
+- Machine memory: at most 2 heavy agents at once. PR #52's full non-adversarial run was stopped by the system at about 15 percent for low memory.
+- Full non-adversarial suite takes about 28 min. One compose `postgres` is shared by all worktrees; each session makes its own test DB (INFRA-1) and stale ones older than 6 h are dropped at start.
+- Known red: `tests/integration/app/test_app_runtime.py::test_hung_gateway_poll_makes_the_heartbeat_go_stale_while_others_stay_fresh` (Windows, missing `hb.json`). It fails on the pivot baseline without W4/W5 changes (reported in #49, #51, #53, #55). Not a regression from those PRs; re-check on Linux CI.
+- `P4.2` does not exist (numbering gap, not a missing item).
+- W4 numbers come from PR bodies (`docs/pivot/reports/KPI.md`), not re-run at this gate.
 
-## Next 3 actions
-
-1. Review and merge the W3 gate PR (task/W3-gate-docs) into pivot. Then W4 security batch: P4.1, P4.3, P4.4, P4.5, P4.6. P4.7 needs a new protected-test approval.
-2. Human: H18 (ADR-0010) and H16 (Gmail) decisions; H23 approval; superuser-role waiver or fix; accept or amend ADR-0020/0021/0022 (H24, H26, H27).
-3. Follow-up queue (one agent at a time): (a) Calendar, Drive, Notion LOWs; (b) P3.4 items (dead-token persistence, H28 names); (c) P3.3 MAX_SPEND_SHARE setting and LOWs; (d) commitment chat entry for set_due/complete/cancel (needs a decision first); (e) before any staging run: P5.5 price table, cap at most 100 INR, cost re-projection.
+## Next actions (ordered)
+1. Human: review and merge the W4 gate PR (`task/W4-gate-docs` into `pivot`).
+2. Human: approve H23, H29, H31 (protected tests); sign off H32/H33; P4.7 corpus approval; P5.2 go/no-go.
+3. W6, P6.1: arm64 Dockerfile, `deploy/`, non-superuser app role (clears the HIGH), nftables loaded and tested on a host, first-run readiness. No deploy from a task branch.
+4. W5 remaining: P5.4 bake-off (needs H3 keys), P5.3, P5.5 price table and LoCoMo gate (ADR-0018).
+5. P4.7 corpus (after approval), then P4.8 security review.
+6. H30 live check on the staging bot once H2 exists.
