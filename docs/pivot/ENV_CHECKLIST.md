@@ -110,6 +110,12 @@ its `.sha256` pin (R9, ADR-0015); startup refuses an unapproved card unless dev 
 | `APP_HEARTBEAT_PATH`, `APP_HEARTBEAT_STALE_S` | Health check file | per-user state dir, 180 |
 | `APP_BACKOFF_*`, `APP_SHUTDOWN_GRACE_S`, `APP_RECOVER_*`, `APP_SCHEDULER_TICK_S`, `APP_JOB_*`, `APP_EXTRACT_PAUSE_S`, `APP_TURN_QUEUE_SIZE`, `APP_DB_STATEMENT_TIMEOUT_S` | Loop and job tuning (see `src/app/settings.py`) | as in code |
 
+## POLICY_ (src/app/policy_settings.py, P3.3-enable). Human-edited only
+
+| Name | Purpose | Default |
+|---|---|---|
+| `POLICY_ENABLE_CREATES` | Lets `tasks_create` and `reminders_create` through to the ADR-0009 matrix (clean turn: allowed; tainted turn: approval). Strict `true`/`false`; anything else refuses startup. Deletes are unaffected. Boot logs one INFO line with the state | false |
+
 ## PROACTIVE_ (src/scheduler/settings.py, P5.1). None required for the first run
 
 | Name | Purpose | Default |
