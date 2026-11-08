@@ -68,9 +68,9 @@ async def _consumed_approval(session: AsyncSession, item: uuid.UUID) -> uuid.UUI
     await session.execute(
         text(
             "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
-            "status, expires_at, created_at, consumed_at) VALUES (:i, 'memory', 'promote', "
-            "CAST(:p AS jsonb), :h, :n, 'consumed', now() + interval '1 hour', "
-            "now() - interval '1 minute', now())"
+            "status, expires_at, created_at) VALUES (:i, 'memory', 'promote', "
+            "CAST(:p AS jsonb), :h, :n, 'pending', now() + interval '1 hour', "
+            "now() - interval '1 minute')"
         ),
         {
             "i": aid,
@@ -78,6 +78,11 @@ async def _consumed_approval(session: AsyncSession, item: uuid.UUID) -> uuid.UUI
             "h": hashlib.sha256(b"x").hexdigest(),
             "n": b"n" * 16,
         },
+    )
+    # P6.1: born pending; consumption is the normal UPDATE.
+    await session.execute(
+        text("UPDATE pending_action SET status = 'consumed', consumed_at = now() WHERE id = :i"),
+        {"i": aid},
     )
     return aid
 

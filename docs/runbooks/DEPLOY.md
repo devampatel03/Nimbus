@@ -37,6 +37,19 @@ volume and raise `mem_limit`; the 2g app limit is sized for the API embedder.
 (owner). Generate passwords with `openssl rand -hex 24`. Never paste them into a
 chat, ticket or shell history.
 
+Compose interpolation note: `--env-file /etc/nimbus/migrate.env` makes compose
+read the OWNER password to fill `${POSTGRES_PASSWORD}` for the postgres service.
+It is not passed to the app container, but it sits in the compose process
+environment and in `docker compose config` output: never paste that output, and
+run these commands only as root/an admin you trust.
+
+Firewall note: Oracle Ubuntu images ship `/etc/iptables/rules.v4` (INPUT rules,
+often an `ACCEPT` for 22 and a final `REJECT`). ufw manages its own chains but
+those saved rules still load at boot and can silently allow extra ports or
+override your intent. After bootstrap, read `sudo iptables -S` and `sudo ufw status
+verbose`; remove or reconcile `rules.v4` (and `netfilter-persistent`) so SSH is the
+only inbound port. Also keep the OCI security list at SSH-only (H6).
+
 ## First deploy (staging, then production)
 
 1. VM exists, your SSH key works (H6). `git clone` the repo to the VM; check out a tag.

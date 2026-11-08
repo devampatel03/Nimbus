@@ -106,9 +106,9 @@ async def test_concurrent_double_promote_promotes_once(scratch_engine: AsyncEngi
         await s.execute(
             text(
                 "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
-                "status, expires_at, created_at, consumed_at) VALUES (:i, 'memory', 'promote', "
-                "CAST(:p AS jsonb), :h, :n, 'consumed', now() + interval '1 hour', "
-                "now() - interval '1 minute', now())"
+                "status, expires_at, created_at) VALUES (:i, 'memory', 'promote', "
+                "CAST(:p AS jsonb), :h, :n, 'pending', now() + interval '1 hour', "
+                "now() - interval '1 minute')"
             ),
             {
                 "i": aid,
@@ -116,6 +116,13 @@ async def test_concurrent_double_promote_promotes_once(scratch_engine: AsyncEngi
                 "h": hashlib.sha256(b"q").hexdigest(),
                 "n": b"n" * 16,
             },
+        )
+        await s.execute(  # P6.1: born pending; consumption is the normal UPDATE
+            text(
+                "UPDATE pending_action SET status = 'consumed', consumed_at = now() "
+                "WHERE id = :i"
+            ),
+            {"i": aid},
         )
 
     async def attempt() -> bool:

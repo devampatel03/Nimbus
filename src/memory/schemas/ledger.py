@@ -35,6 +35,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from src.memory.schemas.base import Base
 from src.memory.schemas.provenance import confidence_check, lane_check, promotion_check
+from src.memory.schemas.triggers import pin_search_path_sql
 
 _TZ = DateTime(timezone=True)
 
@@ -178,4 +179,9 @@ def _fn_ddl(sql: str) -> DDL:
 
 # `%ROWTYPE` needs the table to exist, so the function is created after it.
 event.listen(CommitmentLedger.__table__, "after_create", _fn_ddl(LEDGER_GUARD_FN_SQL))
+event.listen(
+    CommitmentLedger.__table__,
+    "after_create",
+    _fn_ddl(pin_search_path_sql("nimbus_ledger_guard()")),
+)
 event.listen(CommitmentLedger.__table__, "after_create", _fn_ddl(LEDGER_GUARD_TRIGGER_SQL))

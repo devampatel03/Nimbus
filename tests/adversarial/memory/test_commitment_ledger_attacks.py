@@ -66,12 +66,8 @@ async def approval(
         await s.execute(
             text(
                 "INSERT INTO pending_action (id, tool, action, payload, payload_sha256, nonce, "
-                "status, expires_at, created_at, consumed_at) VALUES (:i, :t, :a, "
-                "CAST(:p AS jsonb), :h, :n, CAST(:st AS varchar), "
-                + expires
-                + ", "
-                + created
-                + ", CASE WHEN CAST(:st AS varchar) = 'consumed' THEN now() END)"
+                "status, expires_at, created_at) VALUES (:i, :t, :a, "
+                "CAST(:p AS jsonb), :h, :n, 'pending', " + expires + ", " + created + ")"
             ),
             {
                 "i": aid,
@@ -80,8 +76,16 @@ async def approval(
                 "p": json.dumps(payload),
                 "h": hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
                 "n": b"n" * 16,
-                "st": status,
             },
+        )
+        # P6.1: a pending_action is born pending; reach the state via the normal UPDATE.
+        await s.execute(
+            text(
+                "UPDATE pending_action SET status = CAST(:st AS varchar), "
+                "consumed_at = CASE WHEN CAST(:st AS varchar) = 'consumed' THEN now() END "
+                "WHERE id = :i AND CAST(:st AS varchar) <> 'pending'"
+            ),
+            {"i": aid, "st": status},
         )
     return aid
 

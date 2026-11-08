@@ -105,7 +105,7 @@ def test_init_script_and_bootstrap_safety() -> None:
     for needle in (
         "PasswordAuthentication no",
         "default deny incoming",
-        "allow 22/tcp",
+        "sshd -T",
         "unattended-upgrades",
         "chmod 0600",
         "nft -c -f",
@@ -113,7 +113,7 @@ def test_init_script_and_bootstrap_safety() -> None:
     ):
         assert needle in b, needle
     # no inbound port other than SSH is ever opened
-    assert [m for m in re.findall(r"ufw allow (\S+)", b)] == ["22/tcp"]
+    assert re.findall(r"ufw allow (\S+)", b) == ['"${ssh_port}/tcp"']
     # never reads or prints env-file contents
     assert not re.search(r"\b(cat|source|\.)\s+\"?\$(APP_ENV|MIGRATE_ENV)", b)
 

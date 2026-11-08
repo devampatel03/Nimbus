@@ -138,6 +138,11 @@ async def apply_app_grants(conn: AsyncConnection, role: str, *, database: str) -
     r = _ident(role)
     db = _ident(database)
     await conn.execute(text(f"REVOKE ALL ON DATABASE {db} FROM {r}"))
+    # PUBLIC defaults the app must not lean on: temp tables (shadowing) and CREATE
+    # in the public schema. Needs the owner; harmless for the owner (superuser).
+    await conn.execute(text(f"REVOKE TEMPORARY ON DATABASE {db} FROM PUBLIC"))
+    await conn.execute(text(f"REVOKE TEMPORARY ON DATABASE {db} FROM {r}"))
+    await conn.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
     await conn.execute(text(f"GRANT CONNECT ON DATABASE {db} TO {r}"))
     await conn.execute(text(f"REVOKE ALL ON SCHEMA public FROM {r}"))
     await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {r}"))

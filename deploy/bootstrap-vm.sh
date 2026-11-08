@@ -91,10 +91,17 @@ systemctl enable --now fail2ban
 # --- 5. firewall: SSH inbound only -------------------------------------------
 # The bot has NO inbound port (Telegram long polling is outbound). Docker
 # publishes nothing (docker-compose.yml). ufw governs the host INPUT path.
-log "ufw: deny incoming except 22/tcp"
+# Use the port sshd actually listens on (sshd -T prints the effective config), so
+# a non-default Port cannot lock you out. Falls back to 22 with a warning.
+ssh_port="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
+if ! [[ "$ssh_port" =~ ^[0-9]+$ ]]; then
+    log "WARNING: could not read sshd port; assuming 22"
+    ssh_port=22
+fi
+log "ufw: deny incoming except ${ssh_port}/tcp"
 ufw --force default deny incoming
 ufw --force default allow outgoing
-ufw allow 22/tcp
+ufw allow "${ssh_port}/tcp"
 ufw --force enable
 
 # --- 6. swap (12 GB RAM shape: a small safety swap, low swappiness) -----------

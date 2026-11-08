@@ -14,12 +14,21 @@ the DB role.
 
 ## Decision
 
+0. Scope: this bounds a compromised or buggy APP process. It does not defend
+   against the owner role, a Postgres superuser, root on the VM, or anyone who can
+   read `/etc/nimbus/migrate.env`; those remain out of scope.
 1. Two roles. The OWNER (`POSTGRES_USER`) runs `alembic upgrade head` and
    `python -m src.app db-bootstrap`, and owns tables, functions and triggers.
    The APP role (`POSTGRES_APP_USER`, default `nimbus_app`) is what the running
    bot uses: LOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOINHERIT, no CREATE
    on schema or database. Disabling or dropping triggers needs ownership;
    `session_replication_role` and untrusted extensions need superuser.
+   Hardening found in review: (a) the guard functions read tables unqualified, so
+   a TEMP-privileged role could shadow `pending_action` with a temp table; they are
+   now pinned to `<schema>, pg_temp` and TEMPORARY is revoked from PUBLIC and the
+   app role; (b) a BEFORE INSERT trigger requires a `pending_action` to be born
+   `pending` and unconsumed, so a ready-made consumed approval cannot be inserted.
+   Migration `b8d3f2a61c94`; tests `tests/integration/roles/test_app_role_attacks.py`.
 2. Grants (`src/db/roles.py`, re-applied idempotently after every migration;
    default-deny, no `ALTER DEFAULT PRIVILEGES`, so a new table has NO app access
    until reviewed): SELECT, INSERT everywhere; UPDATE on append-only tables only
@@ -35,6 +44,10 @@ the DB role.
    owner password lives in a separate file used by the one-shot `migrate` service.
 
 ## Consequences
+
+- Not closed: the app role can INSERT a pending approval and UPDATE it to consumed,
+  because that is how a genuine tap is recorded. The database cannot distinguish
+  that from a compromised app doing the same; token/TOTP checks in app code bound it.
 
 - Residual: a process that can read `/etc/nimbus/migrate.env` (root on the VM,
   or anyone in the docker group) is the owner. This bounds the app process, not
