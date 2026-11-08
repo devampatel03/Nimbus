@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -80,15 +80,19 @@ class TasksTool(ToolGroup):
                 created_at=now,
                 updated_at=now,
             )
-            if source is not None:  # idempotent per turn (M5): the unique index decides
+            if source is not None:  # idempotent per turn, title case-insensitive (M5):
+                # the unique index `uq_task_source_ltitle` decides
                 stmt = stmt.on_conflict_do_nothing(
-                    index_elements=[Task.source_event_id, Task.title],
+                    index_elements=[Task.source_event_id, text("lower(title)")],
                     index_where=Task.source_event_id.is_not(None),
                 )
             task_id = await s.scalar(stmt.returning(Task.id))
             if task_id is None:
                 task_id = await s.scalar(
-                    select(Task.id).where(Task.source_event_id == source, Task.title == title)
+                    select(Task.id).where(
+                        Task.source_event_id == source,
+                        func.lower(Task.title) == func.lower(title),
+                    )
                 )
         return ToolOutput(json.dumps({"task_id": str(task_id)}))
 

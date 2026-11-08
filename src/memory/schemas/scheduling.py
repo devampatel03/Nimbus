@@ -30,11 +30,13 @@ class Reminder(Base):
         CheckConstraint("status IN ('pending', 'fired')", name="ck_reminder_status"),
         CheckConstraint("char_length(title) BETWEEN 1 AND 500", name="ck_reminder_title"),
         Index("idx_reminder_status_at", "status", "remind_at"),
-        # One reminder per (turn, title, time): a replayed turn cannot duplicate it (M5).
+        # One reminder per (turn, title ignoring case, time): a replayed turn or a
+        # re-sampled model call cannot duplicate it (M5, P3.3-enable). Titles are
+        # already whitespace-normalised by `clean_title`.
         Index(
-            "uq_reminder_source_title_at",
+            "uq_reminder_source_ltitle_at",
             "source_event_id",
-            "title",
+            text("lower(title)"),
             "remind_at",
             unique=True,
             postgresql_where=text("source_event_id IS NOT NULL"),
@@ -62,9 +64,9 @@ class Task(Base):
         CheckConstraint("(done_at IS NOT NULL) = done", name="ck_task_done_at"),
         Index("idx_task_done_created", "done", "created_at"),
         Index(
-            "uq_task_source_title",
+            "uq_task_source_ltitle",
             "source_event_id",
-            "title",
+            text("lower(title)"),
             unique=True,
             postgresql_where=text("source_event_id IS NOT NULL"),
         ),
