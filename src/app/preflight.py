@@ -17,7 +17,7 @@ first local run. Exit 0 when nothing FAILed, 1 otherwise.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib.metadata
 import logging
 import os
 from collections.abc import Callable
@@ -67,9 +67,10 @@ def render(checks: list[Check]) -> str:
 
 def _module_available(name: str) -> bool:
     try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
+        importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
         return False
+    return True
 
 
 def _fields(exc: ValidationError) -> dict[str, str]:
@@ -165,7 +166,8 @@ def _telegram_checks() -> list[Check]:
 
 def _llm_checks() -> list[Check]:
     from src.llm.settings import DEFAULT_API_KEY, LLMSettings
-    from src.net import Allowlist, NetSettings, Service
+    from src.net import NetSettings
+    from src.net.policy import llm_and_telegram_hosts
     from src.net.settings import host_from_https_url
 
     try:
@@ -200,8 +202,7 @@ def _llm_checks() -> list[Check]:
             )
         )
     try:
-        allow = Allowlist.from_settings(NetSettings())
-        allowed = allow.host_for(Service.LLM)
+        allowed, tg_host = llm_and_telegram_hosts(NetSettings())
         if host is not None and allowed != host:
             out.append(
                 Check(
@@ -216,7 +217,7 @@ def _llm_checks() -> list[Check]:
                 Check(
                     "egress allowlist",
                     Status.PASS,
-                    f"llm -> {allowed}, telegram -> {allow.host_for(Service.TELEGRAM)}",
+                    f"llm -> {allowed}, telegram -> {tg_host}",
                 )
             )
     except Exception as exc:  # noqa: BLE001 - fixed-message egress errors only
@@ -370,7 +371,7 @@ def _embedder_check(app: AppSettings | None) -> Check:
             "spend cap. Your provider must serve /embeddings for that model: "
             "`preflight --online` tests it",
         )
-    if not _module_available("sentence_transformers"):
+    if not _module_available("sentence-transformers"):
         return Check(
             "embedder",
             Status.WARN,
@@ -554,122 +555,57 @@ def _llm_error_hint(status: int | None, code: str) -> str:
 async def _online() -> list[Check]:
     from config.settings import Settings as DbSettings
     from src.app.db import build_engine, build_session_factory
-    from src.gateway.api import TelegramApi
+    from src.gateway.probe import get_me
     from src.gateway.settings import GatewaySettings
-    from src.gateway.types import TelegramAuthError, TelegramError
-    from src.llm import build_guarded_llm
     from src.llm.pg_stores import PostgresAuditStore, PostgresFlagStore
+    from src.llm.probe import ping
     from src.llm.settings import LLMSettings
-    from src.llm.types import (
-        ChatMessage,
-        ChatRequest,
-        Lane,
-        LLMError,
-        LLMProviderError,
-        LLMRefused,
-        Purpose,
-    )
-    from src.net import EgressClient, EgressError, NetSettings
 
     out: list[Check] = []
     app = AppSettings()
-    gw = GatewaySettings()  # type: ignore[call-arg]
-    async with EgressClient(NetSettings()) as egress:
-        try:
-            me = await TelegramApi(egress, gw).call("getMe", {})
-            who = me.get("username") if isinstance(me, dict) else None
-            out.append(
-                Check(
-                    "telegram getMe",
-                    Status.PASS,
-                    f"token accepted, bot @{who}" if who else "token accepted",
-                )
-            )
-        except TelegramAuthError:
-            out.append(
-                Check(
-                    "telegram getMe",
-                    Status.FAIL,
-                    "token rejected by Telegram (401/404)",
-                    fix="re-copy the token from @BotFather",
-                )
-            )
-        except TelegramError as exc:
-            out.append(
-                Check(
-                    "telegram getMe", Status.FAIL, f"Telegram error: {exc.reason} code={exc.code}"
-                )
-            )
-        except EgressError as exc:
-            out.append(Check("telegram getMe", Status.FAIL, f"egress: {exc.reason}"))
-        except Exception as exc:  # noqa: BLE001
-            out.append(Check("telegram getMe", Status.FAIL, f"failed ({type(exc).__name__})"))
-
+    bot = await get_me(GatewaySettings())  # type: ignore[call-arg]
+    out.append(
+        Check(
+            "telegram getMe",
+            Status.PASS if bot.ok else Status.FAIL,
+            bot.detail,
+            fix="re-copy the token from @BotFather" if bot.auth_failed else "",
+        )
+    )
     llm_cfg = LLMSettings()
     engine = build_engine(DbSettings().postgres_dsn, statement_timeout_s=app.db_statement_timeout_s)
     try:
         sf = build_session_factory(engine)
         audit = PostgresAuditStore(sf, retention_days=llm_cfg.payload_retention_days)
-        llm = build_guarded_llm(llm_cfg, flags=PostgresFlagStore(sf), audit=audit, ledger=audit)
-        try:
-            res = await llm.chat(
-                ChatRequest(
-                    purpose=Purpose.CHAT,
-                    lane=Lane.TRUSTED,
-                    messages=(ChatMessage(role="user", content="Reply with the single word: ok"),),
-                    max_output_tokens=32,
-                    temperature=0,
-                )
-            )
-            out.append(
-                Check(
-                    "llm call",
-                    Status.PASS,
-                    f"model replied (tokens in={res.usage.tokens_in} out={res.usage.tokens_out}, "
-                    f"cost {res.cost_inr} INR, audit row written)",
-                )
-            )
-        except LLMProviderError as exc:
-            out.append(
-                Check(
-                    "llm call",
-                    Status.FAIL,
-                    f"provider error code={exc.code} status={exc.status}",
-                    fix=_llm_error_hint(exc.status, exc.code),
-                )
-            )
-        except LLMRefused as exc:
-            out.append(Check("llm call", Status.FAIL, f"refused by the guard: {exc.reason}"))
-        except LLMError as exc:
-            out.append(Check("llm call", Status.FAIL, f"{type(exc).__name__}: {exc}"))
-        except Exception as exc:  # noqa: BLE001
-            out.append(Check("llm call", Status.FAIL, f"failed ({type(exc).__name__})"))
-
-        if app.embedder == "api":
-            from src.llm.factory import build_api_embedder
-
-            try:
-                emb = build_api_embedder(llm, llm_cfg, model=app.embed_model)
-                vec = await emb.aembed("preflight")
-                out.append(
-                    Check(
-                        "embedding call",
-                        Status.PASS,
-                        f"model {app.embed_model} returned {len(vec)} dims",
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                out.append(
-                    Check(
-                        "embedding call",
-                        Status.FAIL,
-                        f"failed ({type(exc).__name__})",
-                        fix="your provider may not serve this embedding model at 1024 dims: set "
-                        "APP_EMBED_MODEL, or run without memory (chat still works)",
-                    )
-                )
+        chat, emb = await ping(
+            llm_cfg,
+            flags=PostgresFlagStore(sf),
+            audit=audit,
+            ledger=audit,
+            embed_model=app.embed_model if app.embedder == "api" else None,
+        )
     finally:
         await engine.dispose()
+    out.append(
+        Check(
+            "llm call",
+            Status.PASS if chat.ok else Status.FAIL,
+            chat.detail,
+            fix="" if chat.ok else _llm_error_hint(chat.status, chat.code),
+        )
+    )
+    if emb is not None:
+        out.append(
+            Check(
+                "embedding call",
+                Status.PASS if emb.ok else Status.FAIL,
+                emb.detail if emb.ok else "failed: " + emb.detail,
+                fix=""
+                if emb.ok
+                else "your provider may not serve this embedding model at 1024 dims: set "
+                "APP_EMBED_MODEL, or run without memory (chat still works)",
+            )
+        )
     return out
 
 
