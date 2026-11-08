@@ -89,6 +89,9 @@ class AppSettings(BaseSettings):
     db_statement_timeout_s: float = Field(default=30.0, gt=0, le=600)
 
     embedder: Literal["local", "api"] = "local"
+    # Embedding model id for `embedder="api"`, served by the LLM host. The vector
+    # width is fixed at 1024 (the pgvector column), so the model must support it.
+    embed_model: str = Field(default="text-embedding-3-small", min_length=1, max_length=200)
 
     # In-process fakes for Telegram/LLM/embeddings: lets `python -m src.app` run
     # with no token and no network. Refused unless env=development.
