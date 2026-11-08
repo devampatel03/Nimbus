@@ -362,7 +362,7 @@ def commitment_card_listener(
 def build_embedder(cfg: AppConfig, llm: GuardedLLM) -> EmbedderLike:
     if cfg.app.embedder == "api":
         # Shares GuardedLLM's CallAccountant: one cap, one set of held spend (R5).
-        return build_api_embedder(llm, cfg.llm)
+        return build_api_embedder(llm, cfg.llm, model=cfg.app.embed_model)
     return Qwen3Embedder()
 
 
