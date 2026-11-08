@@ -8,7 +8,12 @@ Pure: imports nothing from src.llm, src.net or src.db, no clock, no randomness
 """
 
 from src.policy.carry import TaintCarry, carry_turns_for
-from src.policy.config import PENDING_IDEMPOTENCY, PolicyConfig
+from src.policy.config import (
+    OPT_IN_CREATES,
+    PENDING_IDEMPOTENCY,
+    PolicyConfig,
+    config_with_creates,
+)
 from src.policy.engine import DenyAllWritesPolicy, PolicyEngine
 from src.policy.registry import LOCAL_SCOPES, TOOL_RULES, ToolRule
 from src.policy.types import (
@@ -23,6 +28,7 @@ from src.policy.types import (
 
 __all__ = [
     "LOCAL_SCOPES",
+    "OPT_IN_CREATES",
     "PENDING_IDEMPOTENCY",
     "TOOL_RULES",
     "Decision",
@@ -38,4 +44,5 @@ __all__ = [
     "ToolRule",
     "Verdict",
     "carry_turns_for",
+    "config_with_creates",
 ]

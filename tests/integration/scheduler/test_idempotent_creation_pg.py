@@ -135,3 +135,56 @@ async def test_database_refuses_a_duplicate_even_around_the_store(sf: SF, clock:
     async with sf() as s, s.begin():  # NULL source: the guard does not apply
         s.add(Task(title="dup"))
         s.add(Task(title="dup"))
+
+
+# ---------------------------------------------- P3.3-enable: model re-sampling
+
+
+async def test_resampled_title_case_and_spacing_still_make_one_reminder(
+    sf: SF, clock: FakeClock
+) -> None:
+    """A replayed turn re-asks the model; it may change case or spacing of the
+    same title. One event + same normalised title + same time = one reminder."""
+    eid = await make_event(sf)
+    tools = rem_tools(sf, clock)
+    with turn_event(eid):
+        a = json.loads((await tools["reminders_create"].run(ARGS)).text)  # type: ignore[attr-defined]
+        b = json.loads(
+            (
+                await tools["reminders_create"].run(  # type: ignore[attr-defined]
+                    {"title": "  Call The  DENTIST ", "remind_at": "in 2 hours"}
+                )
+            ).text
+        )
+    assert a["reminder_id"] == b["reminder_id"]
+    assert await count(sf, Reminder) == 1 and await count(sf, Job) == 1
+
+
+async def test_resampled_task_title_case_still_makes_one_task(sf: SF, clock: FakeClock) -> None:
+    eid = await make_event(sf)
+    tools = task_tools(sf, clock)
+    with turn_event(eid):
+        a = json.loads((await tools["tasks_create"].run({"title": "Buy milk"})).text)  # type: ignore[attr-defined]
+        b = json.loads((await tools["tasks_create"].run({"title": "buy  MILK"})).text)  # type: ignore[attr-defined]
+    assert a["task_id"] == b["task_id"]
+    assert await count(sf, Task) == 1
+
+
+async def test_same_args_in_a_different_turn_are_two_rows(sf: SF, clock: FakeClock) -> None:
+    e1, e2 = await make_event(sf), await make_event(sf)
+    tools = task_tools(sf, clock)
+    for eid in (e1, e2):
+        with turn_event(eid):
+            await tools["tasks_create"].run({"title": "buy milk"})  # type: ignore[attr-defined]
+    assert await count(sf, Task) == 2
+
+
+async def test_database_refuses_a_case_variant_duplicate(sf: SF, clock: FakeClock) -> None:
+    eid = await make_event(sf)
+    when = clock.now() + timedelta(days=1)
+    for model, extra in ((Reminder, {"remind_at": when}), (Task, {})):
+        async with sf() as s, s.begin():
+            s.add(model(title="Dup", source_event_id=eid, **extra))
+        with pytest.raises(IntegrityError):
+            async with sf() as s, s.begin():
+                s.add(model(title="dUP", source_event_id=eid, **extra))

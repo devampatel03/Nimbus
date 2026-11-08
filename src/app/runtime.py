@@ -22,7 +22,8 @@ Startup order is a security property, so it is fixed:
 4. `MemoryManager.verify_index()`: a model/dim change aborts startup.
 5. Loops start. Policy is the deterministic `PolicyEngine` (P3.1, ADR-0009,
    INV-5) with its production config; creates stay denied by default (`PENDING_IDEMPOTENCY`)
-   until a separate, reviewed enable task.
+   unless the operator sets `POLICY_ENABLE_CREATES=true` (`PolicySettings`,
+   read from the environment only; one INFO line at boot says which).
    Every decision is written to `policy_audit` before a tool runs (P3.2).
    Untrusted tool output and memory go through the quarantine lane with a
    per-turn budget (P3.0). Google/Notion tool groups are bound, and their
@@ -63,6 +64,7 @@ from src.app.db import build_engine, build_session_factory
 from src.app.heartbeat import Heartbeat, HeartbeatPathError
 from src.app.integrations import wire_integrations
 from src.app.pipeline import CallbackHandler, PendingTurn, TurnGateway, TurnWorker
+from src.app.policy_settings import PolicySettings
 from src.app.recall import SessionScopedRecall
 from src.app.seams import JobRunner, NoopJobRunner, NoopScheduler, Scheduler
 from src.app.settings import AppSettings
@@ -104,7 +106,7 @@ from src.memory.store import VectorEmbedder
 from src.net import EgressClient, NetSettings
 from src.net.policy import Service
 from src.orchestrator.loop import LoopConfig, Orchestrator
-from src.policy import PolicyEngine
+from src.policy import OPT_IN_CREATES, PolicyEngine, config_with_creates
 from src.scheduler.memory_extract import LedgerSpendProbe
 from src.scheduler.proactive import CalendarClientSource, ChainScheduler, build_proactive
 from src.scheduler.proactive_state import ProactiveState, UntrustedReminderGate
@@ -146,6 +148,8 @@ class AppConfig:
     canaries: CanarySet = field(default_factory=generate_canaries, repr=False)
     # P5.1: None = defaults from the environment (`PROACTIVE_*`).
     proactive: ProactiveSettings | None = field(default=None, repr=False)
+    # P3.3-enable: None = defaults (creates OFF). `from_env` reads `POLICY_*`.
+    policy: PolicySettings | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -160,6 +164,7 @@ class AppConfig:
             google=GoogleOAuthSettings(),
             notion=NotionSettings(),
             canary=CanarySettings(),
+            policy=PolicySettings(),
         )
 
     @classmethod
@@ -177,6 +182,7 @@ class AppConfig:
         notion: NotionSettings | None = None,
         canary: CanarySettings | None = None,
         proactive: ProactiveSettings | None = None,
+        policy: PolicySettings | None = None,
     ) -> AppConfig:
         if dsn is None:
             from config.settings import settings as shared
@@ -225,6 +231,7 @@ class AppConfig:
             canary=canary,
             canaries=canaries,
             proactive=proactive,
+            policy=policy,
         )
 
 
@@ -693,7 +700,7 @@ async def run_app(
         orchestrator = Orchestrator(
             llm,
             registry.loop_tools(),
-            PolicyEngine(),
+            build_policy(cfg.policy),
             character_card=card,
             recall=SessionScopedRecall(sf, embedder),
             approvals=approvals,
@@ -792,6 +799,19 @@ async def run_app(
         if own_engine:
             await eng.dispose()
         heartbeat.clear()
+
+
+def build_policy(settings: PolicySettings | None) -> PolicyEngine:
+    """The production `PolicyEngine`. Creates are lifted from the deny list only
+    by the operator's `POLICY_ENABLE_CREATES=true` (never by model output, INV-5);
+    `None` means defaults: OFF."""
+    enabled = settings is not None and settings.enable_creates is True
+    names = ", ".join(sorted(OPT_IN_CREATES))
+    if enabled:
+        log.info("policy creates enabled by operator (POLICY_ENABLE_CREATES): %s", names)
+    else:
+        log.info("policy creates disabled (default; POLICY_ENABLE_CREATES is not true): %s", names)
+    return PolicyEngine(config_with_creates(enabled))
 
 
 def describe_validation_error(exc: ValidationError) -> str:
