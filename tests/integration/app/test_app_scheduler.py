@@ -65,9 +65,13 @@ async def test_reminder_is_delivered_by_the_running_app_within_seconds(
     await reminders(sf).create(f"standup-{uuid.uuid4().hex[:6]}", due)
     title = (await reminders(sf).list())[-1].title
     start = asyncio.get_running_loop().time()
-    await run_until(cfg, backends_for(fake), lambda: any(title in t for t in fake.replies()))
+    await run_until(
+        cfg,
+        backends_for(fake),
+        lambda: any(t.startswith("Reminder: ") and title in t for t in fake.replies()),
+    )
     assert asyncio.get_running_loop().time() - start < 20
-    sent = [t for t in fake.replies() if title in t]
+    sent = [t for t in fake.replies() if t.startswith("Reminder: ") and title in t]
     assert len(sent) == 1 and sent[0].startswith("Reminder: ")
 
 
@@ -83,17 +87,24 @@ async def test_downtime_catch_up_fires_once_and_a_second_restart_does_not_repeat
 
     async def fired() -> bool:
         got = [r for r in await store.list() if r.title == title]
-        return bool(got) and got[0].status == "fired" and any(title in t for t in fake.replies())
+        return (
+            bool(got)
+            and got[0].status == "fired"
+            and any(t.startswith("Reminder: ") and title in t for t in fake.replies())
+        )
 
     await run_until(cfg, backends_for(fake), fired)
-    first = [t for t in fake.replies() if title in t]
+    first = [t for t in fake.replies() if t.startswith("Reminder: ") and title in t]
     assert len(first) == 1
     fake2 = PacedTelegram()
     with pytest.raises(TimeoutError):
         await run_until(
-            cfg, backends_for(fake2), lambda: any(title in t for t in fake2.replies()), timeout=1.5
+            cfg,
+            backends_for(fake2),
+            lambda: any(t.startswith("Reminder: ") and title in t for t in fake2.replies()),
+            timeout=1.5,
         )
-    assert [t for t in fake2.replies() if title in t] == []
+    assert [t for t in fake2.replies() if t.startswith("Reminder: ") and title in t] == []
 
 
 async def test_trusted_text_reaches_long_term_memory_and_forwards_do_not(
@@ -150,7 +161,11 @@ async def test_reminder_fires_on_time_while_a_slow_memory_extract_runs(
         if not started and provider.extract_calls >= 1:  # extraction is now in flight
             started.append(loop.time())
             await reminders(sf).create(title, SystemClock().now() + timedelta(seconds=1))
-        if started and not delivered and any(title in t for t in fake.replies()):
+        if (
+            started
+            and not delivered
+            and any(t.startswith("Reminder: ") and title in t for t in fake.replies())
+        ):
             delivered.append(loop.time())
         return bool(delivered)
 

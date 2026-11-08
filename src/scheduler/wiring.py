@@ -64,9 +64,10 @@ def build_scheduler(
     extract_min_chars: int = mx.MIN_CHARS,
     extract_mode: mx.ExtractMode = "all",
     extract_max_spend_share: float = mx.MAX_SPEND_SHARE,
+    reminder_gate: rem.ReminderGate | None = None,
 ) -> SchedulerParts:
     queue = JobQueue(session_factory, clock, lease_s=lease_s)
-    delivery = rem.ReminderDelivery(session_factory, gateway, clock)
+    delivery = rem.ReminderDelivery(session_factory, gateway, clock, reminder_gate)
     extract = mx.MemoryExtractHandler(
         session_factory,
         embedder,

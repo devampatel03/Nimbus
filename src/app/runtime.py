@@ -105,7 +105,11 @@ from src.net.policy import Service
 from src.orchestrator.loop import LoopConfig, Orchestrator
 from src.policy import PolicyEngine
 from src.scheduler.memory_extract import LedgerSpendProbe
+from src.scheduler.proactive import CalendarClientSource, ChainScheduler, build_proactive
+from src.scheduler.proactive_state import ProactiveState, UntrustedReminderGate
+from src.scheduler.settings import ProactiveSettings
 from src.scheduler.wiring import SchedulerParts, build_scheduler
+from src.tools.integrations.google_calendar import GoogleCalendarTool
 from src.tools.integrations.reminders import RemindersTool
 from src.tools.integrations.tasks import TasksTool
 from src.tools.registry import ToolRegistry
@@ -139,6 +143,8 @@ class AppConfig:
     # or random per process without one.
     canary: CanarySettings | None = field(default=None, repr=False)
     canaries: CanarySet = field(default_factory=generate_canaries, repr=False)
+    # P5.1: None = defaults from the environment (`PROACTIVE_*`).
+    proactive: ProactiveSettings | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -169,6 +175,7 @@ class AppConfig:
         google: GoogleOAuthSettings | None = None,
         notion: NotionSettings | None = None,
         canary: CanarySettings | None = None,
+        proactive: ProactiveSettings | None = None,
     ) -> AppConfig:
         if dsn is None:
             from config.settings import settings as shared
@@ -214,6 +221,7 @@ class AppConfig:
             notion=notion,
             canary=canary,
             canaries=canaries,
+            proactive=proactive,
         )
 
 
@@ -270,6 +278,14 @@ async def verify_memory_index(sf: SessionFactory, embedder: BatchEmbedder) -> No
         raise
     except (SQLAlchemyError, OSError, TimeoutError) as exc:
         log.warning("memory index check skipped (database unavailable) err=%s", type(exc).__name__)
+
+
+def _calendar_tool(registry: ToolRegistry) -> GoogleCalendarTool | None:
+    try:
+        group = registry.get("calendar")
+    except KeyError:
+        return None
+    return group if isinstance(group, GoogleCalendarTool) else None
 
 
 def bind_scheduling_tools(
@@ -431,7 +447,9 @@ class Runtime:
         stop: asyncio.Event,
         jobs: JobRunner | None = None,
         reminder_jobs: JobRunner | None = None,
+        proactive_jobs: JobRunner | None = None,
         scheduler: Scheduler | None = None,
+        commands: Callable[[str], Awaitable[str | None]] | None = None,
         on_turn_done: Callable[[uuid.UUID], Awaitable[None]] | None = None,
         callbacks: CallbackHandler | None = None,
     ) -> None:
@@ -440,6 +458,7 @@ class Runtime:
         self.stop = stop
         self._jobs: JobRunner = jobs or NoopJobRunner()
         self._reminder_jobs: JobRunner = reminder_jobs or NoopJobRunner()
+        self._proactive_jobs: JobRunner = proactive_jobs or NoopJobRunner()
         self._scheduler: Scheduler = scheduler or NoopScheduler()
         self.queue: asyncio.Queue[PendingTurn] = asyncio.Queue(cfg.app.turn_queue_size)
         # Ingest reads through the wrapper, so every ack is followed by a queued turn.
@@ -453,6 +472,7 @@ class Runtime:
             on_progress=lambda: heartbeat.beat("gateway"),
             on_turn_done=on_turn_done,
             callbacks=callbacks,
+            commands=commands,
         )
         self._beat_every = min(15.0, cfg.app.heartbeat_stale_s / 3)
 
@@ -482,6 +502,14 @@ class Runtime:
             if not ran:
                 await self._idle("worker", self.cfg.app.job_poll_s)
 
+    async def _proactive_loop(self) -> None:
+        """Briefs, check-ins, nudges (P5.1). Its own runner and task, so a slow
+        brief (calendar call) can neither delay a reminder nor an extraction."""
+        while not self.stop.is_set():
+            ran = await self._proactive_jobs.run_due()
+            self.heartbeat.beat("worker")
+            await self._idle("worker", self.cfg.app.job_poll_s if not ran else 1.0)
+
     async def _extract_loop(self) -> None:
         """Other jobs (memory_extract: spends on the model, R5). Small batches with a
         pause between them, so a backlog drains at a bounded rate."""
@@ -501,7 +529,12 @@ class Runtime:
         """Three independent tasks under one heartbeat name: reminder delivery,
         other jobs, ingest recovery. If any ends, the others are cancelled and the
         supervisor restarts the loop (crash isolation stays at loop level)."""
-        await _first_done(self._reminder_loop(), self._extract_loop(), self._recover_loop())
+        await _first_done(
+            self._reminder_loop(),
+            self._extract_loop(),
+            self._proactive_loop(),
+            self._recover_loop(),
+        )
 
     async def scheduler_loop(self) -> None:
         while not self.stop.is_set():
@@ -613,8 +646,12 @@ async def run_app(
         # 5. Assemble and run. Reminders and tasks are persisted; the job runner
         # delivers reminders through the gateway (owner chat only, R2).
         clock = SystemClock()
+        proactive_cfg = cfg.proactive or ProactiveSettings()
         parts = build_scheduler(
             sf,
+            reminder_gate=UntrustedReminderGate(
+                ProactiveState(sf, clock), proactive_cfg.budget_per_day
+            ),
             gateway=gateway,
             embedder=embedder,
             llm=llm,
@@ -682,6 +719,20 @@ async def run_app(
                     commitment_card_listener(intake), memory_review_listener(review)
                 )
             )
+        # P5.1: proactive jobs. Templates from DB rows; no model call at all. Calendar section only when Calendar is bound.
+        cal_tool = _calendar_tool(registry) if "calendar" in wired.scopes else None
+        cal_client = cal_tool.bound_client if cal_tool is not None else None
+        proactive = build_proactive(
+            sf,
+            queue=parts.queue,
+            gateway=gateway,
+            ledger=CommitmentLedgerStore(sf, clock),
+            settings=proactive_cfg,
+            clock=clock,
+            review=ReviewQueue(sf, approvals) if approvals is not None else None,
+            calendar=CalendarClientSource(cal_client) if cal_client is not None else None,
+            on_progress=lambda: heartbeat.beat("worker"),
+        )
         rt = Runtime(
             cfg=cfg,
             gateway=gateway,
@@ -692,7 +743,9 @@ async def run_app(
             stop=stop,
             jobs=parts.extract_runner,
             reminder_jobs=parts.reminder_runner,
-            scheduler=parts.sweeper,
+            proactive_jobs=proactive.runner,
+            scheduler=ChainScheduler(parts.sweeper, proactive.scheduler),
+            commands=proactive.commands.handle,
             on_turn_done=parts.enqueue_extract_after_turn,
             callbacks=approvals,
         )

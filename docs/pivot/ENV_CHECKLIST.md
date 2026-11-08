@@ -109,3 +109,19 @@ its `.sha256` pin (R9, ADR-0015); startup refuses an unapproved card unless dev 
 | `APP_EXTRACT_MODE`, `APP_EXTRACT_MIN_CHARS`, `APP_EXTRACT_MAX_SPEND_SHARE` | Memory extraction cost levers | all, 40, 0.30 |
 | `APP_HEARTBEAT_PATH`, `APP_HEARTBEAT_STALE_S` | Health check file | per-user state dir, 180 |
 | `APP_BACKOFF_*`, `APP_SHUTDOWN_GRACE_S`, `APP_RECOVER_*`, `APP_SCHEDULER_TICK_S`, `APP_JOB_*`, `APP_EXTRACT_PAUSE_S`, `APP_TURN_QUEUE_SIZE`, `APP_DB_STATEMENT_TIMEOUT_S` | Loop and job tuning (see `src/app/settings.py`) | as in code |
+
+## PROACTIVE_ (src/scheduler/settings.py, P5.1). None required for the first run
+
+| Name | Purpose | Default |
+|---|---|---|
+| `PROACTIVE_ENABLED` | Master switch for briefs, check-ins, nudges, weekly review | true |
+| `PROACTIVE_BUDGET_PER_DAY` | Interruption budget per IST day across all kinds (0-6, refused above 6) | 6 |
+| `PROACTIVE_QUIET_START`, `PROACTIVE_QUIET_END` | Quiet hours, IST `HH:MM` (equal = none) | 22:00, 08:00 |
+| `PROACTIVE_MORNING_ENABLED`, `PROACTIVE_MORNING_AT`, `PROACTIVE_MORNING_VALID_H` | Morning brief on/off, time, how late it may still be sent | true, 08:30, 6 |
+| `PROACTIVE_EVENING_ENABLED`, `PROACTIVE_EVENING_AT`, `PROACTIVE_EVENING_VALID_H` | Evening check-in | true, 20:30, 1.5 |
+| `PROACTIVE_WEEKLY_ENABLED`, `PROACTIVE_WEEKLY_WEEKDAY`, `PROACTIVE_WEEKLY_AT`, `PROACTIVE_WEEKLY_VALID_H`, `PROACTIVE_WEEKLY_CARDS_MAX` | Weekly review (Mon=0..Sun=6), memory approval cards per review (0-10) | true, 6, 18:00, 4, 3 |
+| `PROACTIVE_NUDGES_ENABLED`, `PROACTIVE_NUDGE_LEAD_H`, `PROACTIVE_NUDGE_OVERDUE_DAYS_MAX`, `PROACTIVE_NUDGE_MAX_PER_DAY`, `PROACTIVE_NUDGE_SCAN_S`, `PROACTIVE_NUDGE_VALID_H` | Commitment nudges | true, 24, 3, 3, 600, 4 |
+| `PROACTIVE_ITEMS_MAX`, `PROACTIVE_SKIP_EMPTY_BRIEF`, `PROACTIVE_SNOOZE_MAX_H` | Lines per section, skip an empty brief, longest `/snooze` | 5, true, 72 |
+
+No model calls: every proactive message is a template (cost 0).
+
