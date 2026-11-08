@@ -1,0 +1,26 @@
+# Build context hygiene (P6.1): nothing secret, nothing heavy, nothing needless.
+.git
+.github
+.venv
+.env
+.env.*
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.claude
+.serena
+tests
+docs
+deploy
+infra
+scripts
+eval
+quality
+*.md
+!personality/character_card.md
+docker-compose*.yml
+Dockerfile*
+.secrets.baseline
+.pre-commit-config.yaml

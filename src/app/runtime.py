@@ -77,6 +77,7 @@ from src.canary.tokens import CanarySet, derive_canaries, generate_canaries
 from src.core.clock import SystemClock
 from src.core.logging import add_log_matchers, install_log_scrubbing
 from src.db.crypto import KEY_ENV_VAR, DataCipher
+from src.db.roles import log_role_report
 from src.gateway.protocols import Gateway
 from src.gateway.settings import GatewaySettings
 from src.gateway.store import UpdateStore
@@ -174,7 +175,7 @@ class AppConfig:
             from config.settings import settings as shared
 
             db = db or shared
-            dsn = db.postgres_dsn
+            dsn = db.runtime_dsn
         secrets: list[str] = []
         if gateway is not None:
             secrets.append(gateway.bot_token.get_secret_value())
@@ -184,6 +185,8 @@ class AppConfig:
         secrets.extend(llm.canaries)
         if db is not None:
             secrets.append(db.postgres_password.get_secret_value())
+            if db.postgres_app_password is not None:
+                secrets.append(db.postgres_app_password.get_secret_value())
         data_key = os.environ.get(KEY_ENV_VAR)
         if data_key:
             secrets.append(data_key)
@@ -581,6 +584,10 @@ async def run_app(
     own_engine = engine is None
     eng = engine or build_engine(cfg.dsn, statement_timeout_s=cfg.app.db_statement_timeout_s)
     sf = build_session_factory(eng)
+    if own_engine:
+        from config.settings import settings as shared_db
+
+        await log_role_report(eng, expect_split=shared_db.app_role_split)
     be: Backends | None = None
     restore_signals: Callable[[], None] | None = None
     try:

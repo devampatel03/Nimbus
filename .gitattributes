@@ -1,0 +1,8 @@
+# Scripts and container files must keep LF even on Windows checkouts (core.autocrlf).
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.nft text eol=lf
+*.service text eol=lf
+deploy/** text eol=lf
+infra/docker/**/*.sh text eol=lf
+.dockerignore text eol=lf

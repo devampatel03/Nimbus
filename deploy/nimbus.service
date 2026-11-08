@@ -1,0 +1,22 @@
+# Copyright (c) Nimbus. All rights reserved.
+# Private, unpublished, proprietary. Do not distribute.
+# Starts the stack at boot and loads the egress ruleset once the docker bridge
+# exists (egress.md). UNRUN (H6). Installed by deploy/bootstrap-vm.sh.
+[Unit]
+Description=Nimbus (docker compose: postgres + app)
+Requires=docker.service
+After=docker.service network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/nimbus/current
+ExecStart=/usr/bin/docker compose --env-file /etc/nimbus/migrate.env -f docker-compose.yml --profile app up -d --wait
+ExecStartPost=/usr/sbin/nft -f /etc/nimbus-egress.nft
+ExecStop=/usr/bin/docker compose --env-file /etc/nimbus/migrate.env -f docker-compose.yml --profile app stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
