@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """T0.4 / T2.11: LoCoMo eval harness (docs/TECHNICAL_ARCHITECTURE.md's
 hybrid-retrieval ablation section references "LoCoMo 85% min";
@@ -34,7 +34,7 @@ correct, honest result to report, not a bug to work around:
   retrieval benchmark against it measures noise, not retrieval quality.
   AD-7 said explicitly: "replace before any MEM-7 eval run" -- this is
   that eval run, confronting exactly the debt it flagged.
-- Only the episodic (Qdrant) tier is exercised. LoCoMo's conversation
+- Only the episodic (pgvector `memory_chunk`) tier is exercised. LoCoMo's conversation
   turns are ingested as episodic chunks; there is no entity/relation
   extraction (T2.10, not built) to also populate the semantic graph tier,
   so `MemoryQuery.active_entities` is never populated and
@@ -51,12 +51,12 @@ correct, honest result to report, not a bug to work around:
   is still reported for transparency. This matches the task's requested
   breakdown of exactly single-hop/multi-hop/open-domain/temporal.
 - Each of the 10 LoCoMo samples is a separate conversation between a
-  different pair of speakers; `MemoryManager` has no per-session Qdrant
-  filter (AD-8, single-user design), so the shared "episodic_memory"
-  collection is dropped and recreated between samples to avoid one
-  sample's turns contaminating another's queries. The collection is also
-  dropped at the very end so this harness leaves no residue in the local
-  dev Qdrant instance for other tests to trip over.
+  different pair of speakers. `memory_chunk` is append-only (DELETE/TRUNCATE
+  are blocked by trigger, R7), so isolation is by a fresh scratch database
+  per sample (`nimbus_locomo_<random>`, schema from `Base.metadata.create_all`,
+  same DDL/triggers as the migration), dropped right after the sample. The
+  dev `nimbus` database is never touched. (H14: ported from Qdrant in P1.3b;
+  scoring, dataset, categories and thresholds are unchanged.)
 """
 
 import argparse
@@ -66,18 +66,22 @@ import sys
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
+from itertools import groupby
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import httpx
-from qdrant_client import AsyncQdrantClient
-from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from config.settings import settings
+from src.contracts.event import Event, EventKind
 from src.contracts.memory_query import MemoryQuery
-from src.memory.manager import EPISODIC_COLLECTION, EpisodicChunk, MemoryManager
+from src.memory.embedder import BatchEmbedder
+from src.memory.manager import ChunkIn, MemoryManager
+from src.memory.schemas import Base
 
 DATASET_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
 DEFAULT_CACHE_PATH = Path(__file__).parent / "data" / "locomo10.json"
@@ -133,18 +137,54 @@ def _iter_turns(conversation: dict) -> list[tuple[datetime, str, str]]:
     return turns
 
 
-async def _reset_episodic_collection(qdrant: AsyncQdrantClient) -> None:
-    if await qdrant.collection_exists(EPISODIC_COLLECTION):
-        await qdrant.delete_collection(EPISODIC_COLLECTION)
+def _scratch_dsn(db: str) -> str:
+    return settings.postgres_dsn.rsplit("/", 1)[0] + f"/{db}"
+
+
+async def _admin(sql: str) -> None:
+    engine = create_async_engine(
+        _scratch_dsn("postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool
+    )
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text(sql))
+    finally:
+        await engine.dispose()
+
+
+async def _create_scratch_engine() -> tuple[str, AsyncEngine]:
+    name = f"nimbus_locomo_{uuid.uuid4().hex[:10]}"
+    await _admin(f'CREATE DATABASE "{name}"')
+    engine = create_async_engine(_scratch_dsn(name), poolclass=NullPool)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.run_sync(Base.metadata.create_all)
+    return name, engine
+
+
+async def _drop_scratch(name: str, engine: AsyncEngine) -> None:
+    await engine.dispose()
+    await _admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
 async def _run_sample(manager: MemoryManager, sample: dict, top_k: int) -> dict[str, dict]:
-    session_id = uuid.uuid5(uuid.NAMESPACE_URL, sample["sample_id"])
-    chunks = [
-        EpisodicChunk(text=f"{speaker}: {text}", occurred_at=occurred_at)
-        for occurred_at, speaker, text in _iter_turns(sample["conversation"])
-    ]
-    await manager.write_episodic(session_id, chunks)
+    # P2.4: the store takes the caller's real event. One event per LoCoMo
+    # session (the provenance root, like a Recorder transcript); each turn is a
+    # chunk at its position, so the write is one embedding batch per session.
+    turns = _iter_turns(sample["conversation"])
+    for n, (occurred_at, group) in enumerate(groupby(turns, key=lambda t: t[0])):
+        event_id = await manager.record_event(
+            Event(
+                source_key=f"locomo:{sample['sample_id']}:{n}",
+                kind=EventKind.TEXT,
+                source="locomo",
+                lane="trusted",
+                occurred_at=occurred_at,
+            )
+        )
+        await manager.write_episodic(
+            event_id, [ChunkIn(text=f"{speaker}: {text}") for _, speaker, text in group]
+        )
 
     per_category: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
     for qa in sample["qa"]:
@@ -166,33 +206,27 @@ async def _run_sample(manager: MemoryManager, sample: dict, top_k: int) -> dict[
     return per_category
 
 
-async def run(max_samples: int | None = None, top_k: int = 5) -> dict[str, object]:
+async def run(
+    max_samples: int | None = None, top_k: int = 5, embedder: BatchEmbedder | None = None
+) -> dict[str, object]:
     dataset = load_dataset()
     if max_samples is not None:
         dataset = dataset[:max_samples]
 
-    engine = create_async_engine(settings.postgres_dsn)
-    qdrant = AsyncQdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
-
     totals: dict[str, dict] = defaultdict(lambda: {"correct": 0, "total": 0})
-    try:
-        await _reset_episodic_collection(qdrant)
-        async with engine.connect() as conn:
-            pg_session = AsyncSession(bind=conn, expire_on_commit=False)
-            manager = MemoryManager(pg_session=pg_session, qdrant=qdrant, redis=redis)
-
-            for sample in dataset:
+    for sample in dataset:
+        name, engine = await _create_scratch_engine()
+        try:
+            async with engine.connect() as conn:
+                pg_session = AsyncSession(bind=conn, expire_on_commit=False)
+                manager = MemoryManager(pg_session=pg_session, embedder=embedder)
                 per_category = await _run_sample(manager, sample, top_k)
-                for name, stats in per_category.items():
-                    totals[name]["correct"] += stats["correct"]
-                    totals[name]["total"] += stats["total"]
-                await _reset_episodic_collection(qdrant)
-    finally:
-        await _reset_episodic_collection(qdrant)
-        await engine.dispose()
-        await qdrant.close()
-        await redis.aclose()
+                await pg_session.close()
+            for cat, stats in per_category.items():
+                totals[cat]["correct"] += stats["correct"]
+                totals[cat]["total"] += stats["total"]
+        finally:
+            await _drop_scratch(name, engine)
 
     scored_correct = sum(totals[n]["correct"] for n in totals if n != "adversarial")
     scored_total = sum(totals[n]["total"] for n in totals if n != "adversarial")

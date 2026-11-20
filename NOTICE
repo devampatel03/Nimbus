@@ -1,9 +1,12 @@
+Nimbus
+Copyright 2026 Devam Patel
+
 Nimbus — Third-Party Notices
 =============================
 
-This project is private and unpublished (see LICENSE), but incorporates
-third-party software and model weights whose licences impose attribution
-obligations regardless of distribution status. This file satisfies those
+Nimbus is released under the Apache License, Version 2.0 (see LICENSE).
+It incorporates third-party software and model weights whose licences
+impose attribution obligations. This file satisfies those
 obligations and must be kept current — see T0.9 in CLAUDE.md and
 docs/PRD.md section 10.1.
 
@@ -71,18 +74,14 @@ Omi (client reference)
 SOFTWARE DEPENDENCIES (from pyproject.toml)
 -------------------------------------------------------------------------
 
-fastapi                 MIT License
-uvicorn                 BSD 3-Clause License
 sqlalchemy              MIT License
 asyncpg                 Apache License, Version 2.0
-redis                   MIT License
-qdrant-client           Apache License, Version 2.0
-langgraph               MIT License
 pydantic                MIT License
 pydantic-settings       MIT License
-arq                     MIT License
+cryptography            Apache-2.0 OR BSD-3-Clause (confirmed via installed package metadata)
 httpx                   BSD 3-Clause License
-apscheduler             MIT License
+openai                  Apache-2.0 (confirmed via installed package metadata)
+httpx2                  BSD-3-Clause (confirmed via installed package metadata; transitive of openai>=3)
 
 Development-only dependencies (not distributed with the product):
 

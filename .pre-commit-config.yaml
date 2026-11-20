@@ -14,14 +14,10 @@ repos:
           [
             "pydantic>=2.8",
             "pydantic-settings>=2.4",
-            "fastapi>=0.115",
             "sqlalchemy[asyncio]>=2.0",
-            "redis>=5.0",
-            "qdrant-client>=1.10",
-            "langgraph>=0.2",
-            "pyjwt>=2.8",
-            "sentence-transformers>=3.0",
-            "openai>=1.40",
+            "cryptography>=43",
+            "openai>=3,<4",
+            "httpx",
           ]
         args: [--strict]
         files: ^src/

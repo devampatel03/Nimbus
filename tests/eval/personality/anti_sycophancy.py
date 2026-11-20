@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """T0.4 / PSA-5: anti-sycophancy eval (docs/TECHNICAL_ARCHITECTURE.md 7.3).
 40 assertions (20 correct, 20 incorrect); target 60% max overall

@@ -1,0 +1,28 @@
+# 0023 - Canary tripwires: planted values, outbound blocking, alert, DB sweep
+
+- Status: Proposed (P4.4). Needs reviewer sign-off. Builds on ADR-0009 (policy), ADR-0010 (lanes), ADR-0004 (egress), ADR-0020 (approvals, `policy_audit`).
+
+## Context
+The model is assumed compromised by any text it reads (Brief §2, §8). A prompt injection can try to make it leak what it was shown: the system prompt, recalled memory, tool output. P1.4b left a follow-up for base64/spaced canary forms; P2.1b noted that model output was not canary-checked before Telegram or history. `LLM_CANARIES` existed, but it blocks values from reaching the model provider at all, so it cannot be planted in a prompt.
+
+## Decision
+1. New module `src/canary` (not `src/security`, which stays retired). One canary per plant site: system prompt, memory preamble, tool-output frame. Each value is 32 lowercase base32 characters from HMAC-SHA256(`CANARY_SEED`, "nimbus-canary-v1:<site>"), so values are stable per deployment and never in the repository. Without a seed, values are random per process and the sweep refuses to run.
+2. Planted canaries reach the model provider on purpose. They are tripwires, not credentials, and the provider already sees plaintext (Brief §8). Plant lines are built so the LLM scrubber does not block them (tested). They are redacted from the stored audit payload (`GuardedLLM(payload_redact=...)`).
+3. Outbound checks, all through one `CanaryGuard`:
+   - final model reply (`Orchestrator`): replaced by a fixed text, status `canary_blocked`, so the reply is not kept in history;
+   - tool name and arguments (`Dispatcher.dispatch` and `execute_approved`, before the policy): `deny.canary`, the tool never runs;
+   - every Telegram send, in the gateway's single outbound choke point (`TelegramGateway._outbound_chunks`, after P4.3; installed once with `set_outbound_screen`): the raw reply as a stream, then every chunk; a hit sends the fixed `CANARY_NOTICE`. Approval card text and keypad text are screened too (hit: `OutboundBlocked`, nothing sent). Callback toasts stay constants-only (P4.3 static test). A gateway without the hook (dev fakes) is wrapped in `CanaryGateway`;
+   - every `EgressClient.request` (`set_outbound_check`, installed once): path (not for Telegram, whose path holds the token), query and body; a hit raises `EgressDenied("canary_blocked")` before any I/O. The model provider uses `build_sdk_http_client` and is not covered;
+   - logs: canary values join the log scrubber's literals, and a matcher redacts any obfuscated form.
+4. Detection is deterministic: a skeleton form (Unicode tags, NFKD, case fold, Cyrillic/Greek look-alikes, non-alphanumerics dropped, leet digits folded), any 10-character run of a value (also reversed, every ROT-N of the value and of its reverse, and Atbash), plus decoded candidates two levels deep (HTML/percent/backslash escapes, base64/base64url also with whitespace removed, hex with separators, base32, decimal / octal / binary char codes). Telegram sends and tool-argument values are also checked as a stream: a 2048-character window catches a value cut over several items, contiguous (10 characters) or out of order (two different 6-character pieces). Fail closed: oversize or too-complex input, and detector errors, count as hits.
+5. A hit writes a `policy_audit` row (`event=canary_blocked`, `rule_id=deny.canary`, `reason=<sink>:<site>:<encoding>`; fixed codes, never the value or text) and raises an alert: a fixed-text Telegram notice to the allowlisted user through the unwrapped gateway, in the background, at most once per `CANARY_ALERT_COOLDOWN_S` (default 600 s); `CANARY_ALERT_TELEGRAM=false` turns the notice off. There is no switch for the check itself.
+6. Sweep (the INV-7 "canary sweep"): `python -m src.app canary-sweep` scans every text and JSON column in `Base.metadata` for canaries and literal process secrets and prints counts only (exit 0 clean, 1 found, 2 config error). Encrypted columns are skipped.
+
+## Consequences
+- Detection is a tripwire, not a boundary. Not detected: a cipher the model invents, pieces shorter than 6 characters, pieces more than the window apart, or pieces mixed with other text inside a contiguous run under 10 characters. Policy, approvals, taint and the egress allowlist remain the bounds.
+- Stream-window limits: the window is process-local and global (all Telegram sends and tool-argument values share it), holds the last 2048 skeleton characters only, is lost on restart, and is not cleared on a hit. So a canary is caught across items only while its pieces are within 2048 characters of each other; an attacker who spaces pieces further apart, sends them across a restart, or keeps each piece under 6 characters is not caught. Approval-card, keypad and egress checks are per item (no window).
+- The chance of a false hit on unrelated text is about 2e-7 per 4 KB message (fragment check; estimate, measured 0/1500) and 1e-7 per stream item (piece check). A false hit replaces one reply or denies one tool call and sends one alert.
+- The stream window keeps up to 2048 skeleton characters of recent outbound text in process memory (never logged). It is lost on restart.
+- New setting names `CANARY_SEED`, `CANARY_ALERT_TELEGRAM`, `CANARY_ALERT_COOLDOWN_S` need `.env.example` entries (orchestrator-owned file).
+- The sweep is a CLI only; scheduling it (weekly) is a follow-up. It cannot read encrypted columns (`llm_audit` payload, OAuth tokens).
+- `src/net/http.py` and `src/core/logging.py` gained optional hooks (`set_outbound_check`, `add_log_matchers`); both default to the previous behaviour when unused.

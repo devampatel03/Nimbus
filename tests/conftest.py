@@ -1,83 +1,162 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
-"""Shared fixtures for tests that need real Postgres/Qdrant/Redis instances
+"""Shared fixtures for tests that need real Postgres instance
 (per AGENT_OPERATING_MANUAL.md: measurements must use real dependencies, not
 mocks). Requires `docker compose up -d`.
-
-Also home to `FakeLLMClient` (this session): API-layer tests
-(`test_auth.py`/`test_chat.py`/`test_ws.py`) exercise `/chat` end-to-end
-through `src/orchestrator/graph.py`'s `think`/`respond`, which now call a
-real `LLMClient` by default -- this fake stands in so those tests stay
-hermetic (no real vLLM server needed), reusing the same keyword-heuristic
-tool-proposal logic `tests/unit/test_graph.py`'s own fake uses.
 """
 
+import asyncio
+import os
+import sys
+import time
+import uuid
 from collections.abc import AsyncIterator
 
+import asyncpg
 import pytest
-from qdrant_client import AsyncQdrantClient
-from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from config.settings import settings
-from src.llm.client import ChatMessage
 from src.memory.schemas import Base
+from tests._test_db import PREFIX, is_stale, is_valid_name, require_valid_name
 
-_CALENDAR_TRIGGERS = ("schedule", "meeting", "calendar event")
-_TASK_TRIGGERS = ("remind me", "add a task", "todo", "to-do")
+# --- Per-session throwaway database (INFRA-1) -------------------------------
+# Every pytest session gets its own database `nimbus_test_<epoch>_<pid>_<uuid8>`
+# and repoints the shared `settings.postgres_db` at it BEFORE any `src` module
+# that reads the DSN is imported (src/db/postgres.py builds its engine from the
+# DSN at import). Neither `src.llm.client` nor `src.memory.schemas`, imported
+# above, touches the DSN; test modules (collected afterwards) do.
+# Tests that derive scratch DB DSNs via `settings.postgres_dsn.rsplit("/", 1)`
+# therefore keep working unchanged. Concurrent sessions can no longer drop each
+# other's tables. Requires a Postgres role with CREATEDB.
+
+_ENV_VAR = "NIMBUS_TEST_SESSION_DB"
+_session_db: str | None = None
 
 
-class FakeLLMClient:
-    """`LLMClient` double: `structured` mirrors the earlier sessions'
-    keyword heuristic for `_ToolProposal`-shaped schemas (has a `tool`
-    field) and auto-approves `_LLMJudgment`-shaped schemas (has an
-    `approved` field); `complete` echoes any tool-results system note
-    it's given, else returns a fixed reply.
+_warnings: list[str] = []
+
+
+def _warn(msg: str) -> None:
+    # Output at conftest import is swallowed by pytest's early capture, so keep
+    # the message and print it in the terminal summary (and now, for late calls).
+    _warnings.append(msg)
+    print(f"WARNING: {msg}", file=sys.stderr)
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    for msg in _warnings:
+        terminalreporter.write_line(f"WARNING: {msg}", yellow=True)
+
+
+async def _admin_connect() -> asyncpg.Connection:
+    return await asyncpg.connect(
+        host=settings.postgres_host,
+        port=settings.postgres_port,
+        user=settings.postgres_user,
+        password=settings.postgres_password.get_secret_value(),
+        database="postgres",
+        timeout=10,
+    )
+
+
+async def _create_db(name: str) -> None:
+    require_valid_name(name)
+    conn = await _admin_connect()
+    try:
+        await conn.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await conn.close()
+
+
+async def _drop_db(name: str) -> None:
+    require_valid_name(name)
+    conn = await _admin_connect()
+    try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    finally:
+        await conn.close()
+
+
+async def _drop_stale() -> None:
+    """Best-effort: drop databases left by killed runs.
+
+    Candidates are selected with an escaped LIKE and then re-checked against the
+    strict name regex and the 6h age rule before any DDL. Caveat: a live session
+    older than 6h, or >6h of clock skew, can have its database dropped.
     """
+    conn = await _admin_connect()
+    try:
+        rows = await conn.fetch(
+            r"SELECT datname FROM pg_database WHERE datname LIKE $1 ESCAPE '\'",
+            PREFIX.replace("_", r"\_") + "%",
+        )
+        now = time.time()
+        for row in rows:
+            name = row["datname"]
+            if not is_stale(name, now):
+                continue
+            try:
+                await conn.execute(
+                    f'DROP DATABASE IF EXISTS "{require_valid_name(name)}" WITH (FORCE)'
+                )
+            except Exception as exc:  # noqa: BLE001
+                _warn(f"could not drop stale test database {name}: {type(exc).__name__}")
+    finally:
+        await conn.close()
 
-    async def structured(
-        self, messages: list[ChatMessage], *, schema: type, temperature: float = 0.0
-    ):
-        fields = schema.model_fields
-        if "approved" in fields:
-            return schema(approved=True, reason="fake: approved")
-        if "tool" not in fields:
-            return schema()
-        user_text = messages[-1]["content"].lower()
-        title = messages[-1]["content"].strip()[:80] or "untitled"
-        if any(trigger in user_text for trigger in _CALENDAR_TRIGGERS):
-            return schema(
-                tool="calendar", action="create", params={"title": title, "start": "", "end": ""}
-            )
-        if any(trigger in user_text for trigger in _TASK_TRIGGERS):
-            return schema(tool="tasks", action="create", params={"title": title})
-        return schema(tool=None, action=None, params={})
 
-    async def complete(
-        self,
-        messages: list[ChatMessage],
-        *,
-        temperature: float = 0.3,
-        max_tokens: int | None = None,
-    ) -> str:
-        tool_notes = [
-            m["content"]
-            for m in messages
-            if m["role"] == "system" and m["content"].startswith("Tool execution results")
-        ]
-        if tool_notes:
-            return f"Done. {tool_notes[0]}"
-        return "Got it."
+def _activate_session_db() -> None:
+    """Point `settings` at a throwaway DB; never fall back to the shared one.
 
-    def stream(
-        self,
-        messages: list[ChatMessage],
-        *,
-        temperature: float = 0.3,
-        max_tokens: int | None = None,
-    ):
-        raise NotImplementedError
+    Created lazily-in-spirit: if Postgres is unreachable we warn once and still
+    point at the (never created) name, so DB tests fail clearly while pure unit
+    tests keep running. xdist workers have a different pid than the controller,
+    so each creates (and drops) its own database.
+    """
+    global _session_db
+    if _session_db is not None:
+        return
+    # Some tests do `from tests.conftest import ...`, which imports this file a
+    # second time under another module name. Share state through the process
+    # environment so that copy reuses (and never creates/drops) the database.
+    existing = os.environ.get(_ENV_VAR, "")
+    if is_valid_name(existing) and f"_{os.getpid()}_" in existing:
+        settings.postgres_db = existing
+        return
+    name = f"{PREFIX}{int(time.time())}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    require_valid_name(name)
+    os.environ[_ENV_VAR] = name
+    settings.postgres_db = name
+    try:
+        asyncio.run(_create_db(name))
+    except Exception as exc:  # noqa: BLE001
+        _warn(
+            f"could not create throwaway test database {name} ({type(exc).__name__}); "
+            "DB-backed tests will fail, unit tests still run"
+        )
+        return
+    _session_db = name
+    try:
+        asyncio.run(_drop_stale())
+    except Exception as exc:  # noqa: BLE001
+        _warn(f"stale test-database cleanup skipped for {name}: {type(exc).__name__}")
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    global _session_db
+    if _session_db is None:
+        return
+    name, _session_db = _session_db, None
+    os.environ.pop(_ENV_VAR, None)
+    try:
+        asyncio.run(_drop_db(name))
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover
+        _warn(f"could not drop throwaway test database {name}: {type(exc).__name__}")
+
+
+_activate_session_db()
 
 
 @pytest.fixture(scope="session")
@@ -103,21 +182,3 @@ async def db_session(pg_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await outer_tx.rollback()
-
-
-@pytest.fixture
-async def qdrant_client() -> AsyncIterator[AsyncQdrantClient]:
-    client = AsyncQdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
-    yield client
-    for collection in (await client.get_collections()).collections:
-        await client.delete_collection(collection.name)
-    await client.close()
-
-
-@pytest.fixture
-async def redis_client() -> AsyncIterator[Redis]:
-    client: Redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    yield client
-    async for key in client.scan_iter(match="warm_context:*"):
-        await client.delete(key)
-    await client.aclose()

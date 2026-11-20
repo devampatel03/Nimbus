@@ -1,0 +1,11 @@
+{
+  "segments": [
+    {"text": "Let's push the review to Thursday.", "speaker_label": "Speaker 1", "start_ms": 1200, "end_ms": 3400, "confidence": 0.94},
+    {"text": "Works for me.", "speaker_label": "Speaker 2", "start_ms": 3600, "end_ms": 4100, "confidence": null},
+    {"text": "A voice note with no diarization.", "speaker_label": null, "start_ms": null, "end_ms": null, "confidence": null}
+  ],
+  "source_model": "recorder-export",
+  "language": "en",
+  "untrusted": true,
+  "created_at": "2026-10-26T09:20:00Z"
+}

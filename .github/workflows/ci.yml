@@ -2,50 +2,123 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, pivot]
   pull_request:
-    branches: [main]
+    branches: [main, pivot]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run ruff check src/ tests/
+      - run: uv run ruff check .
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run mypy src/
+      - run: uv run mypy src
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: nimbus
+          POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
+          POSTGRES_DB: nimbus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nimbus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: nimbus
+      POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
+      POSTGRES_DB: nimbus
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run pytest
+      - run: uv run pytest --ignore=tests/adversarial
+
+  redteam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Adversarial tests under tests/adversarial/memory exercise real Postgres (R8 promote binding).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: nimbus
+          POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
+          POSTGRES_DB: nimbus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nimbus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: nimbus
+      POSTGRES_PASSWORD: nimbus  # pragma: allowlist secret
+      POSTGRES_DB: nimbus
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - name: Red-team / adversarial suite
+        run: uv run pytest tests/adversarial -q
 
   secret-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run detect-secrets scan --baseline .secrets.baseline --fail-on-unaudited
+      - name: detect-secrets against baseline
+        run: |
+          git ls-files -z | xargs -0 uv run detect-secrets-hook --baseline .secrets.baseline
 
   sbom:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - run: uv sync --extra dev
       - run: uv pip install cyclonedx-bom
       - run: uv run cyclonedx-py environment -o sbom.json

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Decision journal (docs/EXECUTION_PLAN.md T5.2/T5.3): captures decisions
 with reasoning and a review horizon, plus the later retrospective outcome.
@@ -12,17 +12,23 @@ session's explicit instruction. `source_session` is non-null per INV-5.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.memory.schemas.base import Base
+from src.memory.schemas.provenance import CONFIDENCE_CHECK_SQL, lane_check, promotion_check
 
 _TZ = DateTime(timezone=True)
 
 
 class Decision(Base):
     __tablename__ = "decision"
+    __table_args__ = (
+        lane_check("decision"),
+        promotion_check("decision"),
+        CheckConstraint(CONFIDENCE_CHECK_SQL, name="ck_decision_confidence"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -36,3 +42,14 @@ class Decision(Base):
     review_at: Mapped[datetime] = mapped_column(_TZ, nullable=False)
     outcome: Mapped[str | None] = mapped_column(nullable=True)
     outcome_captured_at: Mapped[datetime | None] = mapped_column(_TZ, nullable=True)
+
+    # P1.2c provenance (R7/R8). Server defaults remain until the lane-default removal (task/P3.3b-lane-default); writers already pass `lane` explicitly.
+    source_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("event.id"), nullable=True
+    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
+    lane: Mapped[str] = mapped_column(nullable=False, server_default=text("'trusted'"))
+    promoted: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
+    promoted_approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("pending_action.id"), nullable=True
+    )

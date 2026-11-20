@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """INV-3 / T2.9: insert a fact, supersede it, and verify the old row is
 untouched (object columns, valid_from) while a new row exists carrying the
@@ -48,6 +48,7 @@ async def test_updating_a_fact_creates_supersession_not_mutation(db_session: Asy
         source_session=session_id,
         confidence=0.9,
         source_speaker=person_id,
+        lane="trusted",
     )
     original_object_literal = old_edge.object_literal
     original_valid_from = old_edge.valid_from
@@ -59,6 +60,7 @@ async def test_updating_a_fact_creates_supersession_not_mutation(db_session: Asy
         object_literal="Bengaluru",
         valid_from=now,
         confidence=0.95,
+        lane="trusted",
     )
 
     # Old row: object columns and valid_from untouched, but now closed out.
@@ -82,3 +84,36 @@ async def test_updating_a_fact_creates_supersession_not_mutation(db_session: Asy
     )
     rows = result.scalars().all()
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("old_lane", "new_lane"), [("trusted", "untrusted"), ("untrusted", "trusted")]
+)
+async def test_supersede_across_lanes_is_refused_and_changes_nothing(
+    db_session: AsyncSession, old_lane: str, new_lane: str
+) -> None:
+    from src.memory.graph import CrossLaneSupersedeError
+
+    session_id, subject_id, _ = await _make_session_and_nodes(db_session)
+    repo = GraphRepository(db_session)
+    old_edge = await repo.insert_fact(
+        subject_id=subject_id,
+        predicate="lives_in",
+        object_id=None,
+        object_literal="Mumbai",
+        valid_from=datetime.now(UTC),
+        source_session=session_id,
+        confidence=0.9,
+        lane=old_lane,  # type: ignore[arg-type]
+    )
+    with pytest.raises(CrossLaneSupersedeError):
+        await repo.supersede(
+            old_edge,
+            object_id=None,
+            object_literal="Delhi",
+            valid_from=datetime.now(UTC),
+            confidence=0.9,
+            lane=new_lane,  # type: ignore[arg-type]
+        )
+    assert old_edge.valid_to is None and old_edge.superseded_by is None

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Golden-fixture and field/type compatibility tests for src/contracts/.
 
@@ -19,13 +19,11 @@ import pytest
 from pydantic import BaseModel
 
 from src.contracts import (
-    DiarizedTranscript,
+    Event,
     MemoryQuery,
     MemoryResult,
     ProactiveCandidate,
-    SessionBundle,
-    ToolIntent,
-    ToolResult,
+    Transcript,
     UserProfileSlice,
 )
 
@@ -35,23 +33,22 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 # Recorded once at freeze time; a field removal or type change breaks the
 # corresponding assertion below.
 EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
-    SessionBundle: {
-        "session_id": "UUID",
-        "user_id": "UUID",
-        "mode": "Literal['mode_a', 'mode_b']",
-        "started_at": "datetime",
-        "ended_at": "datetime | None",
-        "audio_ref": "str",
-        "sample_rate_hz": "int",
-        "codec": "str",
-        "language_hint": "str | None",
-        "device_id": "str",
-        "client_app_version": "str",
+    Event: {
+        "source_key": "str",
+        "kind": "EventKind",
+        "source": "str",
+        "lane": "Literal['trusted', 'untrusted']",
+        "confidence": "float",
+        "body": "str | None",
+        "meta": "dict[str, Any]",
+        "file_unique_id": "str | None",
+        "occurred_at": "datetime",
     },
-    DiarizedTranscript: {
-        "session_id": "UUID",
-        "utterances": "list[Utterance]",
-        "source_asr_model": "str",
+    Transcript: {
+        "segments": "list[Segment]",
+        "source_model": "str",
+        "language": "str | None",
+        "untrusted": "bool",
         "created_at": "datetime",
     },
     MemoryQuery: {
@@ -60,6 +57,9 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "top_k": "int",
         "active_entities": "list[str]",
         "present_speakers": "list[UUID]",
+        "as_of": "datetime | None",
+        "known_at": "datetime | None",
+        "include_unpromoted": "bool",
     },
     MemoryResult: {
         "memory_id": "UUID",
@@ -70,6 +70,8 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "valid_from": "datetime",
         "valid_to": "datetime | None",
         "confidence": "float",
+        "lane": "Literal['trusted', 'untrusted']",
+        "untrusted": "bool",
     },
     UserProfileSlice: {
         "user_id": "UUID",
@@ -77,21 +79,6 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
         "active_stances": "list[StanceSummary]",
         "generated_at": "datetime",
         "version": "int",
-    },
-    ToolIntent: {
-        "tool": "str",
-        "action": "str",
-        "params": "dict[str, str | int | float | bool | None]",
-        "entity_refs": "dict[str, str]",
-        "risk_class": "RiskClass",
-    },
-    ToolResult: {
-        "tool": "str",
-        "action": "str",
-        "status": "str",
-        "result": "dict[str, str | int | float | bool | None]",
-        "entity_refs": "dict[str, str]",
-        "error_message": "str | None",
     },
     ProactiveCandidate: {
         "candidate_id": "UUID",
@@ -106,13 +93,11 @@ EXPECTED_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 }
 
 FIXTURE_FILES: dict[type[BaseModel], str] = {
-    SessionBundle: "session_bundle.json",
-    DiarizedTranscript: "diarized_transcript.json",
+    Event: "event.json",
+    Transcript: "transcript.json",
     MemoryQuery: "memory_query.json",
     MemoryResult: "memory_result.json",
     UserProfileSlice: "user_profile_slice.json",
-    ToolIntent: "tool_intent.json",
-    ToolResult: "tool_result.json",
     ProactiveCandidate: "proactive_candidate.json",
 }
 
@@ -155,3 +140,71 @@ def test_golden_fixture_validates(model: type[BaseModel]) -> None:
     instance = model.model_validate(data)
 
     assert model.model_validate(json.loads(instance.model_dump_json())) == instance
+
+
+def test_retired_contracts_are_gone() -> None:
+    """SessionBundle/DiarizedTranscript were retired by P2.2 (TARGET_DESIGN P2.2):
+    the phone-capture pipeline no longer exists; Event/Transcript replace them."""
+    import importlib
+
+    from src import contracts
+
+    for name in ("SessionBundle", "DiarizedTranscript", "Utterance", "ToolIntent", "ToolResult"):
+        assert not hasattr(contracts, name)
+    for mod in ("session_bundle", "diarized_transcript", "tool_intent"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"src.contracts.{mod}")
+
+
+# MED-4: golden fixtures for the Event variants (lane/tombstone semantics).
+EVENT_VARIANTS = [
+    ("event_voice.json", "trusted", False),
+    ("event_recorder.json", "untrusted", False),
+    ("event_transcript_tombstone.json", "untrusted", True),
+]
+
+
+@pytest.mark.parametrize(("fname", "lane", "tombstone"), EVENT_VARIANTS)
+def test_event_variant_fixtures(fname: str, lane: str, tombstone: bool) -> None:
+    data = json.loads((FIXTURES_DIR / fname).read_text())
+    ev = Event.model_validate(data)
+    assert Event.model_validate(json.loads(ev.model_dump_json())) == ev
+    assert ev.lane == lane
+    assert (ev.body is None and "rejected" in ev.meta) == tombstone
+
+
+def test_all_event_kinds_have_a_fixture() -> None:
+    kinds = {
+        Event.model_validate(json.loads((FIXTURES_DIR / f).read_text())).kind
+        for f in ("event.json", *(v[0] for v in EVENT_VARIANTS))
+    }
+    assert {"text", "voice", "recorder"} <= {k.value for k in kinds}
+
+
+def test_memory_result_untrusted_flag_cannot_disagree_with_lane() -> None:
+    """INV-6: callers render `untrusted` hits as DATA blocks; the flag must be
+    derived from the lane, never settable independently."""
+    base = json.loads((FIXTURES_DIR / "memory_result.json").read_text())
+    base.update(lane="untrusted", untrusted=False)
+    with pytest.raises(ValueError):
+        MemoryResult.model_validate(base)
+    base.update(lane="trusted", untrusted=True)
+    with pytest.raises(ValueError):
+        MemoryResult.model_validate(base)
+
+
+def test_memory_query_rejects_naive_datetimes() -> None:
+    base = json.loads((FIXTURES_DIR / "memory_query.json").read_text())
+    for key in ("as_of", "known_at"):
+        with pytest.raises(ValueError):
+            MemoryQuery.model_validate({**base, key: "2026-01-01T00:00:00"})
+
+
+def test_memory_query_defaults_are_safe() -> None:
+    """R8: unpromoted/untrusted-derived rows are excluded unless asked for."""
+    legacy = json.loads((FIXTURES_DIR / "memory_query.json").read_text())
+    for k in ("as_of", "known_at", "include_unpromoted"):
+        legacy.pop(k)  # pre-P2.4 payloads must keep parsing
+    q = MemoryQuery.model_validate(legacy)
+    assert q.include_unpromoted is False
+    assert q.as_of is None and q.known_at is None

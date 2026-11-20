@@ -1,0 +1,48 @@
+=== checkpoint 2026-10-24T19:58:29Z ===
+branch: pivot
+head:   f7a685d chore(state): P1.4a blocked on H14 (INV-1 allow-list); W1 has no ready task
+-- status (short) --
+ M .claude/.headroom_wrap_marker.json
+ M .claude/.headroom_wrap_owners.json
+ M .claude/logs/decisions.log
+ M .claude/settings.json
+ M .claude/settings.local.json
+ M .serena/project.yml
+ M docs/EXECUTION_PLAN.md
+?? docs/pivot/reports/CHECKPOINT_20261024T1958Z.md
+?? docs/pivot/reports/checkpoints.log
+-- worktrees --
+C:/DEVAM/MY_PROJECTS/Nimbus                                            f7a685d [pivot]
+C:/DEVAM/MY_PROJECTS/Nimbus/.claude/worktrees/agent-a0954704ef276bdbf  b44f6eb [task/P1.4a-net-egress]
+C:/DEVAM/MY_PROJECTS/Nimbus/.claude/worktrees/agent-a787ebf4cc4536c67  70924dc [task/P1.1-ci]
+C:/DEVAM/MY_PROJECTS/Nimbus/.claude/worktrees/agent-a946780529c706fb2  c0cba49 [task/P1.0-delete-dead-weight]
+C:/DEVAM/MY_PROJECTS/Nimbus/.claude/worktrees/agent-a96b8b43016e6694d  08da61d [task/P1.2a-pgvector-image]
+-- open PRs --
+-- STATE header --
+# PIVOT STATE (orchestrator-owned; commit on every checkpoint)
+
+```yaml
+status: RUNNING                # NOT_STARTED | RUNNING | BLOCKED | DONE
+wave: W1
+mode: balanced                 # economy | balanced | turbo
+concurrency_cap: 3
+integration_branch: pivot
+final_merge_to_main: human     # human | auto
+ci: github                     # github | local-only | unknown
+last_checkpoint_utc: null
+started_utc: 2026-10-24T15:16Z
+last_gate_numbers: {}
+```
+
+## Task table
+Refined by P0.5 from `reports/TARGET_DESIGN.md` §9 (file-ownership globs, `PROT`/`cf` flags and parallel batches live there; ADRs in `docs/decisions/`). `PROT` tasks edit protected `tests/eval/**` and wait on H14.
+
+| ID | Title | Agent | Deps | Status | Branch | PR | Notes |
+|----|-------|-------|------|--------|--------|----|-------|
+
+=== checkpoint 2026-10-28T05:44:00Z ===
+branch: pivot
+head:   0646cc3 chore(state): P3.0 and P3.4 merged with follow-ups
+open PRs: #30 task/P3.3-scheduler (round 1 CHANGES_REQUESTED, fix pass interrupted, unpushed local commit 9b7fc1b + uncommitted edits in C:/DEVAM/MY_PROJECTS/Nimbus-P3.3)
+next: finish P3.3, start P3.1 fresh, P3.2, tools; see reports/CHECKPOINT_20261028T0544Z.md
+

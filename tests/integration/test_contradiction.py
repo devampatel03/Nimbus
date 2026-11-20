@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """MEM-3: contradiction detection is a SQL predicate — same subject_id,
 same predicate, different object, overlapping valid-time.
@@ -41,6 +41,7 @@ async def test_overlapping_facts_with_different_objects_are_flagged(db_session: 
         valid_from=now - timedelta(days=1),
         source_session=session_id,
         confidence=0.9,
+        lane="trusted",
     )
     edge_b = await repo.insert_fact(
         subject_id=subject_id,
@@ -50,6 +51,7 @@ async def test_overlapping_facts_with_different_objects_are_flagged(db_session: 
         valid_from=now,
         source_session=session_id,
         confidence=0.85,
+        lane="trusted",
     )
 
     pairs = await repo.find_contradictions(subject_id, "works_at")
@@ -74,6 +76,7 @@ async def test_non_overlapping_facts_are_not_flagged(db_session: AsyncSession):
         valid_from=now - timedelta(days=30),
         source_session=session_id,
         confidence=0.9,
+        lane="trusted",
     )
     # Properly closed out before the new fact starts: no overlap.
     old_edge.valid_to = now - timedelta(days=1)
@@ -87,6 +90,7 @@ async def test_non_overlapping_facts_are_not_flagged(db_session: AsyncSession):
         valid_from=now,
         source_session=session_id,
         confidence=0.85,
+        lane="trusted",
     )
 
     pairs = await repo.find_contradictions(subject_id, "works_at")
@@ -107,6 +111,7 @@ async def test_same_object_is_not_a_contradiction(db_session: AsyncSession):
         valid_from=now - timedelta(days=1),
         source_session=session_id,
         confidence=0.9,
+        lane="trusted",
     )
     await repo.insert_fact(
         subject_id=subject_id,
@@ -116,6 +121,7 @@ async def test_same_object_is_not_a_contradiction(db_session: AsyncSession):
         valid_from=now,
         source_session=session_id,
         confidence=0.95,
+        lane="trusted",
     )
 
     pairs = await repo.find_contradictions(subject_id, "works_at")

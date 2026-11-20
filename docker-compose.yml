@@ -1,3 +1,14 @@
+# Production-shaped base (P4.5). `docker compose up -d` ALSO loads
+# docker-compose.override.yml (dev: loopback-published Postgres). On the VM use
+#   docker compose -f docker-compose.yml [--profile app] up -d
+# so the override is NOT applied. See docs/runbooks/egress.md.
+#
+# Networks:
+#   db      internal: true  -> no route off the host, no published ports possible.
+#                              Postgres lives ONLY here. It has no reason to egress.
+#   egress  normal bridge   -> only the app (profile "app") joins it; host nftables
+#                              (deploy/nftables/nimbus-egress.nft) filters it.
+# Secrets never live in this file: the app reads an env file outside the repo.
 services:
   postgres:
     build:
@@ -6,8 +17,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-nimbus}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nimbus}
       POSTGRES_DB: ${POSTGRES_DB:-nimbus}
-    ports:
-      - "5432:5432"
+    networks: [db]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,62 +26,27 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+  # STUB. P6.1 owns the Dockerfile, hardening (non-root, read-only FS, limits)
+  # and the final definition. Only the network wiring is fixed here. Not started
+  # by a plain `up` (profile), and `nimbus-app:local` does not exist yet.
+  app:
+    profiles: ["app"]
+    image: nimbus-app:local
+    env_file: /etc/nimbus/app.env # mode 0600, outside the repo (never baked in)
+    networks: [db, egress]
+    dns: [1.1.1.1, 9.9.9.9] # must match RESOLVERS in nimbus-egress.nft
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-  qdrant:
-    image: qdrant/qdrant:v1.11.4
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # Local LLM (vLLM, OpenAI-compatible server, this session). Requires an NVIDIA
-  # GPU with the nvidia-container-toolkit installed on the Docker host --
-  # see https://docs.vllm.ai/en/latest/deployment/docker.html. This repo's
-  # own dev machine (as configured when this service was added) has no
-  # CUDA GPU, only integrated graphics, so `docker compose up vllm` will
-  # not start here; documented for GPU-equipped hosts. Standalone
-  # equivalent, same effect without docker compose:
-  #   vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
-  # Production should override VLLM_MODEL to the bigger Qwen3.8-27B via
-  # `.env` (needs more VRAM than the Qwen2.5-7B dev default).
-  vllm:
-    image: vllm/vllm-openai:latest
-    command: ["--model", "${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}", "--port", "8000"]
-    ports:
-      - "8000:8000"
-    volumes:
-      - vllm_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: ["gpu"]
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/8000' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 120s
+networks:
+  db:
+    internal: true
+  egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: nimbus_egress # referenced by nftables
+    enable_ipv6: false
 
 volumes:
   postgres_data:
-  qdrant_data:
-  vllm_cache:

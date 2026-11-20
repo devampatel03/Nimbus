@@ -1,8 +1,8 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """MEM-1: integration test writing and retrieving across the working
-(Redis), episodic (Qdrant) and semantic (Postgres graph) tiers through
+episodic (pgvector) and semantic (Postgres graph) tiers through
 `MemoryManager`, per AGENT_OPERATING_MANUAL.md 3.3's "measure with real
 dependencies" rule.
 """
@@ -11,20 +11,18 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from qdrant_client import AsyncQdrantClient
-from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.contracts.memory_query import MemoryQuery
 from src.memory.manager import (
+    ChunkIn,
     DeterministicStubEmbedder,
-    EpisodicChunk,
     MemoryManager,
     SemanticFact,
-    SessionState,
 )
 from src.memory.schemas.graph import GraphNode
 from src.memory.schemas.session import Session
+from tests._memory_helpers import make_event
 
 
 async def _make_session_and_node(db_session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -39,21 +37,16 @@ async def _make_session_and_node(db_session: AsyncSession) -> tuple[uuid.UUID, u
 
 
 @pytest.mark.asyncio
-async def test_write_and_query_episodic_roundtrip(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
-) -> None:
-    session_id, _ = await _make_session_and_node(db_session)
+async def test_write_and_query_episodic_roundtrip(db_session: AsyncSession) -> None:
+    _session_id, _ = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
-        redis=redis_client,
         embedder=DeterministicStubEmbedder(),
     )
 
     chunk_text = "The client wants the launch moved to next Tuesday."
-    ids = await manager.write_episodic(
-        session_id, [EpisodicChunk(text=chunk_text, occurred_at=datetime.now(UTC))]
-    )
+    event_id = await manager.record_event(make_event("telegram:5"))
+    ids = await manager.write_episodic(event_id, [ChunkIn(text=chunk_text)])
     assert len(ids) == 1
 
     results = await manager.query(
@@ -61,20 +54,17 @@ async def test_write_and_query_episodic_roundtrip(
     )
     assert any(r.content == chunk_text for r in results)
     top = next(r for r in results if r.content == chunk_text)
-    assert top.source_session == session_id
+    assert top.source_session == event_id  # no session meta: the event is the session
+    assert (top.lane, top.untrusted) == ("trusted", False)
     assert top.provenance  # INV-5: non-null
     assert top.confidence == 1.0
 
 
 @pytest.mark.asyncio
-async def test_write_semantic_inserts_then_supersedes(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
-) -> None:
+async def test_write_semantic_inserts_then_supersedes(db_session: AsyncSession) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
-        redis=redis_client,
         embedder=DeterministicStubEmbedder(),
     )
     now = datetime.now(UTC)
@@ -88,6 +78,7 @@ async def test_write_semantic_inserts_then_supersedes(
                 valid_from=now,
                 source_session=session_id,
                 confidence=0.9,
+                lane="trusted",
             )
         ]
     )
@@ -103,6 +94,7 @@ async def test_write_semantic_inserts_then_supersedes(
                 valid_from=now,
                 source_session=session_id,
                 confidence=0.95,
+                lane="trusted",
             )
         ]
     )
@@ -119,14 +111,10 @@ async def test_write_semantic_inserts_then_supersedes(
 
 
 @pytest.mark.asyncio
-async def test_write_semantic_is_idempotent_for_an_unchanged_fact(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
-) -> None:
+async def test_write_semantic_is_idempotent_for_an_unchanged_fact(db_session: AsyncSession) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
-        redis=redis_client,
         embedder=DeterministicStubEmbedder(),
     )
     now = datetime.now(UTC)
@@ -137,6 +125,7 @@ async def test_write_semantic_is_idempotent_for_an_unchanged_fact(
         valid_from=now,
         source_session=session_id,
         confidence=0.9,
+        lane="trusted",
     )
 
     [edge_first] = await manager.write_semantic([fact])
@@ -148,13 +137,11 @@ async def test_write_semantic_is_idempotent_for_an_unchanged_fact(
 
 @pytest.mark.asyncio
 async def test_query_semantic_returns_graph_fact_for_active_entity(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
+    db_session: AsyncSession,
 ) -> None:
     session_id, node_id = await _make_session_and_node(db_session)
     manager = MemoryManager(
         pg_session=db_session,
-        qdrant=qdrant_client,
-        redis=redis_client,
         embedder=DeterministicStubEmbedder(),
     )
     now = datetime.now(UTC)
@@ -168,6 +155,7 @@ async def test_query_semantic_returns_graph_fact_for_active_entity(
                 valid_from=now,
                 source_session=session_id,
                 confidence=0.8,
+                lane="trusted",
             )
         ]
     )
@@ -182,32 +170,3 @@ async def test_query_semantic_returns_graph_fact_for_active_entity(
         ),
     )
     assert any("prefers" in r.content and "tea" in r.content for r in results)
-
-
-@pytest.mark.asyncio
-async def test_refresh_and_get_warm_context_roundtrip(
-    db_session: AsyncSession, qdrant_client: AsyncQdrantClient, redis_client: Redis
-) -> None:
-    session_id, _ = await _make_session_and_node(db_session)
-    manager = MemoryManager(
-        pg_session=db_session,
-        qdrant=qdrant_client,
-        redis=redis_client,
-        embedder=DeterministicStubEmbedder(),
-    )
-    text = "Reminder: renew the domain before it expires."
-    await manager.write_episodic(
-        session_id, [EpisodicChunk(text=text, occurred_at=datetime.now(UTC))]
-    )
-
-    assert await manager.get_warm_context(session_id) is None  # cache miss before refresh
-
-    state = SessionState(session_id=session_id, user_id=uuid.uuid4(), query_text=text, top_k=5)
-    warm_slice = await manager.refresh_warm_context(state)
-    assert warm_slice.session_id == session_id
-    assert any(r.content == text for r in warm_slice.results)
-
-    cached = await manager.get_warm_context(session_id)
-    assert cached is not None
-    assert cached.session_id == session_id
-    assert [r.content for r in cached.results] == [r.content for r in warm_slice.results]

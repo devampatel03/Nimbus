@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 import asyncio
 from logging.config import fileConfig
@@ -9,6 +9,8 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import src.personality.agent_character
+import src.personality.user_profile  # noqa: F401  (registers user_trait, trait_evidence)
 from config.settings import settings
 from src.memory.schemas import Base
 
@@ -19,13 +21,20 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: otherwise running migrations in-process
+    # (e.g. from tests) silently disables every already-created app logger.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # `src.memory.schemas` imports every model module so Base.metadata is
 # complete (graph_node, graph_edge, session, commitment, decision, person).
 target_metadata = Base.metadata
 
-config.set_main_option("sqlalchemy.url", settings.postgres_dsn)
+# Default to the app DSN, but respect a URL already set programmatically
+# (tests point this at a scratch database). The alembic.ini placeholder
+# ("driver://...") counts as unset.
+_existing_url = config.get_main_option("sqlalchemy.url") or ""
+if _existing_url.startswith("driver://") or not _existing_url:
+    config.set_main_option("sqlalchemy.url", settings.postgres_dsn)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """T4.1: a new tool file dropped into `src/tools/integrations/` is
 discovered without editing any registration code. Proven by copying the
@@ -17,20 +17,18 @@ from pathlib import Path
 from src.tools.registry import ToolRegistry
 
 _WIDGET_TOOL_SOURCE = """
-from typing import ClassVar
-
-from src.contracts.tool_intent import Primitive, RiskClass, ToolResult
-from src.tools.base import BaseTool
+from src.orchestrator.dispatch import LoopTool, Risk, ToolOutput
+from src.tools.base import FunctionTool, ToolGroup, object_schema
 
 
-class WidgetTool(BaseTool):
+class WidgetTool(ToolGroup):
     name = "widget"
-    description = "test-only tool for discovery verification"
-    risk_class = RiskClass.READ
-    schema: ClassVar[dict[str, dict[str, type]]] = {"list": {}}
 
-    async def run(self, action: str, params: dict, *, session_id: str) -> ToolResult:
-        return ToolResult(tool=self.name, action=action, status="success", result={}, entity_refs={})
+    async def _ping(self, args):
+        return ToolOutput("pong")
+
+    def tools(self) -> list[LoopTool]:
+        return [FunctionTool("widget_ping", "test-only", Risk.READ, object_schema({}), self._ping)]
 """
 
 
@@ -44,21 +42,23 @@ def test_new_tool_discovered_without_editing_registration_code(tmp_path, monkeyp
         package = importlib.import_module(pkg_name)
         registry = ToolRegistry(package=package)
 
-        assert {"calendar", "tasks"} <= set(registry.names())
+        assert {"tasks", "reminders", "calendar"} <= set(registry.names())
         assert "widget" not in registry.names()
 
         (pkg_dir / "widget.py").write_text(_WIDGET_TOOL_SOURCE, encoding="utf-8")
         registry.refresh(package=package)
 
         assert "widget" in registry.names()
-        widget = registry.get("widget")
-        assert widget.name == "widget"
+        assert registry.get("widget").name == "widget"
+        assert "widget_ping" in {t.spec.name for t in registry.loop_tools()}
     finally:
         for name in list(sys.modules):
             if name == pkg_name or name.startswith(pkg_name + "."):
                 del sys.modules[name]
 
 
-def test_real_integrations_package_discovers_calendar_and_tasks() -> None:
+def test_real_integrations_package_discovers_the_known_groups() -> None:
+    # P1.4c (M9): the calendar/gmail/drive intent builders are deleted; Google
+    # tools return as real integrations in P3.x.
     registry = ToolRegistry()
-    assert set(registry.names()) == {"calendar", "tasks", "gmail", "drive", "reminders"}
+    assert set(registry.names()) == {"tasks", "reminders", "drive", "calendar", "notion"}

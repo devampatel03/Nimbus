@@ -1,8 +1,4 @@
--- Copyright (c) Nimbus. All rights reserved.
--- Private, unpublished, proprietary. Do not distribute.
+-- Copyright 2026 Devam Patel
+-- Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
-CREATE EXTENSION IF NOT EXISTS age;
 CREATE EXTENSION IF NOT EXISTS vector;
-
-LOAD 'age';
-SET search_path = ag_catalog, "$user", public;

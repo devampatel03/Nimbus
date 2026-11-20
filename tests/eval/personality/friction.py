@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """T3.6 / T0.4: friction-mandate eval (docs/TECHNICAL_ARCHITECTURE.md 7.2,
 PSA-4-style "friction mandate"). 20 conflict scenarios; target 80% min
