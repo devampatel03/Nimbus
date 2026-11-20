@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R13 (P3.7, ADR-0021): exactly four Notion calls are reachable (search, one
 page's properties, a block's children read and append). Everything else is

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Raw Bot API update -> `Parsed` verdict. Pure and total: any shape of
 hostile JSON yields a verdict (or None when there is no usable `update_id`),

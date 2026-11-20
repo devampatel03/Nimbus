@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.4 canary values, plant lines and settings: high-entropy, per site,
 hidden from repr and validation errors, and never blocked by the LLM scrubber

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """M5: reminder and task creation is idempotent per turn. The stored event's id
 (code-derived, via `turn_event`) is stamped as `source_event_id`; replaying the

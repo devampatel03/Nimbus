@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """`run_app` wiring (P3.0 MED-1, H25/H26): the orchestrator always gets the
 quarantine lane with the configured per-turn budget, and the enabled scopes

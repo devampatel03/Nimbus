@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.6 migration e5b1c7a3d902: promotion guard triggers, reversible, one head,
 and the frozen function body matches the ORM-side copy."""

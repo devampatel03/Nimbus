@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.0 `src.lanes.data`: `UntrustedText` is opaque (no way to a `str`
 outside `src.lanes`), `DataBlock` has no public constructor, and the rendering

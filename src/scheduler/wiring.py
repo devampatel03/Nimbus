@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Assembles the scheduler for the app process (P3.3): one `JobQueue`, the job
 handlers by kind, the `JobRunner` the worker loop drives, the `Scheduler` tick,

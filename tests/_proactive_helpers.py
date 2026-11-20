@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Shared fakes and the `Rig` for the P5.1 proactive tests (integration and
 adversarial): recording gateway, scripted calendar, review queue, ledger harness."""

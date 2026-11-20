@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Postgres job queue and runner (P3.3, ADR-0008): SKIP LOCKED claims, leases,
 retries with backoff, dead letter, idempotency, crash recovery, graceful cancel.

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """INV-6: untrusted text enters the trusted lane only as schema-validated,
 delimited DATA (Brief section 4, ADR-0010, TARGET_DESIGN section 5). P3.0.

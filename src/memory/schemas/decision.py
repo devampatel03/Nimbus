@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Decision journal (docs/EXECUTION_PLAN.md T5.2/T5.3): captures decisions
 with reasoning and a review horizon, plus the later retrospective outcome.

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Commitment ledger (docs/EXECUTION_PLAN.md T4.8/T4.9): tracks commitments
 extracted from sessions, their status and closure.

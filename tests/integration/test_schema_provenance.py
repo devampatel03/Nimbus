@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """provenance_coverage (threshold memory.provenance_coverage = 1.0): rows
 created through every row-creating path leave NO NULL provenance. Paths

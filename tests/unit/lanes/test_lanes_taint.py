@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.0 taint (ADR-0010 item 5): a per-turn flag, set by code whenever
 untrusted-derived data enters the trusted turn, monotonic (no way to clear it

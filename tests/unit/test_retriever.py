@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Ablation test for the hybrid retrieval scoring function (MEM-6):
 docs/AGENT_OPERATING_MANUAL.md 3.3 requires "retrieval ablation run: every

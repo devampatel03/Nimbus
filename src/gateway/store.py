@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Postgres persistence for the poll offset and inbound updates, using the
 P1.2c tables `inbound_update` (UNIQUE update_id) and `system_flag`

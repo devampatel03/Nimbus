@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Google OAuth for Nimbus: one-time loopback consent flow, encrypted refresh
 token store, and access-token refresh (P3.4; ADR-0005, ADR-0007, ADR-0004,

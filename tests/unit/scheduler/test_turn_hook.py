@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Post-turn hook (TARGET_DESIGN 4.1 step 7): a trusted user text turn enqueues
 memory extraction for ITS event; nothing else does; a failing hook never breaks

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Scheduler integration fixtures: a scratch database per module (real
 Postgres, ORM-created tables), a session factory, and a clean job/reminder/task

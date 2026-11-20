@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """OpenAI-compatible `Provider` (ADR-0003/0004). The ONLY module that imports
 an LLM SDK (`openai`); the import-lint test enforces that.

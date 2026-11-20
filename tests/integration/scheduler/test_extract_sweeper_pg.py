@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """The scheduler tick that backstops the post-turn enqueue: every trusted user
 text/voice-transcript event gets exactly one `memory_extract` job, including the

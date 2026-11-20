@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Back-compat `VLLMClient` shim (was tests/unit/test_llm_client.py): the
 legacy complete / stream / structured API now runs over `GuardedLLM`."""

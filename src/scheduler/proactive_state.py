@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Proactive-message bookkeeping (P5.1, ADR-0011): the daily interruption budget,
 per-key dedupe and the user's mute, in ONE `system_flag` row updated under a row

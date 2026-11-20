@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Shared helpers for the P3.9 commitment-ledger tests (real Postgres, real
 approval flow; only Telegram, the clock and the model are fakes)."""

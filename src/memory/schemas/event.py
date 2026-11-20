@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """`event` (P1.2c, TARGET_DESIGN §2/§6): the provenance root. Every derived
 row (memory_chunk, graph_edge, commitment, decision) points at the event it

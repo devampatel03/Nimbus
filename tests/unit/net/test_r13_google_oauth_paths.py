@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R13/R6 (P3.4, ADR-0019): `oauth2.googleapis.com` is reachable only for
 `POST /token` and `POST /revoke`; the Gmail send/import/insert deny rules keep

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R5: GuardedLLM and the API embedder spend against ONE `CallAccountant`
 (P2.3 open MED), and the app wiring uses the shared one."""

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P1.3b/P2.4: pgvector-backed episodic `MemoryStore` over `memory_chunk`
 (real Postgres; schema via `Base.metadata.create_all`, same DDL/triggers as

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P5.1 proactive jobs on real Postgres with a fake clock (R11, ADR-0011,
 ADR-0008): templates only (no model call), budget <= 6/day across kinds, quiet

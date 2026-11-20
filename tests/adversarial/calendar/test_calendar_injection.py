@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Adversarial (P3.5, INV-6, INV-5): a calendar invite whose title, description
 and event id carry prompt injection must not produce any write, and neither the

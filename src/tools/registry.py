@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Tool registry: auto-discovers `ToolGroup` subclasses under
 `src/tools/integrations/` (T4.1 acceptance: "new tool discovered without

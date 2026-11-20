@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Proactive jobs (P5.1; R11, ADR-0011, ADR-0008): morning brief, evening
 check-in, commitment nudges, weekly review.

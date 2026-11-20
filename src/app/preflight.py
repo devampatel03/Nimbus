@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """`python -m src.app preflight [--online]`: a PASS/WARN/FAIL checklist for a
 first local run. Exit 0 when nothing FAILed, 1 otherwise.

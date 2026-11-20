@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Fake Telegram HTTP boundary for gateway tests: an `httpx` transport double
 mounted under the real `EgressClient`, so the real allowlist/guard still run.

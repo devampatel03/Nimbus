@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """`python -m src.app` as a real child process, against the in-process fakes
 (`APP_FAKE_BACKENDS`): no token, no network. Proves the acceptance criteria:

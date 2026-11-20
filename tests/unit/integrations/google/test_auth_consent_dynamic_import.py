@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R3 follow-up (P3.4): the consent-isolation scan in
 `test_auth_consent_isolation.py` sees only `import` statements. This closes the

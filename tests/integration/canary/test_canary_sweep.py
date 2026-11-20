@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.4 database canary sweep against real Postgres (isolated schema): finds a
 plain, a base64 and a JSON-nested canary and a literal secret, reports counts

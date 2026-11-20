@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.3-enable migration b2f6d4a8c1e7: the create-dedupe indexes compare titles
 case-insensitively; reversible (up/down/up), single head, and the upgrade

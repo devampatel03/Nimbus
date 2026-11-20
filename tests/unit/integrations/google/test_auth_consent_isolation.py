@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R3: the consent flow (the only code that opens a listening socket) is not
 reachable from the bot. `src/integrations/google/consent.py` is imported only

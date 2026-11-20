@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Person model with voice-print store (docs/TECHNICAL_ARCHITECTURE.md
 section 5.3, speaker enrollment). `graph_edge.source_speaker` and

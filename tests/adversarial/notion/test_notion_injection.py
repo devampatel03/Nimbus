@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Adversarial (P3.7, INV-5, INV-6, R13): a Notion page whose title, body and
 properties carry prompt injection must not produce a write or a permission, and

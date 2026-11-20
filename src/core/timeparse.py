@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Time resolution in Asia/Kolkata (ADR-0008, P3.3): storage is UTC, parsing and
 rendering are IST. India has no DST, so every local time maps to exactly one

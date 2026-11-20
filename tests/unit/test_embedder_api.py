@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """API embeddings fallback: same Embedder interface, behind the R4 guard path.
 Wire tests use the real adapter on a mock transport (no network)."""

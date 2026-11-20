@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Episodic `MemoryStore` (P1.3b, P2.4; ADR-0001, ADR-0017, TARGET_DESIGN
 section 3): a Protocol plus the pgvector implementation over `memory_chunk`.
