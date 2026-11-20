@@ -126,3 +126,30 @@ jobs:
         with:
           name: sbom
           path: sbom.json
+
+  # P6.1: build-only (never pushed) arm64 image under QEMU, plus shellcheck of the
+  # deploy scripts. Independent of the test jobs; a slow QEMU build never gates them.
+  image-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck deploy/*.sh infra/docker/postgres/*.sh
+

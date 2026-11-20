@@ -55,6 +55,49 @@ END
 $fn$
 """
 
+# P6.1 (ADR-0026): every guard function reads tables unqualified, and a role with
+# TEMP privilege could shadow them with a same-named pg_temp table (pg_temp is
+# searched first unless listed). The functions are therefore pinned to the schema
+# they were created in plus pg_temp LAST. Run after each CREATE FUNCTION.
+GUARD_FUNCTIONS: tuple[str, ...] = (
+    "nimbus_append_only()",
+    "nimbus_single_use_guard()",
+    "nimbus_no_truncate()",
+    "nimbus_promotion_guard()",
+    "nimbus_ledger_guard()",
+    "nimbus_pending_birth_guard()",
+)
+
+
+def pin_search_path_sql(fn: str) -> str:
+    assert fn in GUARD_FUNCTIONS, fn
+    return (
+        "DO $pin$ BEGIN EXECUTE format("
+        f"'ALTER FUNCTION {fn} SET search_path = %I, pg_temp', current_schema()); END $pin$"
+    )
+
+
+# A pending_action is BORN pending and unconsumed; consumption is an UPDATE that
+# nimbus_single_use_guard governs. Without this, an INSERT of a ready-made
+# 'consumed' row would forge the approval that promotion/ledger guards trust.
+PENDING_BIRTH_FN_SQL = """
+CREATE OR REPLACE FUNCTION nimbus_pending_birth_guard() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.status <> 'pending' OR NEW.consumed_at IS NOT NULL THEN
+        RAISE EXCEPTION 'pending_action must be created pending and unconsumed (INV-5, R8)'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END
+$fn$
+"""
+
+PENDING_BIRTH_TRIGGER_SQL = (
+    "CREATE TRIGGER trg_pending_action_birth BEFORE INSERT ON pending_action "
+    "FOR EACH ROW EXECUTE FUNCTION nimbus_pending_birth_guard()"
+)
+
 PROMOTION_GUARD_FN_SQL = """
 CREATE OR REPLACE FUNCTION nimbus_promotion_guard() RETURNS trigger
 LANGUAGE plpgsql AS $fn$
@@ -202,6 +245,10 @@ def install_orm_ddl(metadata: MetaData) -> None:
     event.listen(metadata, "before_create", _ddl(SINGLE_USE_FN_SQL))
     event.listen(metadata, "before_create", _ddl(NO_TRUNCATE_FN_SQL))
     event.listen(metadata, "before_create", _ddl(PROMOTION_GUARD_FN_SQL))
+    event.listen(metadata, "before_create", _ddl(PENDING_BIRTH_FN_SQL))
+    for fn in GUARD_FUNCTIONS:
+        if fn != "nimbus_ledger_guard()":  # created after its table, see ledger.py
+            event.listen(metadata, "before_create", _ddl(pin_search_path_sql(fn)))
 
 
 def attach_table_triggers(table: Table) -> None:
@@ -212,3 +259,4 @@ def attach_table_triggers(table: Table) -> None:
         event.listen(table, "after_create", _ddl(promotion_guard_trigger_sql(table.name)))
     if table.name == "pending_action":
         event.listen(table, "after_create", _ddl(SINGLE_USE_TRIGGER_SQL))
+        event.listen(table, "after_create", _ddl(PENDING_BIRTH_TRIGGER_SQL))

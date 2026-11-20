@@ -1,7 +1,8 @@
 # Production-shaped base (P4.5). `docker compose up -d` ALSO loads
 # docker-compose.override.yml (dev: loopback-published Postgres). On the VM use
-#   docker compose -f docker-compose.yml [--profile app] up -d
-# so the override is NOT applied. See docs/runbooks/egress.md.
+#   docker compose --env-file /etc/nimbus/migrate.env -f docker-compose.yml [--profile app] up -d
+# so the override is NOT applied (the env file only feeds ${...} interpolation
+# for the postgres service; it is not passed to the app container). See DEPLOY.md. See docs/runbooks/egress.md.
 #
 # Networks:
 #   db      internal: true  -> no route off the host, no published ports possible.
@@ -17,7 +18,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-nimbus}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nimbus}
       POSTGRES_DB: ${POSTGRES_DB:-nimbus}
+      # Fresh-volume init creates the least-privilege role (init script 20-app-role.sh).
+      # Empty password = skipped (dev); `db-bootstrap` creates it later anyway.
+      NIMBUS_APP_ROLE: ${POSTGRES_APP_USER:-nimbus_app}
+      NIMBUS_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-}
     networks: [db]
+    restart: unless-stopped
+    mem_limit: 4g
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,18 +33,58 @@ services:
       timeout: 5s
       retries: 10
 
-  # STUB. P6.1 owns the Dockerfile, hardening (non-root, read-only FS, limits)
-  # and the final definition. Only the network wiring is fixed here. Not started
-  # by a plain `up` (profile), and `nimbus-app:local` does not exist yet.
+  # App image (P6.1, ADR-0026). Profile "app": a plain `up` never starts it.
+  # Runs as the least-privilege DB role from /etc/nimbus/app.env, which holds NO
+  # owner (migration) credentials. Hardening: non-root uid 10001, read-only root
+  # FS (heartbeat on a private tmpfs), no capabilities, no new privileges.
+  # Limits assume the 2 OCPU / 12 GB A1 shape (H6: verify the real shape).
   app:
     profiles: ["app"]
     image: nimbus-app:local
+    build:
+      context: .
+      dockerfile: Dockerfile
     env_file: /etc/nimbus/app.env # mode 0600, outside the repo (never baked in)
     networks: [db, egress]
     dns: [1.1.1.1, 9.9.9.9] # must match RESOLVERS in nimbus-egress.nft
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s # > APP_SHUTDOWN_GRACE_S (10s) so loops drain before SIGKILL
+    init: true
+    read_only: true
+    tmpfs:
+      - /run/nimbus:uid=10001,gid=10001,mode=0700,size=1m
+      - /tmp:mode=1777,size=64m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 1.5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  # One-shot owner tasks: `alembic upgrade head`, then `db-bootstrap` (grants for
+  # the app role). Needs the OWNER credentials, so it reads a separate file; it
+  # joins only the internal db network (no internet).
+  #   docker compose -f docker-compose.yml --profile ops run --rm migrate
+  migrate:
+    profiles: ["ops"]
+    image: nimbus-app:local
+    env_file: /etc/nimbus/migrate.env # mode 0600: owner + app role credentials
+    entrypoint: ["sh", "-c", "alembic upgrade head && python -m src.app db-bootstrap"]
+    networks: [db]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=16m,noexec,nosuid,nodev"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
 
 networks:
   db:

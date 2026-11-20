@@ -37,6 +37,32 @@ def healthcheck(path: Path | None = None, stale_s: float | None = None) -> int:
     return 0 if report.ok else 1
 
 
+async def db_bootstrap() -> int:
+    """Run as the OWNER after `alembic upgrade head` (exit 0 ok, 2 config/db error).
+    Creates the app role if missing, sets its password, re-applies exact grants."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from config.settings import settings
+    from src.db.roles import apply_app_grants, create_role
+
+    if not settings.app_role_split or settings.postgres_app_password is None:
+        print("db-bootstrap: POSTGRES_APP_USER and POSTGRES_APP_PASSWORD are required")
+        return 2
+    role = str(settings.postgres_app_user)
+    engine = create_async_engine(settings.postgres_dsn, hide_parameters=True)
+    try:
+        async with engine.begin() as conn:
+            await create_role(conn, role, settings.postgres_app_password.get_secret_value())
+            await apply_app_grants(conn, role, database=settings.postgres_db)
+    except Exception as exc:  # noqa: BLE001 - type name only: statements can hold the password
+        print(f"db-bootstrap failed: {type(exc).__name__}")
+        return 2
+    finally:
+        await engine.dispose()
+    print(f"db-bootstrap ok: role {role} grants applied")
+    return 0
+
+
 def run() -> int:
     from src.app.runtime import AppConfig, describe_validation_error, run_app
 
@@ -68,6 +94,10 @@ def main(argv: Sequence[str]) -> int:
         "--online", action="store_true", help="one Telegram getMe and one tiny model call"
     )
     sub.add_parser("canary-sweep", help="scan the database for canaries and secrets (P4.4)")
+    sub.add_parser(
+        "db-bootstrap",
+        help="owner role only: create/refresh the least-privilege app role grants (ADR-0026)",
+    )
     args = parser.parse_args(list(argv))
     if args.cmd == "healthcheck":
         return healthcheck(args.heartbeat_path, args.stale_s)
@@ -79,4 +109,6 @@ def main(argv: Sequence[str]) -> int:
         from src.app.sweep import canary_sweep
 
         return asyncio.run(canary_sweep())
+    if args.cmd == "db-bootstrap":
+        return asyncio.run(db_bootstrap())
     return run()

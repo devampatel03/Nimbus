@@ -58,8 +58,10 @@ def _indexes(dsn: str) -> set[str]:
 
 
 def test_single_head_is_the_new_revision(dsn: str) -> None:
-    heads = ScriptDirectory.from_config(_cfg(dsn)).get_heads()
-    assert heads == [REV]
+    script = ScriptDirectory.from_config(_cfg(dsn))
+    assert len(script.get_heads()) == 1  # later revisions chain on top (P6.1)
+    rev = script.get_revision(REV)
+    assert rev is not None and rev.down_revision == PREV
 
 
 def test_up_down_up(dsn: str) -> None:

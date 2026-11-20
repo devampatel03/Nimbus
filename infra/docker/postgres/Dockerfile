@@ -6,3 +6,4 @@
 FROM pgvector/pgvector:pg16
 
 COPY init.sql /docker-entrypoint-initdb.d/10-init.sql
+COPY 20-app-role.sh /docker-entrypoint-initdb.d/20-app-role.sh

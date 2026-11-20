@@ -28,10 +28,32 @@ class Settings(BaseSettings):
     postgres_password: SecretStr = Field(default=SecretStr("nimbus"))
     postgres_db: str = "nimbus"
 
+    # P6.1 (INV-3/R7): optional least-privilege runtime role. Unset = the app runs
+    # as `postgres_user` (the owner/migration role) exactly as before, with a
+    # startup WARNING. Both set = the app connects as this role. Migrations and
+    # `db-bootstrap` always use `postgres_dsn` (the owner).
+    postgres_app_user: str | None = None
+    postgres_app_password: SecretStr | None = None
+
     @property
     def postgres_dsn(self) -> str:
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password.get_secret_value()}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def app_role_split(self) -> bool:
+        return bool(self.postgres_app_user) and self.postgres_app_password is not None
+
+    @property
+    def runtime_dsn(self) -> str:
+        """DSN for the running app: the least-privilege role when configured."""
+        if not self.app_role_split or self.postgres_app_password is None:
+            return self.postgres_dsn
+        return (
+            f"postgresql+asyncpg://{self.postgres_app_user}:"
+            f"{self.postgres_app_password.get_secret_value()}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

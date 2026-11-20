@@ -52,7 +52,7 @@ Task table: `docs/pivot/STATE.md`.
 - **R8 (untrusted memory never auto-promoted):** chunk promotion needs a consumed approval (migration `c4e8a1d92b37`). Confirmed commitments need a consumed `commitment`/`confirm` approval (trigger `nimbus_ledger_guard`, ADR-0022). Graph-edge promotion: same rule (trigger `nimbus_promotion_guard`, ADR-0024).
 - **R12 (no secrets in logs):** met at the entrypoint: `src/app/runtime.py` calls `install_log_scrubbing(cfg.secrets)` before anything else logs (P2.1b).
 - **Known violations, with severity:**
-  - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. Fix: non-superuser app role. Waiver needed before any live run with production credentials.
+  - **HIGH, until P6.1/P6.2 (INV-3, R7):** the app DB role `nimbus` is a superuser and can disable the append-only triggers. **Mitigated (P6.1, ADR-0026) once `POSTGRES_APP_USER/PASSWORD` are set** (runtime uses non-owner `nimbus_app`; `db-bootstrap` grants; real-Postgres tests). With one DSN it still applies and the app logs a WARNING. Confirm the startup line before a live run.
   - **Open, staging-blocking (WAVE_W3 §5):** projected cost over `cost.projected_monthly_inr_max` 1500 at placeholder prices (WAVE_W3 §5; H3).
   - **Open, not HIGH (WAVE_W2 §5):** spend cap default 50 INR, max 100 (ADR-0025 Proposed); `*` price is a placeholder; no alert hook; kill switch is a `system_flag` row, no `/panic`. Before any staging run with a real key: real model price (`LLM_PRICE_*`).
 
