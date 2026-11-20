@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P1.2c pivot schema, tested on a MIGRATED scratch database (real Postgres):
 catalog assertions (CHECK/UNIQUE/vector/HNSW, which compare_metadata ignores),

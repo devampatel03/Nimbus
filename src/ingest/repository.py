@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Event persistence via the P1.2c `event` ORM. Idempotent on `source_key`
 (UNIQUE): `INSERT .. ON CONFLICT DO NOTHING`, so a redelivered update (or a

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.9 review follow-ups (MED-1/2/3, LOW-2) on real Postgres: Reject and expiry
 are recorded or re-asked, commitment cards have their own cap, a failing ledger

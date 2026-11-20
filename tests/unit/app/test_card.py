@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R9 at the entrypoint: the card loads only through `load_approved_character_card`,
 fails closed, and the dev bypass needs the operator env var AND APP_ENV=development."""

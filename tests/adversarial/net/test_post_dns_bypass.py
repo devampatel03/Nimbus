@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Adversarial (P4.5, R13): address forms that try to reach loopback, private
 or cloud-metadata IPv4 through an IPv6 or zone-id spelling must be refused by

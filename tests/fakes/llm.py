@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Test harness for `src.llm`: in-memory stores, a controllable clock, a
 `RecordingTransport` (so "zero transport calls" is `transport.calls == []`),

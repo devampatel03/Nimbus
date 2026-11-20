@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Outbound pacing: ~1 msg/s per chat plus a global ceiling (Telegram allows
 about 30 msg/s overall). Slots are reserved synchronously (no await between

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Tool dispatch (ADR-0006): every model-proposed tool call is checked by a
 deterministic `Policy` before anything runs (INV-5).

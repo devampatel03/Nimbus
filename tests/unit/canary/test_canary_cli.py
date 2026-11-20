@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.4 `python -m src.app canary-sweep`: exit codes and output hygiene. The
 database part is faked here (the real sweep runs in tests/integration/canary)."""

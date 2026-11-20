@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.3 review round 1: claim exclusivity under a held transaction, reminder
 isolation from slow jobs, progress beats, deferral, boot recovery, purge, and

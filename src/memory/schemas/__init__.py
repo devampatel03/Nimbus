@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """SQLAlchemy models for the memory store. Import this package (not an
 individual module) wherever `Base.metadata` must be complete — e.g. Alembic

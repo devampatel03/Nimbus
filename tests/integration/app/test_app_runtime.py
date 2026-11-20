@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """App-level behaviour against real Postgres with the Telegram HTTP boundary and
 the model faked: R1 (no loss/duplication across restart and crash), R2, consumer

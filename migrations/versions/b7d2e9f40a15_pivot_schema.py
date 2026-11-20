@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """pivot schema (P1.2c): event, memory_chunk, job, inbound_update,
 pending_action, llm_audit, system_flag; provenance columns on graph_edge /

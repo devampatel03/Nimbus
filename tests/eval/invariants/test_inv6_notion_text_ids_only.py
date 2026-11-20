@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """INV-6 / R13 / INV-5 for the Notion tools (P3.7). New file (H14): nothing else
 under tests/eval is touched.

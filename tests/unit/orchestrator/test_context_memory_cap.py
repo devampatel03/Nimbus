@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P2.5a follow-ups: `build_context` must not trust a recall backend to honour
 `limit`, and each recalled memory is capped at MAX_MEMORY_CHARS."""

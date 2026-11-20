@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Adversarial (P4.3; red-team categories markdown_image_exfil,
 link_preview_exfil, encoding_obfuscation): a compromised model tries to smuggle

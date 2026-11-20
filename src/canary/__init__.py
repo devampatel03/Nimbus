@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Canary tripwires (P4.4, ADR-0023): planted values (`tokens`), an
 obfuscation-tolerant detector (`detect`), the outbound guard (`guard`), the

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.2 settings (hidden secrets, INV-7), gateway keypad / callback sender,
 turn-worker routing of callbacks, and runtime wiring of approvals."""

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Trust lanes (ADR-0010, INV-6): `UntrustedText`, `DataBlock`, the quarantine
 lane, its field schemas, and per-turn taint. See the submodules."""

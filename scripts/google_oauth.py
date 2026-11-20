@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """One-time Google OAuth for Nimbus (P3.4). Runs on the OPERATOR'S machine,
 never inside the bot (R3: the app has no inbound port).

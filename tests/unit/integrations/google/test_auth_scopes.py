@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Scope-lint (R6, ADR-0007 proposed default, H17): the requested scope set is
 exact; any scope outside it is rejected; a send method does not exist; and no

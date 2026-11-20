@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """The extractor consumes the new `Transcript` contract and reaches a model
 only through the guarded `src.llm` client; untrusted transcripts are extracted

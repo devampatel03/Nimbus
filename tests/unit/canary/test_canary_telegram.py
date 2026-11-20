@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.4 in the real `TelegramGateway` (fake Bot API): the canary screen runs in
 the single outbound choke point `_outbound_chunks` (raw reply as a stream, then

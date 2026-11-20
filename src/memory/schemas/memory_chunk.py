@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """`memory_chunk` (P1.2c, TARGET_DESIGN §6, ADR-0001/0013): the one episodic
 table. `vector(1024)` embedding (Qwen3-Embedding-0.6B native dim); `model_id`

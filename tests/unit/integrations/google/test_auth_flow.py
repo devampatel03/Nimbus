@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """One-time installed-app OAuth flow (R3, R15): PKCE, state check, loopback
 server (127.0.0.1 only, one request, timeout), end-to-end against a fake

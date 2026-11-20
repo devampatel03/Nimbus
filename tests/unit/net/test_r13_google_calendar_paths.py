@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R13 (P3.5, ADR-0019 addendum): only the primary calendar's events collection
 and one event by strict id are reachable; every denial makes zero transport calls."""

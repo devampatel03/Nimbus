@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """APScheduler is gone (ADR-0008, P3.3): nothing under `src/` imports it, and the
 scheduler package stays free of transports and model SDKs (INV-1)."""

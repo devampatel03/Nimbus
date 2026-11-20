@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.6 adversarial: untrusted-origin memory (chunks AND graph edges) can never
 become trusted without a consumed `memory`/`promote` approval for that exact item.

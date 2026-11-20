@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """R4/R5 regression + adversarial tests for the API embedder. These mirror the
 P1.4b guard tests (tests/unit/llm/test_llm_spend_r5.py, test_llm_guard_r4.py)

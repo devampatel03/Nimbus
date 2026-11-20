@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Proactive-message settings (P5.1; env prefix `PROACTIVE_`,
 docs/pivot/SETTINGS_PATTERN.md). All times are Asia/Kolkata wall-clock "HH:MM"

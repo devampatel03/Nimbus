@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Transcript tests for the plain tool loop (P2.5a). The model is a fake
 provider under the real `GuardedLLM`, so the guard is exercised too."""

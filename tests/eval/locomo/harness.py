@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """T0.4 / T2.11: LoCoMo eval harness (docs/TECHNICAL_ARCHITECTURE.md's
 hybrid-retrieval ablation section references "LoCoMo 85% min";

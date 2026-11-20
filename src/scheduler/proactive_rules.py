@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Pure time rules for proactive messages (P5.1): IST day, quiet hours, slots,
 snooze durations. No I/O. India has no DST, so every IST wall time maps to one

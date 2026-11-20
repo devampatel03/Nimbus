@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Attempts are persisted BEFORE the paid call, spaced by backoff (a short
 outage must not tombstone), claimed atomically, and notices do not flood."""

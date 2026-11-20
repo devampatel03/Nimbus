@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Import-lint: Redis was removed in the pivot (TARGET_DESIGN M5, P1.3a).
 No module under src/ or tests/ may import `redis`."""

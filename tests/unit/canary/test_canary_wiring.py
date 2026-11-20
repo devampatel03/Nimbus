@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P4.4 wiring: plant sites (system prompt, memory preamble, tool frame), the
 reply screen in the loop, the tool-argument screen in the dispatcher (proposed

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Startup order and refusals that need no database: scrubbing first (R12),
 card gate (R9), dev-only switches. `run_app` returns before touching Postgres

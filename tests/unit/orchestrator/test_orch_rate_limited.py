@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P5.5: a rate-limited turn (local limiter or provider 429) gets one fixed,
 friendly reply; the raw error never reaches the user. Memory top-k and item

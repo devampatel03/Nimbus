@@ -1,9 +1,12 @@
+Nimbus
+Copyright 2026 Devam Patel
+
 Nimbus — Third-Party Notices
 =============================
 
-This project is private and unpublished (see LICENSE), but incorporates
-third-party software and model weights whose licences impose attribution
-obligations regardless of distribution status. This file satisfies those
+Nimbus is released under the Apache License, Version 2.0 (see LICENSE).
+It incorporates third-party software and model weights whose licences
+impose attribution obligations. This file satisfies those
 obligations and must be kept current — see T0.9 in CLAUDE.md and
 docs/PRD.md section 10.1.
 

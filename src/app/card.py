@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """The ONLY place outside `src/personality` that may touch the character-card
 dev bypass (R9, ADR-0015). Kept tiny because the AST guard in

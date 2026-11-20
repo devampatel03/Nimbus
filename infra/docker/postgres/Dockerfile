@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 # Official pgvector image on Postgres 16 (multi-arch: linux/amd64 + linux/arm64).
 # ADR 0001: plain Postgres + pgvector; Apache AGE retired.

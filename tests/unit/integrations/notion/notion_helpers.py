@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Test doubles for Notion (P3.7): a fake API behind the egress client's transport
 seam. Fixtures are recorded and scrubbed (fake ids, fake token); no network."""

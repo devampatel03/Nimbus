@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Command line: `run` (default), `healthcheck`, `preflight` (`src.app.preflight`: exit 0 no FAIL, 1 a FAIL) and `canary-sweep` (P4.4,
 `src.app.sweep`: exit 0 clean, 1 findings, 2 config/database error).

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """System prompt builder (docs/TECHNICAL_ARCHITECTURE.md section 7): combines
 the hand-authored character card with user traits above the PSU-2 confidence

@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """P3.3-enable in the running process: with the operator opt-in
 (`POLICY_ENABLE_CREATES=true`) the model can create reminders and tasks in a

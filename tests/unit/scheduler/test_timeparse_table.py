@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """IST time resolution (P3.3, ADR-0008: store UTC, resolve and render in
 Asia/Kolkata). Reference "now" is Tue 2026-10-27 10:00 IST (04:30 UTC)."""

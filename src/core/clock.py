@@ -1,5 +1,5 @@
-# Copyright (c) Nimbus. All rights reserved.
-# Private, unpublished, proprietary. Do not distribute.
+# Copyright 2026 Devam Patel
+# Licensed under the Apache License, Version 2.0. See LICENSE in the project root.
 
 """Injectable clock (TARGET_DESIGN section 1). Time is stored in UTC; code that
 needs "now" takes a `Clock` so tests can use a fake one (R11)."""
